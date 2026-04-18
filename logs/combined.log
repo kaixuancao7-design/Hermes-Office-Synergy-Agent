@@ -117,3 +117,102 @@
 2026-04-17 17:10:51,590 - hermes_office_agent - ERROR - Model API call failed: 404 Client Error: Not Found for url: http://localhost:11434/api/chat
 2026-04-17 17:10:51,590 - hermes_office_agent - ERROR - Model API call failed: 404 Client Error: Not Found for url: http://localhost:11434/api/chat
 2026-04-17 17:10:51,590 - hermes_office_agent - ERROR - Model API call failed: 404 Client Error: Not Found for url: http://localhost:11434/api/chat
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,612 - hermes_office_agent - INFO - Starting Hermes Office Synergy Agent...
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:08,616 - hermes_office_agent - INFO - Server running on http://0.0.0.0:3000
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,436 - hermes_office_agent - INFO - Registered feishu adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,444 - hermes_office_agent - INFO - Registered dingtalk adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wecom adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,445 - hermes_office_agent - INFO - Registered wechat adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered slack adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,447 - hermes_office_agent - INFO - Registered discord adapter
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully
+2026-04-18 17:53:09,450 - hermes_office_agent - INFO - Hermes Office Synergy Agent started successfully

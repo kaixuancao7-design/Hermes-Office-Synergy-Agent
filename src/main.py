@@ -23,6 +23,76 @@ app.add_middleware(
 app.include_router(v1_router)
 
 
+def register_im_adapters():
+    # 飞书配置
+    feishu_enabled = bool(settings.FEISHU_APP_ID and settings.FEISHU_APP_SECRET)
+    im_adapter_manager.register_adapter(IMAdapterConfig(
+        type="feishu",
+        enabled=feishu_enabled,
+        config={
+            "app_id": settings.FEISHU_APP_ID,
+            "app_secret": settings.FEISHU_APP_SECRET,
+            "bot_name": settings.FEISHU_BOT_NAME
+        }
+    ))
+
+    # 钉钉配置
+    dingtalk_enabled = bool(settings.DINGTALK_APP_KEY and settings.DINGTALK_APP_SECRET)
+    im_adapter_manager.register_adapter(IMAdapterConfig(
+        type="dingtalk",
+        enabled=dingtalk_enabled,
+        config={
+            "app_key": settings.DINGTALK_APP_KEY,
+            "app_secret": settings.DINGTALK_APP_SECRET,
+            "token": settings.DINGTALK_TOKEN
+        }
+    ))
+
+    # 企业微信配置
+    wecom_enabled = bool(settings.WECOM_CORP_ID and settings.WECOM_APP_SECRET)
+    im_adapter_manager.register_adapter(IMAdapterConfig(
+        type="wecom",
+        enabled=wecom_enabled,
+        config={
+            "corp_id": settings.WECOM_CORP_ID,
+            "app_secret": settings.WECOM_APP_SECRET,
+            "agent_id": settings.WECOM_AGENT_ID
+        }
+    ))
+
+    # 微信配置
+    wechat_enabled = bool(settings.WECHAT_APP_ID and settings.WECHAT_APP_SECRET)
+    im_adapter_manager.register_adapter(IMAdapterConfig(
+        type="wechat",
+        enabled=wechat_enabled,
+        config={
+            "app_id": settings.WECHAT_APP_ID,
+            "app_secret": settings.WECHAT_APP_SECRET
+        }
+    ))
+
+    # Slack 配置
+    slack_enabled = bool(settings.SLACK_BOT_TOKEN)
+    im_adapter_manager.register_adapter(IMAdapterConfig(
+        type="slack",
+        enabled=slack_enabled,
+        config={
+            "bot_token": settings.SLACK_BOT_TOKEN,
+            "signing_secret": settings.SLACK_SIGNING_SECRET
+        }
+    ))
+
+    # Discord 配置
+    discord_enabled = bool(settings.DISCORD_BOT_TOKEN)
+    im_adapter_manager.register_adapter(IMAdapterConfig(
+        type="discord",
+        enabled=discord_enabled,
+        config={
+            "bot_token": settings.DISCORD_BOT_TOKEN
+        }
+    ))
+
+
 @app.on_event("startup")
 async def startup_event():
     ensure_directory("./data")
@@ -30,23 +100,7 @@ async def startup_event():
     ensure_directory("./workspace")
     ensure_directory("./output")
     
-    im_adapter_manager.register_adapter(IMAdapterConfig(
-        type="feishu",
-        enabled=True,
-        config={}
-    ))
-    
-    im_adapter_manager.register_adapter(IMAdapterConfig(
-        type="dingtalk",
-        enabled=True,
-        config={}
-    ))
-    
-    im_adapter_manager.register_adapter(IMAdapterConfig(
-        type="wecom",
-        enabled=True,
-        config={}
-    ))
+    register_im_adapters()
     
     logger.info("Hermes Office Synergy Agent started successfully")
 

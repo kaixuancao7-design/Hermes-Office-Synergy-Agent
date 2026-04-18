@@ -20,6 +20,32 @@ class Settings(BaseSettings):
     
     LOG_LEVEL: str = "INFO"
     
+    # 飞书配置
+    FEISHU_APP_ID: Optional[str] = None
+    FEISHU_APP_SECRET: Optional[str] = None
+    FEISHU_BOT_NAME: str = "Hermes"
+    
+    # 钉钉配置
+    DINGTALK_APP_KEY: Optional[str] = None
+    DINGTALK_APP_SECRET: Optional[str] = None
+    DINGTALK_TOKEN: Optional[str] = None
+    
+    # 企业微信配置
+    WECOM_CORP_ID: Optional[str] = None
+    WECOM_APP_SECRET: Optional[str] = None
+    WECOM_AGENT_ID: Optional[str] = None
+    
+    # 微信配置（个人号）
+    WECHAT_APP_ID: Optional[str] = None
+    WECHAT_APP_SECRET: Optional[str] = None
+    
+    # Slack 配置
+    SLACK_BOT_TOKEN: Optional[str] = None
+    SLACK_SIGNING_SECRET: Optional[str] = None
+    
+    # Discord 配置
+    DISCORD_BOT_TOKEN: Optional[str] = None
+    
     model_config = SettingsConfigDict(env_file=".env")
 
 
