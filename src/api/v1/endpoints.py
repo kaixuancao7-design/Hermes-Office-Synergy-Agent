@@ -30,16 +30,28 @@ async def send_message(message: Dict[str, Any]):
 
 @router.post("/im/webhook/{adapter_type}")
 async def im_webhook(adapter_type: str, payload: Dict[str, Any]):
+    from src.utils import setup_logging
+    from src.config import settings
+    logger = setup_logging(settings.LOG_LEVEL)
+    
     try:
+        logger.info(f"Received webhook from {adapter_type}: {str(payload)[:500]}")
+        
         adapter = im_adapter_manager.get_adapter(adapter_type)
         if not adapter:
+            logger.error(f"Adapter {adapter_type} not found")
             raise HTTPException(status_code=404, detail=f"Adapter {adapter_type} not found")
         
         message = adapter.receive_message(payload)
         if not message:
+            logger.info("Message ignored (adapter disabled or parsing failed)")
             return {"status": "ignored"}
         
+        logger.info(f"Parsed message: user_id={message.user_id}, content={message.content[:100]}")
+        
         response = message_router.route(message)
+        logger.info(f"Generated response: {response[:100]}")
+        
         adapter.send_message(Message(
             id=generate_id(),
             user_id=message.user_id,
@@ -48,8 +60,10 @@ async def im_webhook(adapter_type: str, payload: Dict[str, Any]):
             timestamp=get_timestamp()
         ))
         
+        logger.info(f"Message sent successfully to user {message.user_id}")
         return {"status": "success", "response": response}
     except Exception as e:
+        logger.error(f"Error processing webhook: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

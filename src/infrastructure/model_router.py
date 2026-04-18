@@ -9,48 +9,49 @@ logger = setup_logging(settings.LOG_LEVEL)
 
 MODEL_ROUTES: List[ModelRoute] = [
     ModelRoute(
-        model="gpt-4o",
-        provider="openai",
-        endpoint="https://api.openai.com/v1/chat/completions",
-        api_key=settings.OPENAI_API_KEY,
+        model="qwen3.5:9b",
+        provider="ollama",
+        endpoint=f"{settings.OLLAMA_HOST}/api/chat",
+        api_key=None,
         capabilities=["complex_reasoning", "coding", "ppt_outline", "creative_writing"],
         cost_per_token=0.00001
     ),
     ModelRoute(
-        model="claude-3-5-sonnet",
-        provider="claude",
-        endpoint="https://api.anthropic.com/v1/messages",
-        api_key=settings.CLAUDE_API_KEY,
+        model="qwen3.5:9b",
+        provider="ollama",
+        endpoint=f"{settings.OLLAMA_HOST}/api/chat",
+        api_key=None,
         capabilities=["complex_reasoning", "long_context", "coding"],
         cost_per_token=0.000008
     ),
     ModelRoute(
-        model="qwen2-7b",
+        model="qwen3.5:9b",
         provider="ollama",
         endpoint=f"{settings.OLLAMA_HOST}/api/chat",
         capabilities=["summarization", "memory整理", "simple_tasks"],
         cost_per_token=0.0
     ),
     ModelRoute(
-        model="qwen2-72b",
+        model="qwen3.5:9b",
         provider="ollama",
         endpoint=f"{settings.OLLAMA_HOST}/api/chat",
+        api_key=None,
         capabilities=["complex_reasoning", "coding"],
         cost_per_token=0.0
     ),
     ModelRoute(
-        model="glm-4",
-        provider="zhipu",
-        endpoint="https://open.bigmodel.cn/api/paas/v4/chat/completions",
-        api_key=settings.ZHIPU_API_KEY,
+        model="qwen3.5:9b",
+        provider="ollama",
+        endpoint=f"{settings.OLLAMA_HOST}/api/chat",
+        api_key=None,
         capabilities=["creative_writing", "summarization"],
         cost_per_token=0.000005
     ),
     ModelRoute(
-        model="kimi",
-        provider="kimi",
-        endpoint="https://api.moonshot.cn/v1/chat/completions",
-        api_key=settings.KIMI_API_KEY,
+        model="qwen3.5:9b",
+        provider="ollama",
+        endpoint=f"{settings.OLLAMA_HOST}/api/chat",
+        api_key=None,
         capabilities=["long_context", "document_analysis"],
         cost_per_token=0.000006
     )

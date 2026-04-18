@@ -65,7 +65,7 @@ class MessageRouter:
     
     def _is_mentioned(self, message: Message) -> bool:
         content = message.content.lower()
-        mentions = ["@助手", "@hermes", "@assistant"]
+        mentions = ["@hermes-office-synergy-agent"]
         return any(mention in content for mention in mentions)
     
     def _handle_intent(self, user_id: str, intent: Intent, context: str) -> str:
@@ -172,13 +172,17 @@ class MessageRouter:
         return "创作功能暂时不可用"
     
     def _handle_unknown(self, user_id: str, context: str) -> str:
-        from src.infrastructure.model_router import select_model, call_model
-        model = select_model("general", "simple")
-        
-        if model:
-            return call_model(model, [{"role": "user", "content": context}])
-        
-        return "抱歉，我无法理解您的请求"
+        try:
+            from src.infrastructure.model_router import select_model, call_model
+            model = select_model("general", "simple")
+            
+            if model:
+                return call_model(model, [{"role": "user", "content": context}])
+            
+            return "抱歉，我无法理解您的请求"
+        except Exception as e:
+            logger.error(f"Model call failed: {str(e)}")
+            return f"您好！我已收到您的消息：\"{context}\"\n\n由于语言模型服务暂不可用，我无法为您生成智能回复。请检查 Ollama 服务是否运行，或配置其他模型 API 密钥。"
     
     def capture_correction(self, user_id: str, original: str, corrected: str, context: str) -> None:
         learning_cycle.capture_correction(user_id, original, corrected, context)

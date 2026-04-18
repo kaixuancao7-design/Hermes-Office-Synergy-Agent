@@ -8,6 +8,10 @@ def setup_logging(log_level: str = "INFO") -> logging.Logger:
     logger = logging.getLogger("hermes_office_agent")
     logger.setLevel(log_level)
     
+    # 如果已经有 handler，不再重复添加
+    if logger.handlers:
+        return logger
+    
     formatter = logging.Formatter(
         "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     )

@@ -1,4 +1,5 @@
 import uvicorn
+import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.api.v1.endpoints import router as v1_router
@@ -7,6 +8,7 @@ from src.utils import setup_logging, ensure_directory
 from src.data.database import db
 from src.skills.skill_manager import skill_manager
 from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
+from src.gateway.feishu_websocket import feishu_websocket_service
 
 logger = setup_logging(settings.LOG_LEVEL)
 
@@ -32,7 +34,8 @@ def register_im_adapters():
         config={
             "app_id": settings.FEISHU_APP_ID,
             "app_secret": settings.FEISHU_APP_SECRET,
-            "bot_name": settings.FEISHU_BOT_NAME
+            "bot_name": settings.FEISHU_BOT_NAME,
+            "use_websocket": True
         }
     ))
 
@@ -93,6 +96,18 @@ def register_im_adapters():
     ))
 
 
+async def start_feishu_websocket():
+    """启动飞书 WebSocket 长连接服务"""
+    if settings.FEISHU_APP_ID and settings.FEISHU_APP_SECRET:
+        logger.info("尝试启动飞书 WebSocket 长连接服务...")
+        try:
+            await feishu_websocket_service.start()
+        except Exception as e:
+            logger.error(f"飞书 WebSocket 服务启动失败: {str(e)}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
+
+
 @app.on_event("startup")
 async def startup_event():
     ensure_directory("./data")
@@ -102,11 +117,16 @@ async def startup_event():
     
     register_im_adapters()
     
+    # 启动飞书 WebSocket 长连接服务（后台运行）
+    asyncio.create_task(start_feishu_websocket())
+    
     logger.info("Hermes Office Synergy Agent started successfully")
+    logger.info("飞书使用 WebSocket 长连接方式接收消息")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    feishu_websocket_service.stop()
     logger.info("Hermes Office Synergy Agent shutting down")
 
 

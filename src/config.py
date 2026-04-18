@@ -23,7 +23,8 @@ class Settings(BaseSettings):
     # 飞书配置
     FEISHU_APP_ID: Optional[str] = None
     FEISHU_APP_SECRET: Optional[str] = None
-    FEISHU_BOT_NAME: str = "Hermes"
+    FEISHU_BOT_NAME: str = "Hermes-Office-Synergy-Agent"
+    FEISHU_CONNECTION_MODE: str = "websocket"
     
     # 钉钉配置
     DINGTALK_APP_KEY: Optional[str] = None

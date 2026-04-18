@@ -131,7 +131,7 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                INSERT INTO messages (
+                INSERT OR REPLACE INTO messages (
                     id, user_id, content, role, timestamp, metadata
                 ) VALUES (?, ?, ?, ?, ?, ?)
             """, (
@@ -142,11 +142,6 @@ class Database:
                 message.timestamp,
                 str(message.metadata) if message.metadata else None
             ))
-            
-            cursor.execute("""
-                INSERT INTO messages_fts (rowid, content, user_id, role, timestamp)
-                VALUES ((SELECT last_insert_rowid()), ?, ?, ?, ?)
-            """, (message.content, message.user_id, message.role, message.timestamp))
             
             conn.commit()
     

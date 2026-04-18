@@ -43,6 +43,7 @@ __pycache__/
 Thumbs.db
 
 # 测试文件
+tests/
 .test/
 .coverage
 htmlcov/
