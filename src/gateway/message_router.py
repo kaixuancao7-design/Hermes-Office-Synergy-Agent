@@ -4,6 +4,7 @@ from src.engine.intent_recognition import intent_recognizer
 from src.engine.task_planner import task_planner
 from src.engine.memory_manager import memory_manager
 from src.engine.learning_cycle import learning_cycle
+from src.engine.react_engine import react_engine
 from src.data.database import db
 from src.utils import generate_id, get_timestamp, setup_logging
 from src.config import settings
@@ -14,6 +15,7 @@ logger = setup_logging(settings.LOG_LEVEL)
 class MessageRouter:
     def __init__(self):
         self.sessions: Dict[str, Session] = {}
+        self.use_react_mode = True  # 启用 ReAct 模式
     
     def route(self, message: Message) -> str:
         user_id = message.user_id
@@ -43,7 +45,12 @@ class MessageRouter:
         intent = intent_recognizer.recognize(message.content)
         logger.info(f"Recognized intent: {intent.type} (confidence: {intent.confidence})")
         
-        response = self._handle_intent(user_id, intent, message.content)
+        # 判断是否使用 ReAct 模式
+        if self.use_react_mode and self._should_use_react(intent):
+            logger.info(f"Using ReAct mode for intent: {intent.type}")
+            response = self._handle_with_react(user_id, message.content)
+        else:
+            response = self._handle_intent(user_id, intent, message.content)
         
         response_message = Message(
             id=generate_id(),
@@ -186,6 +193,27 @@ class MessageRouter:
     
     def capture_correction(self, user_id: str, original: str, corrected: str, context: str) -> None:
         learning_cycle.capture_correction(user_id, original, corrected, context)
+    
+    def _should_use_react(self, intent: Intent) -> bool:
+        """判断是否应该使用 ReAct 模式"""
+        # 需要复杂推理的意图类型使用 ReAct
+        react_intents = [
+            "question_answering",
+            "task_execution",
+            "document_analysis",
+            "code_generation",
+            "unknown"  # 未知意图使用 ReAct 进行探索
+        ]
+        return intent.type in react_intents and intent.confidence < 0.8
+    
+    def _handle_with_react(self, user_id: str, query: str) -> str:
+        """使用 ReAct 引擎处理消息"""
+        try:
+            return react_engine.run(user_id, query)
+        except Exception as e:
+            logger.error(f"ReAct engine failed: {str(e)}")
+            # 降级到普通处理
+            return self._handle_unknown(user_id, query)
 
 
 message_router = MessageRouter()

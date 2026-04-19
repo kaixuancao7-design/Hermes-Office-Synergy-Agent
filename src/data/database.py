@@ -89,6 +89,22 @@ class Database:
                 )
             """)
             
+            # 消息去重表 - 持久化存储已处理的消息ID
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS processed_messages (
+                    message_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    processed_at INTEGER NOT NULL,
+                    source TEXT
+                )
+            """)
+            
+            # 为消息ID创建索引，加速查询
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_processed_messages_id 
+                ON processed_messages(message_id)
+            """)
+            
             conn.commit()
     
     def save_user(self, user: UserProfile) -> None:
@@ -293,6 +309,38 @@ class Database:
                     tags=eval(row[6]) if row[6] else []
                 ))
             return entries
+    
+    def is_message_processed(self, message_id: str) -> bool:
+        """检查消息是否已处理过"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM processed_messages WHERE message_id = ?
+            """, (message_id,))
+            return cursor.fetchone() is not None
+    
+    def mark_message_processed(self, message_id: str, user_id: str, source: str = "unknown") -> None:
+        """标记消息为已处理"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO processed_messages (
+                    message_id, user_id, processed_at, source
+                ) VALUES (?, ?, ?, ?)
+            """, (message_id, user_id, get_timestamp(), source))
+            conn.commit()
+    
+    def cleanup_old_messages(self, days_to_keep: int = 7) -> int:
+        """清理过期的已处理消息记录"""
+        cutoff_time = get_timestamp() - (days_to_keep * 24 * 60 * 60)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM processed_messages WHERE processed_at < ?
+            """, (cutoff_time,))
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
 
 
 db = Database()

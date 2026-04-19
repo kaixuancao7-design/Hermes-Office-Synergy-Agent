@@ -1,7 +1,11 @@
-import hnswlib
-import numpy as np
 import os
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional
+
+from langchain_chroma import Chroma
+from langchain_openai import OpenAIEmbeddings
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+
 from src.utils import setup_logging, generate_id
 from src.config import settings
 
@@ -9,96 +13,185 @@ logger = setup_logging(settings.LOG_LEVEL)
 
 
 class VectorStore:
-    def __init__(self, dimension: int = 384):
-        self.dimension = dimension
-        self.index = hnswlib.Index(space="cosine", dim=dimension)
+    """基于 LangChain + ChromaDB 的向量存储实现"""
+    
+    def __init__(self):
         self.vector_path = settings.VECTOR_DB_PATH
-        self.data_store: Dict[int, Dict[str, Any]] = {}
-        self._load_or_create_index()
+        self.embedding_model = self._init_embedding_model()
+        self._init_chroma()
     
-    def _load_or_create_index(self):
+    def _init_embedding_model(self):
+        """Initialize embedding model"""
+        if not settings.OPENAI_API_KEY:
+            logger.error("OpenAI API key is required for embeddings")
+            raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY in .env file")
+        
+        try:
+            return OpenAIEmbeddings(
+                model="text-embedding-3-small",
+                api_key=settings.OPENAI_API_KEY
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize embedding model: {e}")
+            raise
+    
+    def _init_chroma(self):
+        """初始化 ChromaDB"""
         os.makedirs(self.vector_path, exist_ok=True)
-        index_path = os.path.join(self.vector_path, "index.bin")
         
-        if os.path.exists(index_path):
-            self.index.load_index(index_path)
-            logger.info("Loaded existing vector index")
-        else:
-            self.index.init_index(max_elements=100000, ef_construction=200, M=16)
-            logger.info("Created new vector index")
+        try:
+            self.chroma = Chroma(
+                persist_directory=self.vector_path,
+                embedding_function=self.embedding_model,
+                collection_name="hermes_documents"
+            )
+            logger.info("ChromaDB initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize ChromaDB: {e}")
+            raise
     
-    def add_vector(self, content: str, embedding: List[float], metadata: Dict[str, Any]) -> str:
-        vector_id = len(self.data_store)
+    def add_vector(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
+        """添加向量到存储"""
+        doc_id = generate_id()
+        document = Document(
+            page_content=content,
+            metadata={**(metadata or {}), "id": doc_id}
+        )
         
-        if len(embedding) != self.dimension:
-            raise ValueError(f"Embedding dimension mismatch: expected {self.dimension}, got {len(embedding)}")
-        
-        self.index.add_items(np.array([embedding]), np.array([vector_id]))
-        self.data_store[vector_id] = {
-            "content": content,
-            "embedding": embedding,
-            "metadata": metadata,
-            "id": generate_id()
-        }
-        
-        self._save_index()
-        return self.data_store[vector_id]["id"]
+        try:
+            self.chroma.add_documents([document], ids=[doc_id])
+            self.chroma.persist()
+            logger.debug(f"Added vector with id: {doc_id}")
+            return doc_id
+        except Exception as e:
+            logger.error(f"Failed to add vector: {e}")
+            raise
     
-    def search(self, query_embedding: List[float], k: int = 5) -> List[Dict[str, Any]]:
-        if len(query_embedding) != self.dimension:
-            raise ValueError(f"Query embedding dimension mismatch: expected {self.dimension}, got {len(query_embedding)}")
+    def add_documents(self, documents: List[Dict[str, Any]]) -> List[str]:
+        """批量添加文档"""
+        langchain_docs = []
+        doc_ids = []
         
-        labels, distances = self.index.knn_query(np.array([query_embedding]), k=k)
+        for doc in documents:
+            doc_id = generate_id()
+            langchain_docs.append(Document(
+                page_content=doc.get("content", ""),
+                metadata={**doc.get("metadata", {}), "id": doc_id}
+            ))
+            doc_ids.append(doc_id)
         
-        results = []
-        for i, label in enumerate(labels[0]):
-            if label in self.data_store:
-                results.append({
-                    **self.data_store[label],
-                    "distance": distances[0][i]
+        try:
+            self.chroma.add_documents(langchain_docs, ids=doc_ids)
+            self.chroma.persist()
+            logger.info(f"Added {len(doc_ids)} documents")
+            return doc_ids
+        except Exception as e:
+            logger.error(f"Failed to add documents: {e}")
+            raise
+    
+    def search(self, query: str, k: int = 5, filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+        """搜索相似向量"""
+        try:
+            results = self.chroma.similarity_search_with_score(
+                query=query,
+                k=k,
+                filter=filter
+            )
+            
+            formatted_results = []
+            for doc, score in results:
+                formatted_results.append({
+                    "content": doc.page_content,
+                    "metadata": doc.metadata,
+                    "distance": score,
+                    "id": doc.metadata.get("id", "")
                 })
-        
-        return sorted(results, key=lambda x: x["distance"])
+            
+            return formatted_results
+        except Exception as e:
+            logger.error(f"Failed to search vectors: {e}")
+            return []
     
     def delete_vector(self, vector_id: str) -> bool:
-        for idx, data in self.data_store.items():
-            if data["id"] == vector_id:
-                self.index.mark_deleted(idx)
-                del self.data_store[idx]
-                self._save_index()
-                return True
-        return False
+        """删除向量"""
+        try:
+            self.chroma.delete([vector_id])
+            self.chroma.persist()
+            logger.debug(f"Deleted vector with id: {vector_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to delete vector: {e}")
+            return False
     
     def get_all_vectors(self) -> List[Dict[str, Any]]:
-        return list(self.data_store.values())
-    
-    def _save_index(self):
-        index_path = os.path.join(self.vector_path, "index.bin")
-        self.index.save_index(index_path)
+        """获取所有向量"""
+        try:
+            all_docs = self.chroma.get()
+            results = []
+            for i, content in enumerate(all_docs["documents"]):
+                results.append({
+                    "content": content,
+                    "metadata": all_docs["metadatas"][i],
+                    "id": all_docs["ids"][i]
+                })
+            return results
+        except Exception as e:
+            logger.error(f"Failed to get all vectors: {e}")
+            return []
     
     def clear(self):
-        self.index = hnswlib.Index(space="cosine", dim=self.dimension)
-        self.index.init_index(max_elements=100000, ef_construction=200, M=16)
-        self.data_store = {}
-        self._save_index()
+        """清空所有向量"""
+        try:
+            self.chroma.delete_collection()
+            self._init_chroma()
+            logger.info("Vector store cleared")
+        except Exception as e:
+            logger.error(f"Failed to clear vector store: {e}")
+            raise
+    
+    def get_retriever(self, k: int = 5):
+        """获取 LangChain Retriever"""
+        return self.chroma.as_retriever(search_kwargs={"k": k})
 
 
 class RAGManager:
+    """基于 LangChain 的 RAG 管理器"""
+    
     def __init__(self):
         self.vector_store = VectorStore()
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50,
+            length_function=len
+        )
     
     def add_document(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
-        embedding = self._generate_embedding(content)
-        return self.vector_store.add_vector(content, embedding, metadata or {})
+        """添加文档到向量存储"""
+        return self.vector_store.add_vector(content, metadata)
+    
+    def add_large_document(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> List[str]:
+        """添加大文档（自动分割）"""
+        chunks = self.text_splitter.split_text(content)
+        doc_ids = []
+        
+        for i, chunk in enumerate(chunks):
+            chunk_metadata = {**(metadata or {}), "chunk_index": i, "total_chunks": len(chunks)}
+            doc_id = self.vector_store.add_vector(chunk, chunk_metadata)
+            doc_ids.append(doc_id)
+        
+        return doc_ids
     
     def query(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
-        embedding = self._generate_embedding(query)
-        return self.vector_store.search(embedding, k)
+        """查询相关文档"""
+        return self.vector_store.search(query, k)
     
-    def _generate_embedding(self, text: str) -> List[float]:
-        import random
-        return [random.random() for _ in range(384)]
+    def get_context(self, query: str, k: int = 5) -> str:
+        """获取查询的上下文文本"""
+        results = self.query(query, k)
+        context = "\n\n".join([doc.get("content", "") for doc in results])
+        return context
 
 
+# 全局实例
 vector_store = VectorStore()
 rag_manager = RAGManager()

@@ -4,6 +4,7 @@ from typing import Optional
 
 class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
+    ANTHROPIC_API_KEY: Optional[str] = None
     CLAUDE_API_KEY: Optional[str] = None
     OLLAMA_HOST: str = "http://localhost:11434"
     ZHIPU_API_KEY: Optional[str] = None

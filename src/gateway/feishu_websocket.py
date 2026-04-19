@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import time
 from typing import Dict, Any, Optional
 
 from lark_oapi import LogLevel
@@ -10,18 +11,23 @@ from lark_oapi.ws import Client as WsClient
 from src.config import settings
 from src.gateway.message_router import message_router
 from src.types import Message
-from src.utils import generate_id, get_timestamp
+from src.utils import generate_id, get_timestamp, safe_log_string
+from src.data.database import db
 
 logger = logging.getLogger("hermes_office_agent")
 
 class FeishuEventHandler:
     """飞书事件处理器"""
     
+    def __init__(self):
+        self.processing_message_ids = set()  # 正在处理中的消息ID（内存中，用于防止并发）
+        self.last_message_time = {}  # 每个用户的最后消息时间
+        self.MESSAGE_INTERVAL = 1  # 同一用户消息最小间隔（秒）
+    
     def do_without_validation(self, payload: bytes) -> Any:
         """处理事件（不验证签名）"""
         try:
             payload_str = payload.decode('utf-8')
-            logger.info(f"收到飞书事件 payload: {payload_str[:200]}")
             
             # 解析事件
             event_data = json.loads(payload_str)
@@ -40,18 +46,78 @@ class FeishuEventHandler:
         return None
     
     def _handle_message_event(self, event_data: Dict):
-        """处理消息事件"""
+        """处理消息事件 - 使用异步模式避免飞书重试"""
         try:
             message = event_data.get('event', {}).get('message', {})
             sender = event_data.get('event', {}).get('sender', {})
             
-            message_id = message.get('message_id', generate_id())
+            # 1. 检查发送者类型，忽略机器人自己发送的消息
+            sender_type = sender.get('sender_type', '')
+            if sender_type == 'app':
+                logger.debug("忽略机器人自己发送的消息")
+                return
+            
+            # 2. 获取消息ID（必须有ID才能去重）
+            message_id = message.get('message_id')
+            if not message_id:
+                logger.warning("消息没有 message_id，跳过处理")
+                return
+            
+            # 3. 检查消息是否正在处理中（防止并发处理）
+            if message_id in self.processing_message_ids:
+                logger.info(f"消息正在处理中，跳过: {message_id}")
+                return
+            
+            # 4. 检查消息是否已处理过（使用数据库持久化去重，服务重启后仍有效）
+            if db.is_message_processed(message_id):
+                logger.info(f"忽略重复消息(数据库): {message_id}")
+                return
+            
+            # 5. 获取用户ID
             user_id = sender.get('sender_id', {}).get('user_id', 'unknown')
             
-            # 解析消息内容
+            # 6. 检查用户消息频率（防止刷屏）
+            current_time = time.time()
+            last_time = self.last_message_time.get(user_id, 0)
+            if current_time - last_time < self.MESSAGE_INTERVAL:
+                logger.info(f"用户 {user_id} 消息过于频繁，跳过")
+                return
+            self.last_message_time[user_id] = current_time
+            
+            # 7. 立即标记消息为已处理（写入数据库，防止服务重启后重复处理）
+            db.mark_message_processed(message_id, user_id, source="feishu")
+            
+            # 8. 标记消息为处理中（内存中，用于并发控制）
+            self.processing_message_ids.add(message_id)
+            
+            # 9. 提取消息内容用于异步处理
             content = message.get('content', '{}')
             chat_type = message.get('chat_type', 'p2p')
             
+            # 10. 异步处理消息（立即返回，避免飞书超时重试）
+            asyncio.create_task(
+                self._process_message_async(
+                    message_id=message_id,
+                    user_id=user_id,
+                    content=content,
+                    chat_type=chat_type
+                )
+            )
+            
+            logger.info(f"消息已接收并进入异步处理: message_id={message_id}, user_id={user_id}")
+            
+        except Exception as e:
+            # 清理处理中状态
+            message_id = message.get('message_id')
+            if message_id:
+                self.processing_message_ids.discard(message_id)
+            logger.error(f"消息事件处理失败: {str(e)}")
+            import traceback
+            logger.error(f"详细错误: {traceback.format_exc()}")
+    
+    async def _process_message_async(self, message_id: str, user_id: str, content: str, chat_type: str):
+        """异步处理消息 - 在后台执行，不阻塞事件循环"""
+        try:
             # 解析内容
             try:
                 content_json = json.loads(content)
@@ -64,7 +130,7 @@ class FeishuEventHandler:
             if bot_name and f"@{bot_name}" in text:
                 text = text.replace(f"@{bot_name}", "").strip()
             
-            logger.info(f"收到消息: user_id={user_id}, content={text[:50]}")
+            logger.info(f"开始处理消息: user_id={user_id}, message_id={message_id}, content={text[:50]}")
             
             # 创建消息对象
             msg = Message(
@@ -81,15 +147,23 @@ class FeishuEventHandler:
             
             # 使用消息路由处理
             response = message_router.route(msg)
-            logger.info(f"生成响应: {response[:50]}")
+            # 使用 safe_log_string 避免 emoji 编码问题
+            logger.info(f"生成响应: {safe_log_string(response[:50])}")
             
             # 发送回复
             FeishuWebSocketService._send_message_static(user_id, response)
             
         except Exception as e:
-            logger.error(f"消息事件处理失败: {str(e)}")
+            logger.error(f"异步消息处理失败: message_id={message_id}, error={str(e)}")
             import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
+        finally:
+            # 清理处理中状态
+            self.processing_message_ids.discard(message_id)
+            
+            # 限制处理中消息ID的数量（内存保护）
+            if len(self.processing_message_ids) > 100:
+                self.processing_message_ids = set(list(self.processing_message_ids)[-50:])
 
 class FeishuWebSocketService:
     _api_client = None
