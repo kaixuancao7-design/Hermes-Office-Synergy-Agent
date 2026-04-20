@@ -77,8 +77,27 @@ class SkillChangeLog(BaseModel):
 class UserRole(BaseModel):
     """用户角色"""
     user_id: str
-    role: Literal['admin', 'user', 'guest']
+    role: Literal['admin', 'developer', 'user', 'guest']
+    department: Optional[str] = None
     created_at: int
+
+
+class PermissionScope(BaseModel):
+    """权限范围"""
+    type: Literal['user', 'department', 'all']
+    value: Optional[str] = None  # user_id 或 department_name
+
+
+class BasePermission(BaseModel):
+    """基础权限"""
+    id: str
+    resource_type: Literal['skill', 'tool', 'memory', 'api', 'config']
+    resource_id: str
+    user_id: str
+    permission: List[str]  # ['read', 'write', 'execute', 'delete', 'grant']
+    granted_by: str
+    granted_at: int
+    scope: Optional[PermissionScope] = None
 
 
 class SkillPermission(BaseModel):
@@ -89,12 +108,88 @@ class SkillPermission(BaseModel):
     permission: Literal['read', 'execute', 'edit', 'delete', 'grant']
     granted_by: str
     granted_at: int
+    scope: Optional[PermissionScope] = None
+
+
+class ToolPermission(BaseModel):
+    """工具权限"""
+    id: str
+    tool_id: str
+    user_id: str
+    permission: Literal['execute', 'configure']
+    granted_by: str
+    granted_at: int
+    is_hazardous: bool = False
+    scope: Optional[PermissionScope] = None
+
+
+class MemoryPermission(BaseModel):
+    """记忆权限"""
+    id: str
+    memory_type: Literal['short_term', 'long_term', 'procedural']
+    user_id: str
+    permission: Literal['read', 'write', 'delete', 'search']
+    granted_by: str
+    granted_at: int
+    scope: Optional[PermissionScope] = None
+
+
+class ApiPermission(BaseModel):
+    """API权限"""
+    id: str
+    endpoint: str
+    user_id: str
+    permission: Literal['access']
+    granted_by: str
+    granted_at: int
 
 
 class PermissionCheckResult(BaseModel):
     """权限检查结果"""
     allowed: bool
     missing_permissions: List[str]
+    resource_type: Optional[str] = None
+    resource_id: Optional[str] = None
+
+
+class AuditLog(BaseModel):
+    """审计日志"""
+    id: str
+    operation_type: Literal[
+        'login', 'logout',
+        'skill_create', 'skill_edit', 'skill_delete', 'skill_execute', 'skill_publish',
+        'tool_execute', 'tool_configure',
+        'memory_read', 'memory_write', 'memory_delete', 'memory_search',
+        'feedback_submit',
+        'config_modify', 'config_view',
+        'permission_grant', 'permission_revoke',
+        'user_create', 'user_edit', 'user_delete', 'role_change'
+    ]
+    operator_id: str
+    operator_name: Optional[str] = None
+    operator_role: Optional[str] = None
+    target_type: Optional[str] = None
+    target_id: Optional[str] = None
+    target_name: Optional[str] = None
+    operation_detail: str
+    result: Literal['success', 'failed', 'pending']
+    error_message: Optional[str] = None
+    timestamp: int
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    request_id: Optional[str] = None
+    
+    # 防篡改字段
+    checksum: str
+    previous_checksum: str
+
+
+class AuditQueryResult(BaseModel):
+    """审计查询结果"""
+    logs: List[AuditLog]
+    total: int
+    page: int
+    page_size: int
 
 
 class ToolParameter(BaseModel):

@@ -4,7 +4,9 @@ from src.data.database import db
 from src.utils import generate_id, get_timestamp, setup_logging
 from src.engine.memory_manager import memory_manager
 from src.config import settings
-from src.services.skill_management import skill_version_manager, skill_permission_manager
+from src.services.skill_management import skill_version_manager
+from src.services.permission_service import permission_service
+from src.services.audit_log_service import audit_log_service
 
 logger = setup_logging(settings.LOG_LEVEL)
 
@@ -193,9 +195,11 @@ class SkillManager:
         if not user_id:
             return all_skills
         
+        # 获取用户角色
+        user_role = permission_service.get_user_role(user_id)
+        
         # 管理员可以访问所有技能
-        role = skill_permission_manager.get_user_role(user_id)
-        if role == "admin":
+        if user_role and user_role.role == "admin":
             return all_skills
         
         # 普通用户只能访问自己创建的或被授权的技能
@@ -206,8 +210,9 @@ class SkillManager:
                 result.append(skill)
                 continue
             
-            # 检查是否有访问权限
-            if skill_permission_manager.has_any_permission(user_id, skill.id):
+            # 检查是否有读取权限
+            perm_result = permission_service.check_skill_permission(user_id, skill.id, 'read')
+            if perm_result.allowed:
                 result.append(skill)
         
         return result
@@ -215,8 +220,8 @@ class SkillManager:
     def create_custom_skill(self, user_id: str, name: str, description: str, steps: List[Dict[str, Any]]) -> Skill:
         """创建自定义技能（需要检查权限）"""
         # 检查用户是否有权限创建技能
-        role = skill_permission_manager.get_user_role(user_id)
-        if role not in ["admin", "user"]:
+        user_role = permission_service.get_user_role(user_id)
+        if not user_role or user_role.role not in ["admin", "developer", "user"]:
             logger.error(f"User {user_id} does not have permission to create skills")
             raise PermissionError("没有创建技能的权限")
         
@@ -247,6 +252,10 @@ class SkillManager:
         db.save_skill(skill)
         # 保存初始版本
         skill_version_manager.save_version(skill, "create", "初始版本")
+        
+        # 记录审计日志
+        audit_log_service.log_skill_create(user_id, skill.id, skill.name)
+        
         logger.info(f"Created custom skill: {name} by user {user_id}")
         return skill
     
@@ -257,7 +266,7 @@ class SkillManager:
             return None
         
         # 检查权限
-        permission = skill_permission_manager.check_permission(user_id, skill_id, "edit")
+        permission = permission_service.check_skill_permission(user_id, skill_id, "edit")
         if not permission.allowed:
             logger.error(f"User {user_id} does not have permission to edit skill {skill_id}")
             raise PermissionError("没有编辑技能的权限")
@@ -282,6 +291,10 @@ class SkillManager:
         # 保存新版本
         change_note = updates.get("change_note", "技能更新")
         skill_version_manager.save_version(skill, "update", change_note)
+        
+        # 记录审计日志
+        audit_log_service.log_skill_edit(user_id, skill_id, skill.name, change_note)
+        
         logger.info(f"Updated skill: {skill_id} v{skill.version} by user {user_id}")
         return skill
     
@@ -292,13 +305,16 @@ class SkillManager:
             return False
         
         # 检查权限
-        permission = skill_permission_manager.check_permission(user_id, skill_id, "delete")
+        permission = permission_service.check_skill_permission(user_id, skill_id, "delete")
         if not permission.allowed:
             logger.error(f"User {user_id} does not have permission to delete skill {skill_id}")
             raise PermissionError("没有删除技能的权限")
         
         # 记录删除日志
         skill_version_manager._log_change(skill_id, skill.version, "delete", "技能已删除", user_id)
+        
+        # 记录审计日志
+        audit_log_service.log_skill_delete(user_id, skill_id, skill.name)
         
         db.delete_skill(skill_id)
         logger.info(f"Deleted skill: {skill_id} by user {user_id}")
@@ -347,7 +363,7 @@ class SkillManager:
     def rollback_to_version(self, user_id: str, skill_id: str, target_version: str) -> Optional[Skill]:
         """回滚到指定版本（需要检查权限）"""
         # 检查权限
-        permission = skill_permission_manager.check_permission(user_id, skill_id, "edit")
+        permission = permission_service.check_skill_permission(user_id, skill_id, "edit")
         if not permission.allowed:
             logger.error(f"User {user_id} does not have permission to rollback skill {skill_id}")
             raise PermissionError("没有回滚技能的权限")
@@ -355,6 +371,10 @@ class SkillManager:
         rolled_back = skill_version_manager.rollback(skill_id, target_version, user_id)
         if rolled_back:
             db.save_skill(rolled_back)
+            
+            # 记录审计日志
+            audit_log_service.log_skill_edit(user_id, skill_id, rolled_back.name, f"Rolled back to version {target_version}")
+            
             logger.info(f"Skill {skill_id} rolled back to version {target_version} by user {user_id}")
         
         return rolled_back
@@ -365,26 +385,40 @@ class SkillManager:
     
     # ==================== 权限管理 ====================
     
-    def set_user_role(self, admin_id: str, user_id: str, role: str) -> bool:
+    def set_user_role(self, admin_id: str, user_id: str, role: str, department: Optional[str] = None) -> bool:
         """设置用户角色（需要管理员权限）"""
-        admin_role = skill_permission_manager.get_user_role(admin_id)
-        if admin_role != "admin":
-            logger.error(f"User {admin_id} is not an admin")
-            return False
+        success = permission_service.set_user_role(admin_id, user_id, role, department)
         
-        return skill_permission_manager.set_user_role(user_id, role)
+        if success:
+            # 记录审计日志
+            old_role = permission_service.get_user_role(user_id)
+            audit_log_service.log_role_change(admin_id, user_id, old_role.role if old_role else "guest", role)
+        
+        return success
     
     def grant_permission(self, grantor_id: str, skill_id: str, user_id: str, permission: str) -> bool:
         """授予用户技能权限"""
-        return skill_permission_manager.grant_permission(skill_id, user_id, permission, grantor_id)
+        success = permission_service.grant_skill_permission(grantor_id, skill_id, user_id, permission)
+        
+        if success:
+            # 记录审计日志
+            audit_log_service.log_permission_grant(grantor_id, 'skill', skill_id, user_id, permission)
+        
+        return success
     
     def revoke_permission(self, revoker_id: str, skill_id: str, user_id: str, permission: str) -> bool:
         """撤销用户技能权限"""
-        return skill_permission_manager.revoke_permission(skill_id, user_id, permission, revoker_id)
+        success = permission_service.revoke_all_permissions(revoker_id, user_id)
+        
+        if success:
+            # 记录审计日志
+            audit_log_service.log_permission_revoke(revoker_id, 'skill', skill_id, user_id, permission)
+        
+        return success
     
     def check_permission(self, user_id: str, skill_id: str, permission: str) -> PermissionCheckResult:
         """检查用户是否有指定权限"""
-        return skill_permission_manager.check_permission(user_id, skill_id, permission)
+        return permission_service.check_skill_permission(user_id, skill_id, permission)
     
     def can_execute_skill(self, user_id: str, skill_id: str) -> bool:
         """检查用户是否可以执行技能"""
@@ -393,8 +427,8 @@ class SkillManager:
             return False
         
         # 管理员可以执行所有技能
-        role = skill_permission_manager.get_user_role(user_id)
-        if role == "admin":
+        user_role = permission_service.get_user_role(user_id)
+        if user_role and user_role.role == "admin":
             return True
         
         # 技能创建者可以执行
@@ -402,7 +436,12 @@ class SkillManager:
             return True
         
         # 检查是否有执行权限
-        permission = skill_permission_manager.check_permission(user_id, skill_id, "execute")
+        permission = permission_service.check_skill_permission(user_id, skill_id, "execute")
+        
+        # 记录审计日志（仅记录执行权限检查，不记录每次调用）
+        if permission.allowed:
+            audit_log_service.log_skill_execute(user_id, skill_id, skill.name)
+        
         return permission.allowed
 
 
