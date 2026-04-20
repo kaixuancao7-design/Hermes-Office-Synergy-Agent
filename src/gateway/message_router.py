@@ -2,12 +2,12 @@ from typing import Dict, Any, Optional, List
 from src.types import Message, Session, Intent
 from src.engine.intent_recognition import intent_recognizer
 from src.engine.task_planner import task_planner
-from src.engine.memory_manager import memory_manager
 from src.engine.learning_cycle import learning_cycle
 from src.engine.react_engine import react_engine
 from src.data.database import db
 from src.utils import generate_id, get_timestamp, setup_logging
 from src.config import settings
+from src.plugins import get_memory_store, get_skill_manager, get_model_router
 
 logger = setup_logging(settings.LOG_LEVEL)
 
@@ -35,8 +35,19 @@ class MessageRouter:
         
         db.save_message(message)
         
-        memory_manager.add_short_term_memory(user_id, message)
-        memory_manager.extract_user_preferences(user_id, message.content)
+        # 使用插件系统的记忆存储
+        memory_store = get_memory_store()
+        if memory_store:
+            from src.types import MemoryEntry
+            memory_entry = MemoryEntry(
+                id=generate_id(),
+                user_id=user_id,
+                type="short",
+                content=message.content,
+                timestamp=message.timestamp,
+                tags=["short_term", "message"]
+            )
+            memory_store.add_memory(user_id, memory_entry)
         
         if self._is_group_message(message):
             if not self._is_mentioned(message):
@@ -62,7 +73,20 @@ class MessageRouter:
         )
         
         db.save_message(response_message)
-        memory_manager.add_short_term_memory(user_id, response_message)
+        
+        # 使用插件系统的记忆存储
+        memory_store = get_memory_store()
+        if memory_store:
+            from src.types import MemoryEntry
+            memory_entry = MemoryEntry(
+                id=generate_id(),
+                user_id=user_id,
+                type="short",
+                content=response_message.content,
+                timestamp=response_message.timestamp,
+                tags=["short_term", "response"]
+            )
+            memory_store.add_memory(user_id, memory_entry)
         
         return response
     
@@ -97,27 +121,32 @@ class MessageRouter:
         recent_messages = db.get_recent_messages(user_id, 20)
         text_to_summarize = "\n".join(m.content for m in recent_messages)
         
-        from src.infrastructure.model_router import select_model, call_model
-        model = select_model("summarization", "simple")
-        
-        if model:
-            prompt = f"总结以下内容：\n{text_to_summarize}"
-            return call_model(model, [{"role": "user", "content": prompt}])
+        # 使用插件系统的模型路由
+        model_router = get_model_router()
+        if model_router:
+            model = model_router.select_model("summarization", "simple")
+            if model:
+                prompt = f"总结以下内容：\n{text_to_summarize}"
+                return model_router.call_model(model, [{"role": "user", "content": prompt}])
         
         return "总结功能暂时不可用"
     
     def _handle_question_answering(self, user_id: str, intent: Intent, context: str) -> str:
-        from src.data.vector_store import rag_manager
-        results = rag_manager.query(context, k=3)
+        # 使用插件系统的记忆存储进行检索
+        memory_store = get_memory_store()
+        context_text = ""
         
-        context_text = "\n".join(r.get("content", "") for r in results)
+        if memory_store:
+            results = memory_store.search_memory(user_id, context, limit=3)
+            context_text = "\n".join(r.content for r in results)
         
-        from src.infrastructure.model_router import select_model, call_model
-        model = select_model("question_answering", "medium")
-        
-        if model:
-            prompt = f"基于以下上下文回答问题：\n\n上下文：{context_text}\n\n问题：{context}"
-            return call_model(model, [{"role": "user", "content": prompt}])
+        # 使用插件系统的模型路由
+        model_router = get_model_router()
+        if model_router:
+            model = model_router.select_model("question_answering", "medium")
+            if model:
+                prompt = f"基于以下上下文回答问题：\n\n上下文：{context_text}\n\n问题：{context}"
+                return model_router.call_model(model, [{"role": "user", "content": prompt}])
         
         return "问答功能暂时不可用"
     
@@ -132,59 +161,68 @@ class MessageRouter:
         return f"任务完成！\n步骤：\n{chr(10).join(f'{i+1}. {s.description}: {s.result}' for i, s in enumerate(task.steps))}"
     
     def _handle_skill_request(self, user_id: str, intent: Intent, context: str) -> str:
-        from src.skills.skill_manager import skill_manager
+        # 使用插件系统的技能管理器
+        skill_manager = get_skill_manager()
         
-        skill = skill_manager.find_relevant_skill(context)
-        if skill:
-            return f"已找到相关技能：{skill.name}\n描述：{skill.description}"
+        if skill_manager:
+            skill = skill_manager.find_relevant_skill(context)
+            if skill:
+                return f"已找到相关技能：{skill.name}\n描述：{skill.description}"
         
         return "未找到相关技能，是否需要创建新技能？"
     
     def _handle_memory_query(self, user_id: str, intent: Intent, context: str) -> str:
-        results = memory_manager.search_long_term_memory(user_id, context)
+        # 使用插件系统的记忆存储
+        memory_store = get_memory_store()
         
-        if results:
-            return "\n\n".join(f"[{r.timestamp}] {r.content[:100]}..." for r in results[:5])
+        if memory_store:
+            results = memory_store.search_memory(user_id, context, limit=5)
+            if results:
+                return "\n\n".join(f"[{r.timestamp}] {r.content[:100]}..." for r in results)
         
         return "未找到相关记忆"
     
     def _handle_document_analysis(self, user_id: str, intent: Intent, context: str) -> str:
-        from src.infrastructure.model_router import select_model, call_model
-        model = select_model("document_analysis", "complex")
-        
-        if model:
-            prompt = f"分析以下内容：\n{context}"
-            return call_model(model, [{"role": "user", "content": prompt}])
+        # 使用插件系统的模型路由
+        model_router = get_model_router()
+        if model_router:
+            model = model_router.select_model("document_analysis", "complex")
+            if model:
+                prompt = f"分析以下内容：\n{context}"
+                return model_router.call_model(model, [{"role": "user", "content": prompt}])
         
         return "文档分析功能暂时不可用"
     
     def _handle_code_generation(self, user_id: str, intent: Intent, context: str) -> str:
-        from src.infrastructure.model_router import select_model, call_model
-        model = select_model("coding", "complex")
-        
-        if model:
-            prompt = f"生成代码：\n{context}"
-            return call_model(model, [{"role": "user", "content": prompt}])
+        # 使用插件系统的模型路由
+        model_router = get_model_router()
+        if model_router:
+            model = model_router.select_model("coding", "complex")
+            if model:
+                prompt = f"生成代码：\n{context}"
+                return model_router.call_model(model, [{"role": "user", "content": prompt}])
         
         return "代码生成功能暂时不可用"
     
     def _handle_creative_writing(self, user_id: str, intent: Intent, context: str) -> str:
-        from src.infrastructure.model_router import select_model, call_model
-        model = select_model("creative_writing", "medium")
-        
-        if model:
-            prompt = f"创作内容：\n{context}"
-            return call_model(model, [{"role": "user", "content": prompt}])
+        # 使用插件系统的模型路由
+        model_router = get_model_router()
+        if model_router:
+            model = model_router.select_model("creative_writing", "medium")
+            if model:
+                prompt = f"创作内容：\n{context}"
+                return model_router.call_model(model, [{"role": "user", "content": prompt}])
         
         return "创作功能暂时不可用"
     
     def _handle_unknown(self, user_id: str, context: str) -> str:
         try:
-            from src.infrastructure.model_router import select_model, call_model
-            model = select_model("general", "simple")
-            
-            if model:
-                return call_model(model, [{"role": "user", "content": context}])
+            # 使用插件系统的模型路由
+            model_router = get_model_router()
+            if model_router:
+                model = model_router.select_model("general", "simple")
+                if model:
+                    return model_router.call_model(model, [{"role": "user", "content": context}])
             
             return "抱歉，我无法理解您的请求"
         except Exception as e:

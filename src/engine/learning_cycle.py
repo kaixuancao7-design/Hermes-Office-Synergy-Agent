@@ -2,7 +2,7 @@ from typing import List, Dict, Any, Optional
 from src.types import Skill, SkillStep, Intent
 from src.data.database import db
 from src.utils import generate_id, get_timestamp, setup_logging
-from src.infrastructure.model_router import select_model, call_model
+from src.plugins import get_model_router, get_skill_manager
 from src.config import settings
 
 logger = setup_logging(settings.LOG_LEVEL)
@@ -60,13 +60,19 @@ class LearningCycle:
         4. Step-by-step instructions
         """
         
-        model = select_model("skill_distillation", "medium")
+        # 使用插件系统的模型路由
+        model_router = get_model_router()
+        if not model_router:
+            logger.error("Model router not available")
+            return
+        
+        model = model_router.select_model("skill_distillation", "medium")
         if not model:
             logger.error("No suitable model found for skill distillation")
             return
         
         try:
-            response = call_model(model, [{"role": "user", "content": prompt}])
+            response = model_router.call_model(model, [{"role": "user", "content": prompt}])
             self._parse_and_save_skill(response, correction["user_id"])
         except Exception as e:
             logger.error(f"Skill distillation failed: {str(e)}")
@@ -133,7 +139,13 @@ class LearningCycle:
                 updated_at=get_timestamp()
             )
             
-            db.save_skill(skill)
+            # 使用插件系统的技能管理器
+            skill_manager = get_skill_manager()
+            if skill_manager:
+                skill_manager.add_skill(skill)
+            else:
+                db.save_skill(skill)
+            
             logger.info(f"Created learned skill: {skill_name}")
     
     def suggest_skill_creation(self, user_id: str, task_description: str) -> Optional[Skill]:
@@ -151,12 +163,17 @@ class LearningCycle:
         If this is a one-time task, respond with: NOT_A_SKILL
         """
         
-        model = select_model("skill_analysis", "simple")
+        # 使用插件系统的模型路由
+        model_router = get_model_router()
+        if not model_router:
+            return None
+        
+        model = model_router.select_model("skill_analysis", "simple")
         if not model:
             return None
         
         try:
-            response = call_model(model, [{"role": "user", "content": prompt}])
+            response = model_router.call_model(model, [{"role": "user", "content": prompt}])
             
             if response.strip() == "NOT_A_SKILL":
                 return None

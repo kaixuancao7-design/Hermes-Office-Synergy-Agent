@@ -8,7 +8,7 @@ from langchain_ollama import ChatOllama
 from src.config import settings
 from src.utils import setup_logging, generate_id, get_timestamp
 from src.data.vector_store import rag_manager
-from src.tools.tool_executor import tool_executor
+from src.plugins import get_tool_executor, get_model_router
 
 logger = setup_logging(settings.LOG_LEVEL)
 
@@ -66,8 +66,14 @@ class ReActEngine:
         self.system_prompt = self._get_system_prompt()
     
     def _init_llm(self):
-        """初始化语言模型"""
+        """初始化语言模型（优先使用插件系统）"""
         try:
+            # 尝试使用插件系统的模型路由
+            model_router = get_model_router()
+            if model_router:
+                return model_router.select_model("react", "complex")
+            
+            # 降级到传统配置
             if settings.OLLAMA_HOST:
                 return ChatOllama(
                     model="qwen3.5:9b",
@@ -155,11 +161,14 @@ class ReActEngine:
             
             elif action.type == "memory_search":
                 query = action.parameters.get("query", "")
-                from src.engine.memory_manager import memory_manager
-                results = memory_manager.search_long_term_memory(
-                    state.user_id, query
-                )
-                context = "\n\n".join([str(r) for r in results])
+                # 使用插件系统的记忆存储
+                from src.plugins import get_memory_store
+                memory_store = get_memory_store()
+                if memory_store:
+                    results = memory_store.search_memory(state.user_id, query, limit=3)
+                    context = "\n\n".join([str(r) for r in results])
+                else:
+                    context = "Memory store not available"
                 return Observation(
                     action_id=action_id,
                     result=context,
@@ -169,7 +178,12 @@ class ReActEngine:
             elif action.type == "tool_executor":
                 tool_id = action.tool_id
                 params = action.parameters or {}
-                result = tool_executor.execute(tool_id, params)
+                # 使用插件系统的工具执行器
+                executor = get_tool_executor()
+                if executor:
+                    result = executor.execute(tool_id, params)
+                else:
+                    result = {"success": False, "error": "Tool executor not available"}
                 return Observation(
                     action_id=action_id,
                     result=str(result),
@@ -185,23 +199,24 @@ class ReActEngine:
             
             elif action.type == "summarize":
                 query = action.parameters.get("query", "")
-                from src.infrastructure.model_router import select_model, call_model
-                model = select_model("summarization", "simple")
-                if model:
-                    prompt = f"总结以下内容：\n{query}"
-                    result = call_model(model, [{"role": "user", "content": prompt}])
-                    return Observation(
-                        action_id=action_id,
-                        result=result,
-                        success=True
-                    )
-                else:
-                    return Observation(
-                        action_id=action_id,
-                        result="总结功能暂时不可用",
-                        success=False,
-                        error="No model available"
-                    )
+                # 使用插件系统的模型路由
+                model_router = get_model_router()
+                if model_router:
+                    model = model_router.select_model("summarization", "simple")
+                    if model:
+                        prompt = f"总结以下内容：\n{query}"
+                        result = model_router.call_model(model, [{"role": "user", "content": prompt}])
+                        return Observation(
+                            action_id=action_id,
+                            result=result,
+                            success=True
+                        )
+                return Observation(
+                    action_id=action_id,
+                    result="总结功能暂时不可用",
+                    success=False,
+                    error="No model available"
+                )
             
             else:
                 return Observation(

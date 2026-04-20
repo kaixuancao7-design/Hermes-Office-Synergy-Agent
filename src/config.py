@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     OLLAMA_HOST: str = "http://localhost:11434"
     ZHIPU_API_KEY: Optional[str] = None
     KIMI_API_KEY: Optional[str] = None
+    MOONSHOT_API_KEY: Optional[str] = None
     
     DATABASE_PATH: str = "./data/agent.db"
     VECTOR_DB_PATH: str = "./data/vectors"
@@ -20,6 +21,17 @@ class Settings(BaseSettings):
     MAX_FILE_SIZE: int = 52428800
     
     LOG_LEVEL: str = "INFO"
+    
+    # 插件配置
+    IM_ADAPTER_TYPE: str = "feishu"  # feishu, dingtalk, wecom, slack, discord
+    MODEL_ROUTER_TYPE: str = "ollama"  # ollama, openai, anthropic, zhipu, moonshot, multi
+    MEMORY_STORE_TYPE: str = "hybrid"  # chroma, simple, hybrid
+    SKILL_MANAGER_TYPE: str = "hybrid"  # database, file, hybrid
+    TOOL_EXECUTOR_TYPE: str = "sandboxed"  # basic, sandboxed
+    
+    # 沙箱配置
+    SANDBOX_ALLOWED_PATHS: Optional[str] = None
+    SANDBOX_MAX_EXECUTION_TIME: int = 30
     
     # 飞书配置
     FEISHU_APP_ID: Optional[str] = None
