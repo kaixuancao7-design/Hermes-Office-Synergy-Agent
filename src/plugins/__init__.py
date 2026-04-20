@@ -1,5 +1,4 @@
 """插件系统初始化模块"""
-import logging
 from typing import Dict, Any, Optional
 
 from src.config import settings
@@ -15,8 +14,9 @@ from src.plugins.model_routers import MODEL_ROUTER_REGISTRY
 from src.plugins.memory_stores import MEMORY_STORE_REGISTRY
 from src.plugins.skill_managers import SKILL_MANAGER_REGISTRY
 from src.plugins.tool_executors import TOOL_EXECUTOR_REGISTRY
+from src.logging_config import get_logger
 
-logger = logging.getLogger("hermes_office_agent")
+logger = get_logger("gateway")
 
 # 全局插件实例
 im_adapter: Optional[IMAdapterBase] = None

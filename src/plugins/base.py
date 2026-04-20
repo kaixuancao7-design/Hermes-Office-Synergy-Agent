@@ -63,13 +63,28 @@ class MemoryBase(ABC):
         pass
     
     @abstractmethod
+    def update_memory(self, user_id: str, memory_id: str, content: str) -> bool:
+        """更新记忆条目"""
+        pass
+    
+    @abstractmethod
     def search_memory(self, user_id: str, query: str, limit: int = 5) -> List[MemoryEntry]:
-        """搜索记忆"""
+        """搜索记忆（语义相似性检索）"""
+        pass
+    
+    @abstractmethod
+    def get_memory(self, user_id: str, memory_id: str) -> Optional[MemoryEntry]:
+        """获取单个记忆条目"""
         pass
     
     @abstractmethod
     def get_memory_by_type(self, user_id: str, memory_type: str) -> List[MemoryEntry]:
         """按类型获取记忆"""
+        pass
+    
+    @abstractmethod
+    def get_all_memories(self, user_id: str) -> List[MemoryEntry]:
+        """获取用户所有记忆"""
         pass
     
     @abstractmethod
@@ -79,12 +94,27 @@ class MemoryBase(ABC):
     
     @abstractmethod
     def clear_memory(self, user_id: str) -> bool:
-        """清空用户记忆"""
+        """清空用户所有记忆"""
+        pass
+    
+    @abstractmethod
+    def clear_memory_by_type(self, user_id: str, memory_type: str) -> bool:
+        """按类型清空用户记忆"""
+        pass
+    
+    @abstractmethod
+    def get_memory_count(self, user_id: str) -> int:
+        """获取用户记忆数量"""
         pass
     
     @abstractmethod
     def get_memory_type(self) -> str:
         """获取存储类型"""
+        pass
+    
+    @abstractmethod
+    def persist(self) -> bool:
+        """持久化存储（如果需要）"""
         pass
 
 

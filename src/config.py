@@ -25,8 +25,12 @@ class Settings(BaseSettings):
     # 插件配置
     IM_ADAPTER_TYPE: str = "feishu"  # feishu, dingtalk, wecom, slack, discord
     MODEL_ROUTER_TYPE: str = "ollama"  # ollama, openai, anthropic, zhipu, moonshot, multi
-    MEMORY_STORE_TYPE: str = "hybrid"  # chroma, simple, hybrid
+    MEMORY_STORE_TYPE: str = "chroma"  # chroma, simple, milvus, faiss, hybrid
     SKILL_MANAGER_TYPE: str = "hybrid"  # database, file, hybrid
+    
+    # Milvus配置
+    MILVUS_URI: Optional[str] = None  # 默认: http://localhost:19530
+    MILVUS_TOKEN: Optional[str] = None
     TOOL_EXECUTOR_TYPE: str = "sandboxed"  # basic, sandboxed
     
     # 沙箱配置
