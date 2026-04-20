@@ -6,11 +6,12 @@ from langchain_openai import ChatOpenAI
 from langchain_ollama import ChatOllama
 
 from src.config import settings
-from src.utils import setup_logging, generate_id, get_timestamp
+from src.utils import generate_id, get_timestamp
 from src.data.vector_store import rag_manager
 from src.plugins import get_tool_executor, get_model_router
+from src.logging_config import get_logger
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("engine")
 
 
 class Thought(BaseModel):

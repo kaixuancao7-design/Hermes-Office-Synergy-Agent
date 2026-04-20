@@ -1,11 +1,12 @@
 from typing import List, Dict, Any, Optional
 from src.types import Skill, SkillStep, Intent
 from src.data.database import db
-from src.utils import generate_id, get_timestamp, setup_logging
+from src.utils import generate_id, get_timestamp
 from src.plugins import get_model_router, get_skill_manager
 from src.config import settings
+from src.logging_config import get_logger
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("engine")
 
 
 class LearningCycle:

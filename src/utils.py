@@ -1,46 +1,16 @@
-import logging
 import os
 from datetime import datetime
 from uuid import uuid4
 
 
-_logging_initialized = False
-
-def setup_logging(log_level: str = "INFO") -> logging.Logger:
-    global _logging_initialized
-    
-    logger = logging.getLogger("hermes_office_agent")
-    logger.setLevel(log_level)
-    
-    # 使用全局标志确保只初始化一次
-    if _logging_initialized:
-        return logger
-    
-    # 双重检查：确保没有已存在的 handler
-    if logger.handlers:
-        _logging_initialized = True
-        return logger
-    
-    formatter = logging.Formatter(
-        "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    )
-    
-    # 设置控制台处理器，支持 UTF-8 编码
-    console_handler = logging.StreamHandler()
-    console_handler.setFormatter(formatter)
-    # 修复 Windows 控制台编码问题
-    if hasattr(console_handler.stream, 'encoding'):
-        console_handler.stream.reconfigure(encoding='utf-8')
-    logger.addHandler(console_handler)
-    
-    os.makedirs("logs", exist_ok=True)
-    # 文件处理器也设置为 UTF-8
-    file_handler = logging.FileHandler("logs/combined.log", encoding='utf-8')
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-    
-    _logging_initialized = True
-    return logger
+def setup_logging(log_level: str = "INFO"):
+    """
+    日志初始化函数（兼容旧接口）
+    实际日志配置已移至 src.logging_config 模块
+    """
+    from src.logging_config import setup_logging as new_setup_logging, get_logger
+    new_setup_logging(log_level=log_level)
+    return get_logger("gateway")
 
 
 def safe_log_string(text: str) -> str:

@@ -1,12 +1,12 @@
 """模型路由插件实现"""
-import logging
 from typing import Dict, Any, List, Optional
 
 from src.plugins.base import ModelRouterBase
 from src.config import settings
 from src.exceptions import ModelException
+from src.logging_config import get_logger
 
-logger = logging.getLogger("hermes_office_agent")
+logger = get_logger("model")
 
 
 class OllamaRouter(ModelRouterBase):

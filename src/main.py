@@ -4,20 +4,42 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.api.v1.endpoints import router as v1_router
 from src.config import settings
-from src.utils import setup_logging, ensure_directory
+from src.utils import ensure_directory
+from src.logging_config import setup_logging, get_logger
 from src.data.database import db
 from src.skills.skill_manager import skill_manager
 from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
 from src.gateway.feishu_websocket import feishu_websocket_service
 from src.errors import EXCEPTION_HANDLERS
+from src.middleware.logging_middleware import RequestLoggingMiddleware, ResponseLoggingMiddleware
 
-logger = setup_logging(settings.LOG_LEVEL)
+# 初始化日志系统
+setup_logging(
+    log_level=settings.LOG_LEVEL,
+    log_dir="./logs",
+    modules={
+        "api": settings.LOG_LEVEL,
+        "model": settings.LOG_LEVEL,
+        "im": settings.LOG_LEVEL,
+        "memory": settings.LOG_LEVEL,
+        "skill": settings.LOG_LEVEL,
+        "tool": settings.LOG_LEVEL,
+        "engine": settings.LOG_LEVEL,
+        "gateway": settings.LOG_LEVEL
+    }
+)
+
+logger = get_logger("gateway")
 
 app = FastAPI(title="Hermes Office Synergy Agent", version="1.0.0")
 
 # 注册异常处理器
 for exception_type, handler in EXCEPTION_HANDLERS.items():
     app.add_exception_handler(exception_type, handler)
+
+# 注册日志中间件（注意顺序：先添加的先执行）
+app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(ResponseLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

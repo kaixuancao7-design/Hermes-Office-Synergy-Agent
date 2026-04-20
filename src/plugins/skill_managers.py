@@ -1,13 +1,13 @@
 """技能管理插件实现"""
-import logging
 from typing import Dict, Any, List, Optional
 
 from src.plugins.base import SkillManagerBase
 from src.types import Skill, SkillStep
 from src.data.database import db
 from src.utils import generate_id, get_timestamp
+from src.logging_config import get_logger
 
-logger = logging.getLogger("hermes_office_agent")
+logger = get_logger("skill")
 
 
 class DatabaseSkillManager(SkillManagerBase):

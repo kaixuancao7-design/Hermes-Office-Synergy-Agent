@@ -1,12 +1,12 @@
 """工具执行插件实现"""
-import logging
 from typing import Dict, Any, List, Optional
 
 from src.plugins.base import ToolExecutorBase
 from src.config import settings
 from src.utils import generate_id, get_timestamp
+from src.logging_config import get_logger
 
-logger = logging.getLogger("hermes_office_agent")
+logger = get_logger("tool")
 
 
 class BasicToolExecutor(ToolExecutorBase):

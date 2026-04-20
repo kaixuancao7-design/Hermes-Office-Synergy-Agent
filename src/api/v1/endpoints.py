@@ -13,8 +13,10 @@ from src.exceptions import (
     ValidationException,
     IMException
 )
+from src.logging_config import get_logger
 
 router = APIRouter(prefix="/api/v1")
+logger = get_logger("api")
 
 
 @router.post("/message")
