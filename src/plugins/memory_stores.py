@@ -6,6 +6,7 @@ from src.plugins.base import MemoryBase
 from src.types import MemoryEntry
 from src.config import settings
 from src.utils import generate_id, get_timestamp
+from src.exceptions import MemoryException
 
 logger = logging.getLogger("hermes_office_agent")
 
@@ -43,9 +44,8 @@ class ChromaMemory(MemoryBase):
         try:
             collection = self.collections.get(entry.type, self.collections["long_term"])
             
-            # 如果没有嵌入向量，生成一个简单的
             if not entry.embedding:
-                entry.embedding = [0.0] * 384  # 默认嵌入维度
+                entry.embedding = [0.0] * 384
             
             collection.add(
                 ids=[entry.id],
@@ -62,7 +62,11 @@ class ChromaMemory(MemoryBase):
             return True
         except Exception as e:
             logger.error(f"添加记忆失败: {str(e)}")
-            return False
+            raise MemoryException(
+                message="添加记忆失败",
+                detail=str(e),
+                context={"user_id": user_id, "memory_type": entry.type}
+            )
     
     def search_memory(self, user_id: str, query: str, limit: int = 5) -> List[MemoryEntry]:
         """搜索记忆"""

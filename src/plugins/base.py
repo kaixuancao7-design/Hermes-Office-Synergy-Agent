@@ -2,6 +2,13 @@
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from src.types import Message, MemoryEntry, Skill
+from src.exceptions import (
+    IMException,
+    ModelException,
+    MemoryException,
+    SkillException,
+    ToolException
+)
 
 
 class IMAdapterBase(ABC):

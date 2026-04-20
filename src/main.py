@@ -9,10 +9,15 @@ from src.data.database import db
 from src.skills.skill_manager import skill_manager
 from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
 from src.gateway.feishu_websocket import feishu_websocket_service
+from src.errors import EXCEPTION_HANDLERS
 
 logger = setup_logging(settings.LOG_LEVEL)
 
 app = FastAPI(title="Hermes Office Synergy Agent", version="1.0.0")
+
+# 注册异常处理器
+for exception_type, handler in EXCEPTION_HANDLERS.items():
+    app.add_exception_handler(exception_type, handler)
 
 app.add_middleware(
     CORSMiddleware,

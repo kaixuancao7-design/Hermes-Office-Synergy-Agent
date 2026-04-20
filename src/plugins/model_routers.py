@@ -4,6 +4,7 @@ from typing import Dict, Any, List, Optional
 
 from src.plugins.base import ModelRouterBase
 from src.config import settings
+from src.exceptions import ModelException
 
 logger = logging.getLogger("hermes_office_agent")
 
@@ -36,7 +37,15 @@ class OllamaRouter(ModelRouterBase):
             return self.clients[model_name]
         except Exception as e:
             logger.error(f"Ollama模型选择失败: {str(e)}")
-            return None
+            raise ModelException(
+                message="Ollama模型选择失败",
+                detail=str(e),
+                context={
+                    "task_type": task_type,
+                    "complexity": complexity,
+                    "model_name": self.models.get(complexity)
+                }
+            )
     
     def call_model(self, model: Any, messages: List[Dict[str, str]]) -> str:
         """调用Ollama模型"""
@@ -45,7 +54,11 @@ class OllamaRouter(ModelRouterBase):
             return response.content
         except Exception as e:
             logger.error(f"Ollama模型调用失败: {str(e)}")
-            return ""
+            raise ModelException(
+                message="Ollama模型调用失败",
+                detail=str(e),
+                context={"model_type": self.get_model_type()}
+            )
     
     def get_model_type(self) -> str:
         return "ollama"
