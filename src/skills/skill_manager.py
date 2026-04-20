@@ -1,9 +1,10 @@
 from typing import List, Dict, Any, Optional
-from src.types import Skill, SkillStep, UserProfile
+from src.types import Skill, SkillStep, UserProfile, SkillVersion, SkillChangeLog, PermissionCheckResult
 from src.data.database import db
 from src.utils import generate_id, get_timestamp, setup_logging
 from src.engine.memory_manager import memory_manager
 from src.config import settings
+from src.services.skill_management import skill_version_manager, skill_permission_manager
 
 logger = setup_logging(settings.LOG_LEVEL)
 
@@ -45,8 +46,10 @@ class SkillManager:
                     )
                 ],
                 metadata={},
+                version="1.0.0",
                 created_at=get_timestamp(),
-                updated_at=get_timestamp()
+                updated_at=get_timestamp(),
+                created_by="system"
             ),
             Skill(
                 id=generate_id(),
@@ -74,8 +77,10 @@ class SkillManager:
                     )
                 ],
                 metadata={},
+                version="1.0.0",
                 created_at=get_timestamp(),
-                updated_at=get_timestamp()
+                updated_at=get_timestamp(),
+                created_by="system"
             ),
             Skill(
                 id=generate_id(),
@@ -103,8 +108,10 @@ class SkillManager:
                     )
                 ],
                 metadata={},
+                version="1.0.0",
                 created_at=get_timestamp(),
-                updated_at=get_timestamp()
+                updated_at=get_timestamp(),
+                created_by="system"
             ),
             Skill(
                 id=generate_id(),
@@ -132,8 +139,10 @@ class SkillManager:
                     )
                 ],
                 metadata={},
+                version="1.0.0",
                 created_at=get_timestamp(),
-                updated_at=get_timestamp()
+                updated_at=get_timestamp(),
+                created_by="system"
             ),
             Skill(
                 id=generate_id(),
@@ -161,22 +170,56 @@ class SkillManager:
                     )
                 ],
                 metadata={},
+                version="1.0.0",
                 created_at=get_timestamp(),
-                updated_at=get_timestamp()
+                updated_at=get_timestamp(),
+                created_by="system"
             )
         ]
         
         for skill in preset_skills:
             db.save_skill(skill)
+            # 保存初始版本
+            skill_version_manager.save_version(skill, "create", "初始版本")
         logger.info("Initialized preset skills")
     
     def get_skill(self, skill_id: str) -> Optional[Skill]:
         return db.get_skill(skill_id)
     
-    def get_all_skills(self) -> List[Skill]:
-        return db.get_all_skills()
+    def get_all_skills(self, user_id: Optional[str] = None) -> List[Skill]:
+        """获取用户有权限访问的所有技能"""
+        all_skills = db.get_all_skills()
+        
+        if not user_id:
+            return all_skills
+        
+        # 管理员可以访问所有技能
+        role = skill_permission_manager.get_user_role(user_id)
+        if role == "admin":
+            return all_skills
+        
+        # 普通用户只能访问自己创建的或被授权的技能
+        result = []
+        for skill in all_skills:
+            # 检查是否是自己创建的
+            if skill.created_by == user_id:
+                result.append(skill)
+                continue
+            
+            # 检查是否有访问权限
+            if skill_permission_manager.has_any_permission(user_id, skill.id):
+                result.append(skill)
+        
+        return result
     
     def create_custom_skill(self, user_id: str, name: str, description: str, steps: List[Dict[str, Any]]) -> Skill:
+        """创建自定义技能（需要检查权限）"""
+        # 检查用户是否有权限创建技能
+        role = skill_permission_manager.get_user_role(user_id)
+        if role not in ["admin", "user"]:
+            logger.error(f"User {user_id} does not have permission to create skills")
+            raise PermissionError("没有创建技能的权限")
+        
         skill_steps = [
             SkillStep(
                 id=generate_id(),
@@ -195,16 +238,84 @@ class SkillManager:
             trigger_patterns=[name],
             steps=skill_steps,
             metadata={"user_id": user_id},
+            version="1.0.0",
             created_at=get_timestamp(),
-            updated_at=get_timestamp()
+            updated_at=get_timestamp(),
+            created_by=user_id
         )
         
         db.save_skill(skill)
-        logger.info(f"Created custom skill: {name}")
+        # 保存初始版本
+        skill_version_manager.save_version(skill, "create", "初始版本")
+        logger.info(f"Created custom skill: {name} by user {user_id}")
         return skill
     
-    def find_relevant_skill(self, query: str) -> Optional[Skill]:
-        skills = db.get_all_skills()
+    def update_skill(self, user_id: str, skill_id: str, updates: Dict[str, Any]) -> Optional[Skill]:
+        """更新技能（需要检查权限）"""
+        skill = db.get_skill(skill_id)
+        if not skill:
+            return None
+        
+        # 检查权限
+        permission = skill_permission_manager.check_permission(user_id, skill_id, "edit")
+        if not permission.allowed:
+            logger.error(f"User {user_id} does not have permission to edit skill {skill_id}")
+            raise PermissionError("没有编辑技能的权限")
+        
+        # 更新字段
+        if "name" in updates:
+            skill.name = updates["name"]
+        if "description" in updates:
+            skill.description = updates["description"]
+        if "trigger_patterns" in updates:
+            skill.trigger_patterns = updates["trigger_patterns"]
+        if "steps" in updates:
+            skill.steps = [SkillStep(**s) for s in updates["steps"]]
+        if "metadata" in updates:
+            skill.metadata.update(updates["metadata"])
+        
+        # 递增版本号
+        skill.version = self._increment_version(skill.version)
+        skill.updated_at = get_timestamp()
+        
+        db.save_skill(skill)
+        # 保存新版本
+        change_note = updates.get("change_note", "技能更新")
+        skill_version_manager.save_version(skill, "update", change_note)
+        logger.info(f"Updated skill: {skill_id} v{skill.version} by user {user_id}")
+        return skill
+    
+    def delete_skill(self, user_id: str, skill_id: str) -> bool:
+        """删除技能（需要检查权限）"""
+        skill = db.get_skill(skill_id)
+        if not skill:
+            return False
+        
+        # 检查权限
+        permission = skill_permission_manager.check_permission(user_id, skill_id, "delete")
+        if not permission.allowed:
+            logger.error(f"User {user_id} does not have permission to delete skill {skill_id}")
+            raise PermissionError("没有删除技能的权限")
+        
+        # 记录删除日志
+        skill_version_manager._log_change(skill_id, skill.version, "delete", "技能已删除", user_id)
+        
+        db.delete_skill(skill_id)
+        logger.info(f"Deleted skill: {skill_id} by user {user_id}")
+        return True
+    
+    def _increment_version(self, current_version: str) -> str:
+        """递增版本号"""
+        parts = current_version.split('.')
+        if len(parts) == 3:
+            major, minor, patch = parts
+            patch = str(int(patch) + 1)
+            return f"{major}.{minor}.{patch}"
+        return f"{current_version}.1"
+    
+    def find_relevant_skill(self, query: str, user_id: Optional[str] = None) -> Optional[Skill]:
+        """查找用户有权限访问的相关技能"""
+        skills = self.get_all_skills(user_id)
         
         for skill in skills:
             for pattern in skill.trigger_patterns:
@@ -222,6 +333,77 @@ class SkillManager:
                     step.parameters["instruction"] += f" (风格: {profile.writing_style})"
         
         return skill
+    
+    # ==================== 版本管理 ====================
+    
+    def get_skill_versions(self, skill_id: str) -> List[SkillVersion]:
+        """获取技能的所有版本"""
+        return skill_version_manager.get_versions(skill_id)
+    
+    def get_skill_version(self, skill_id: str, version: str) -> Optional[SkillVersion]:
+        """获取指定版本的技能"""
+        return skill_version_manager.get_version(skill_id, version)
+    
+    def rollback_to_version(self, user_id: str, skill_id: str, target_version: str) -> Optional[Skill]:
+        """回滚到指定版本（需要检查权限）"""
+        # 检查权限
+        permission = skill_permission_manager.check_permission(user_id, skill_id, "edit")
+        if not permission.allowed:
+            logger.error(f"User {user_id} does not have permission to rollback skill {skill_id}")
+            raise PermissionError("没有回滚技能的权限")
+        
+        rolled_back = skill_version_manager.rollback(skill_id, target_version, user_id)
+        if rolled_back:
+            db.save_skill(rolled_back)
+            logger.info(f"Skill {skill_id} rolled back to version {target_version} by user {user_id}")
+        
+        return rolled_back
+    
+    def get_skill_change_logs(self, skill_id: str) -> List[SkillChangeLog]:
+        """获取技能的修改日志"""
+        return skill_version_manager.get_change_logs(skill_id)
+    
+    # ==================== 权限管理 ====================
+    
+    def set_user_role(self, admin_id: str, user_id: str, role: str) -> bool:
+        """设置用户角色（需要管理员权限）"""
+        admin_role = skill_permission_manager.get_user_role(admin_id)
+        if admin_role != "admin":
+            logger.error(f"User {admin_id} is not an admin")
+            return False
+        
+        return skill_permission_manager.set_user_role(user_id, role)
+    
+    def grant_permission(self, grantor_id: str, skill_id: str, user_id: str, permission: str) -> bool:
+        """授予用户技能权限"""
+        return skill_permission_manager.grant_permission(skill_id, user_id, permission, grantor_id)
+    
+    def revoke_permission(self, revoker_id: str, skill_id: str, user_id: str, permission: str) -> bool:
+        """撤销用户技能权限"""
+        return skill_permission_manager.revoke_permission(skill_id, user_id, permission, revoker_id)
+    
+    def check_permission(self, user_id: str, skill_id: str, permission: str) -> PermissionCheckResult:
+        """检查用户是否有指定权限"""
+        return skill_permission_manager.check_permission(user_id, skill_id, permission)
+    
+    def can_execute_skill(self, user_id: str, skill_id: str) -> bool:
+        """检查用户是否可以执行技能"""
+        skill = db.get_skill(skill_id)
+        if not skill:
+            return False
+        
+        # 管理员可以执行所有技能
+        role = skill_permission_manager.get_user_role(user_id)
+        if role == "admin":
+            return True
+        
+        # 技能创建者可以执行
+        if skill.created_by == user_id:
+            return True
+        
+        # 检查是否有执行权限
+        permission = skill_permission_manager.check_permission(user_id, skill_id, "execute")
+        return permission.allowed
 
 
 skill_manager = SkillManager()
