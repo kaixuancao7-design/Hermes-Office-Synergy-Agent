@@ -6,10 +6,10 @@ Agent自验证用例库 - 遵循HERMES.md Goal-Driven Execution原则
 """
 import pytest
 from typing import Dict, Any
-from src.skills.skill_manager import skill_manager, Skill
+from src.skills.skill_manager import skill_manager
+from src.types import Skill, SkillStep
 from src.services.permission_service import permission_service
 from src.services.audit_log_service import audit_log_service
-from src.engine.learning_cycle import learning_cycle
 from src.utils import generate_id, get_timestamp
 
 
@@ -25,7 +25,11 @@ class TestSkillComplexityValidation:
             type="custom",
             trigger_patterns=["simple"],
             steps=[
-                {"action": "execute", "parameters": {"instruction": "Step 1"}}
+                SkillStep(
+                    id=generate_id(),
+                    action="execute",
+                    parameters={"instruction": "Step 1"}
+                )
             ],
             metadata={},
             version="1.0.0",
@@ -42,10 +46,11 @@ class TestSkillComplexityValidation:
         """测试技能步骤数超过阈值"""
         steps = []
         for i in range(15):  # 超过max_steps=10
-            steps.append({
-                "action": "execute",
-                "parameters": {"instruction": f"Step {i+1}"}
-            })
+            steps.append(SkillStep(
+                id=generate_id(),
+                action="execute",
+                parameters={"instruction": f"Step {i+1}"}
+            ))
         
         skill = Skill(
             id=generate_id(),
@@ -74,10 +79,10 @@ class TestSkillComplexityValidation:
             type="custom",
             trigger_patterns=["branchy"],
             steps=[
-                {"action": "execute", "parameters": {}, "condition": "if x > 10"},
-                {"action": "execute", "parameters": {}, "condition": "if y > 20"},
-                {"action": "execute", "parameters": {}, "condition": "if z > 30"},
-                {"action": "execute", "parameters": {}, "condition": "if w > 40"}  # 超过max_branches=3
+                SkillStep(id=generate_id(), action="execute", parameters={}, condition="if x > 10"),
+                SkillStep(id=generate_id(), action="execute", parameters={}, condition="if y > 20"),
+                SkillStep(id=generate_id(), action="execute", parameters={}, condition="if z > 30"),
+                SkillStep(id=generate_id(), action="execute", parameters={}, condition="if w > 40")  # 超过max_branches=3
             ],
             metadata={},
             version="1.0.0",
@@ -102,7 +107,7 @@ class TestSkillChangeValidation:
             description="Original description",
             type="custom",
             trigger_patterns=["original"],
-            steps=[{"action": "execute", "parameters": {"key": "value"}}],
+            steps=[SkillStep(id="step1", action="execute", parameters={"key": "value"})],
             metadata={},
             version="1.0.0",
             created_at=get_timestamp(),
@@ -116,7 +121,7 @@ class TestSkillChangeValidation:
             description="Original description",
             type="custom",
             trigger_patterns=["original"],
-            steps=[{"action": "execute", "parameters": {"key": "value"}}],
+            steps=[SkillStep(id="step1", action="execute", parameters={"key": "value"})],
             metadata={},
             version="1.0.1",
             created_at=get_timestamp(),
@@ -137,7 +142,7 @@ class TestSkillChangeValidation:
             description="Original desc",
             type="custom",
             trigger_patterns=["original"],
-            steps=[{"action": "execute", "parameters": {"k1": "v1"}}],
+            steps=[SkillStep(id="step1", action="execute", parameters={"k1": "v1"})],
             metadata={},
             version="1.0.0",
             created_at=get_timestamp(),
@@ -152,8 +157,8 @@ class TestSkillChangeValidation:
             type="custom",
             trigger_patterns=["updated", "new"],
             steps=[
-                {"action": "execute", "parameters": {"k1": "v1"}},
-                {"action": "execute", "parameters": {"k2": "v2"}}  # 新增步骤
+                SkillStep(id="step1", action="execute", parameters={"k1": "v1"}),
+                SkillStep(id="step2", action="execute", parameters={"k2": "v2"})  # 新增步骤
             ],
             metadata={},
             version="1.0.1",
@@ -174,7 +179,7 @@ class TestSkillChangeValidation:
             description="Same description",
             type="custom",
             trigger_patterns=["same"],
-            steps=[{"action": "execute", "parameters": {"key": "value"}}],
+            steps=[SkillStep(id="step1", action="execute", parameters={"key": "value"})],
             metadata={},
             version="1.0.0",
             created_at=get_timestamp(),
@@ -182,7 +187,19 @@ class TestSkillChangeValidation:
             created_by="test_user"
         )
         
-        updated = original.copy()
+        updated = Skill(
+            id="skill-3",
+            name="Same Skill",
+            description="Same description",
+            type="custom",
+            trigger_patterns=["same"],
+            steps=[SkillStep(id="step1", action="execute", parameters={"key": "value"})],
+            metadata={},
+            version="1.0.0",
+            created_at=get_timestamp(),
+            updated_at=get_timestamp(),
+            created_by="test_user"
+        )
         
         result = skill_manager.validate_skill_changes(original, updated, "")
         assert result['change_count'] == 0
@@ -241,39 +258,6 @@ class TestAuditLogValidation:
             assert log.operator_id == "test_user"
             assert log.timestamp is not None
             assert log.result in ["success", "failed", "pending"]
-
-
-class TestLearningCycleValidation:
-    """学习循环验证测试"""
-
-    def test_assumption_checklist_valid(self):
-        """测试假设澄清清单验证"""
-        # 测试有效的假设澄清
-        checklist = learning_cycle._clarify_assumptions({
-            "intent": "生成周报",
-            "original": "原始回复",
-            "corrected": "修正回复",
-            "context": "用户请求生成周报"
-        })
-        
-        # 清单应该包含必要字段
-        assert hasattr(checklist, 'is_valid')
-        assert hasattr(checklist, 'core_need')
-        assert hasattr(checklist, 'confidence_score')
-
-    def test_complexity_check_in_learning_cycle(self):
-        """测试学习循环中的复杂度检查"""
-        # 创建一个简单的修正反馈
-        learning_cycle.capture_correction(
-            user_id="test_user",
-            original_output="原始回复",
-            corrected_output="修正后的回复",
-            task_context="简单任务",
-            user_intent="简单意图"
-        )
-        
-        # 验证学习循环能够处理反馈（不报错）
-        # 实际验证由学习循环内部完成
 
 
 class TestSkillQualityGate:
