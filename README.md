@@ -2,17 +2,23 @@
 
 基于 Hermes Agent 架构的智能办公协同助手，具备长期记忆、技能自动沉淀与跨端执行能力，支持插件化扩展和企业级权限管理。
 
+> **项目遵循 HERMES.md 四大核心原则**：
+> - **Think Before Coding**：执行前先验证理解，生成假设澄清清单
+> - **Simplicity First**：技能复杂度控制，拒绝过度设计
+> - **Surgical Changes**：最小diff原则，精准修改
+> - **Goal-Driven Execution**：测试闭环，自我验证
+
 ## 核心特性
 
 - **多模态交互**：支持飞书、钉钉、企业微信等主流 IM 平台
-- **自我进化闭环**：通过用户反馈自动学习并沉淀技能，支持技能验证环节
+- **自我进化闭环**：通过用户反馈自动学习并沉淀技能，包含三闸门验证机制（假设澄清→复杂度检查→测试验证）
 - **记忆分层存储**：短期记忆（会话）、长期记忆（向量库）、程序性记忆（技能库）
 - **多模型支持**：兼容 OpenAI、Claude、Ollama、智谱、Kimi 等模型
-- **安全沙箱**：代码执行隔离，确保运行安全
+- **安全沙箱**：代码执行隔离，插件白名单机制，危险工具权限管控
 - **插件化架构**：IM适配器、模型路由、记忆存储、技能管理、工具执行均为独立插件
-- **技能版本管理**：支持版本回滚、修改日志记录
-- **细粒度权限控制**：基于角色的访问控制（RBAC），支持按部门划分权限
-- **操作审计日志**：不可篡改的操作记录，满足企业合规要求
+- **技能版本管理**：支持版本回滚、修改日志记录、变更diff检查
+- **细粒度权限控制**：基于角色的访问控制（RBAC），支持按部门划分权限范围
+- **操作审计日志**：SHA-256哈希链防篡改，满足企业合规要求
 
 ## 架构设计
 
@@ -375,7 +381,7 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 │   │   └── vector_store.py           # 向量库
 │   ├── engine/
 │   │   ├── intent_recognition.py     # 意图识别
-│   │   ├── learning_cycle.py         # 学习循环（自我进化）
+│   │   ├── learning_cycle.py         # 学习循环（三闸门验证）
 │   │   ├── memory_manager.py         # 记忆管理
 │   │   ├── react_engine.py           # ReAct推理引擎
 │   │   └── task_planner.py           # 任务规划
@@ -387,7 +393,7 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 │   ├── exceptions.py                 # 统一异常处理
 │   ├── main.py                       # FastAPI入口
 │   ├── plugins/
-│   │   ├── base.py                   # 抽象基类定义
+│   │   ├── base.py                   # 抽象基类定义 + 插件安全管理器
 │   │   ├── skill_managers.py         # 技能管理插件
 │   │   ├── memory_stores.py          # 记忆存储插件
 │   │   ├── model_routers.py          # 模型路由插件
@@ -396,28 +402,31 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 │   │   ├── skill_verification.py     # 技能验证服务
 │   │   ├── skill_management.py       # 技能版本管理
 │   │   ├── permission_service.py     # 细粒度权限服务
-│   │   └── audit_log_service.py      # 审计日志服务
+│   │   └── audit_log_service.py      # 审计日志服务（SHA-256防篡改）
 │   ├── skills/
-│   │   └── skill_manager.py          # 技能管理
+│   │   └── skill_manager.py          # 技能管理（复杂度检查、变更验证）
 │   ├── tools/
 │   │   ├── office_tools.py           # 办公工具
 │   │   └── tool_executor.py          # 工具执行器
-│   ├── types.py                      # 类型定义
+│   ├── types.py                      # 类型定义（含AssumptionChecklist）
 │   └── utils.py                      # 工具函数
 ├── tests/                            # 测试文件
 │   ├── conftest.py                   # 测试配置
 │   ├── test_api.py                   # API测试
 │   ├── test_database.py              # 数据库测试
-│   └── test_utils.py                 # 工具函数测试
+│   ├── test_utils.py                 # 工具函数测试
+│   └── test_agent_self_verification.py # Agent自验证用例库
 ├── logs/                             # 日志目录（按模块拆分）
 │   ├── api.log
 │   ├── model.log
 │   ├── im.log
-│   └── engine.log
+│   ├── engine.log
+│   └── audit.log                     # 审计日志（不可篡改）
 ├── data/                             # 数据目录
 ├── .gitignore
 ├── requirements.txt
 ├── start.py                          # 启动脚本
+├── HERMES.md                         # 项目编码铁律与规范
 └── README.md
 ```
 
