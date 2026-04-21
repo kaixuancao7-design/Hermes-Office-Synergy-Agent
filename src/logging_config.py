@@ -21,35 +21,42 @@ class RequestIDFilter(logging.Filter):
 
 
 class CustomFormatter(logging.Formatter):
-    """自定义日志格式器"""
+    """自定义日志格式器 - 线程安全版本"""
     
     DEFAULT_FORMAT = (
-        "%(asctime)s | %(levelname)s | %(request_id)s | %(user_id)s | "
+        "%(asctime)s.%(msecs)03d | %(levelname)s | %(request_id)s | %(user_id)s | "
         "%(name)s:%(lineno)d | %(message)s"
     )
     
     DEBUG_FORMAT = (
-        "%(asctime)s | %(levelname)s | %(request_id)s | %(user_id)s | "
+        "%(asctime)s.%(msecs)03d | %(levelname)s | %(request_id)s | %(user_id)s | "
         "%(name)s:%(lineno)d | %(funcName)s | %(message)s"
     )
     
     ERROR_FORMAT = (
-        "%(asctime)s | %(levelname)s | %(request_id)s | %(user_id)s | "
-        "%(name)s:%(lineno)d | %(funcName)s | %(message)s\n%(exc_info)s"
+        "%(asctime)s.%(msecs)03d | %(levelname)s | %(request_id)s | %(user_id)s | "
+        "%(name)s:%(lineno)d | %(funcName)s | %(message)s\n%(exc_text)s"
     )
     
     def format(self, record: logging.LogRecord) -> str:
+        """线程安全的格式化方法"""
+        # 使用局部变量存储格式，避免线程安全问题
         if record.levelno == logging.DEBUG:
-            self._style._fmt = self.DEBUG_FORMAT
+            fmt = self.DEBUG_FORMAT
         elif record.levelno >= logging.ERROR:
-            self._style._fmt = self.ERROR_FORMAT
+            fmt = self.ERROR_FORMAT
         else:
-            self._style._fmt = self.DEFAULT_FORMAT
+            fmt = self.DEFAULT_FORMAT
         
-        if record.exc_info:
-            record.exc_info = self.formatException(record.exc_info)
+        # 确保 exc_text 默认为空字符串
+        if not hasattr(record, 'exc_text') or record.exc_text is None:
+            record.exc_text = ""
         
-        return super().format(record)
+        # 创建临时格式器避免修改共享状态
+        # 使用 %msecs 获取毫秒，避免使用不支持的 %f
+        # logging.Formatter 会自动处理 exc_info -> exc_text
+        formatter = logging.Formatter(fmt, datefmt="%Y-%m-%d %H:%M:%S")
+        return formatter.format(record)
 
 
 def setup_logging(
@@ -79,18 +86,16 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, log_level.upper()))
     
-    # 清除默认处理器
+    # 清除默认处理器（避免重复输出）
     root_logger.handlers.clear()
     
     # 创建请求ID过滤器
     request_id_filter = RequestIDFilter()
     
-    # 创建自定义格式器
-    formatter = CustomFormatter(
-        datefmt="%Y-%m-%d %H:%M:%S.%f"
-    )
+    # 创建自定义格式器（使用毫秒格式，避免 %f 问题）
+    formatter = CustomFormatter()
     
-    # 创建控制台处理器
+    # 创建控制台处理器（根日志器统一管理控制台输出）
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.DEBUG)
     console_handler.setFormatter(formatter)
@@ -121,7 +126,7 @@ def setup_logging(
     error_file_handler.addFilter(request_id_filter)
     root_logger.addHandler(error_file_handler)
     
-    # 为各个模块创建独立的日志文件
+    # 为各个模块创建独立的日志文件（仅文件输出，控制台由根日志器统一管理）
     module_configs = modules or {
         "api": "INFO",
         "model": "INFO",
@@ -149,13 +154,6 @@ def setup_logging(
         module_file_handler.setFormatter(formatter)
         module_file_handler.addFilter(request_id_filter)
         module_logger.addHandler(module_file_handler)
-        
-        # 添加控制台输出
-        module_console_handler = logging.StreamHandler()
-        module_console_handler.setLevel(logging.DEBUG)
-        module_console_handler.setFormatter(formatter)
-        module_console_handler.addFilter(request_id_filter)
-        module_logger.addHandler(module_console_handler)
     
     return root_logger
 
