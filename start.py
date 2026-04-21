@@ -34,7 +34,8 @@ def main():
         "src.main:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=True
+        reload=True,
+        reload_excludes=["logs", "data", "workspace", "output", "__pycache__", ".git"]
     )
 
 
