@@ -14,24 +14,39 @@ logger = setup_logging(settings.LOG_LEVEL)
 
 class MessageRouter:
     def __init__(self):
-        self.sessions: Dict[str, Session] = {}
+        self.sessions: Dict[str, Dict[str, Session]] = {}  # user_id -> group_id -> Session
         self.use_react_mode = True  # 启用 ReAct 模式
     
     def route(self, message: Message) -> str:
         user_id = message.user_id
         
+        # 从metadata获取分组信息
+        metadata = message.metadata or {}
+        group_id = metadata.get("group_id", "default")
+        group_name = metadata.get("group_name", "默认会话")
+        tags = metadata.get("tags", [])
+        
+        # 初始化用户会话字典
         if user_id not in self.sessions:
-            self.sessions[user_id] = Session(
+            self.sessions[user_id] = {}
+        
+        # 创建或获取会话
+        if group_id not in self.sessions[user_id]:
+            self.sessions[user_id][group_id] = Session(
                 id=generate_id(),
                 user_id=user_id,
+                group_id=group_id,
+                group_name=group_name,
                 context=[],
                 created_at=get_timestamp(),
-                last_active_at=get_timestamp()
+                last_active_at=get_timestamp(),
+                tags=tags
             )
         
-        session = self.sessions[user_id]
+        session = self.sessions[user_id][group_id]
         session.context.append(message)
         session.last_active_at = get_timestamp()
+        session.group_name = group_name  # 更新分组名称
         
         db.save_message(message)
         
@@ -45,7 +60,9 @@ class MessageRouter:
                 type="short",
                 content=message.content,
                 timestamp=message.timestamp,
-                tags=["short_term", "message"]
+                tags=["short_term", "message", group_id],
+                group_id=group_id,
+                group_name=group_name
             )
             memory_store.add_memory(user_id, memory_entry)
         
@@ -84,7 +101,9 @@ class MessageRouter:
                 type="short",
                 content=response_message.content,
                 timestamp=response_message.timestamp,
-                tags=["short_term", "response"]
+                tags=["short_term", "response", group_id],
+                group_id=group_id,
+                group_name=group_name
             )
             memory_store.add_memory(user_id, memory_entry)
         

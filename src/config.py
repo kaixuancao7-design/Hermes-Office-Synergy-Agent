@@ -25,8 +25,15 @@ class Settings(BaseSettings):
     # 插件配置
     IM_ADAPTER_TYPE: str = "feishu"  # feishu, dingtalk, wecom, slack, discord
     MODEL_ROUTER_TYPE: str = "ollama"  # ollama, openai, anthropic, zhipu, moonshot, multi
-    MEMORY_STORE_TYPE: str = "chroma"  # chroma, simple, milvus, faiss, hybrid
+    MEMORY_STORE_TYPE: str = "redis_hybrid"  # chroma, simple, milvus, faiss, hybrid, redis_hybrid
     SKILL_MANAGER_TYPE: str = "hybrid"  # database, file, hybrid
+    
+    # Redis配置
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: Optional[str] = None
+    REDIS_PREFIX: str = "hermes:"
     
     # Milvus配置
     MILVUS_URI: Optional[str] = None  # 默认: http://localhost:19530

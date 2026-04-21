@@ -229,6 +229,8 @@ class MemoryEntry(BaseModel):
     embedding: Optional[List[float]] = None
     timestamp: int
     tags: List[str]
+    group_id: str = "default"  # 会话分组ID
+    group_name: str = "默认会话"  # 分组名称
 
 
 class TaskStep(BaseModel):
@@ -273,9 +275,12 @@ class ModelRoute(BaseModel):
 class Session(BaseModel):
     id: str
     user_id: str
+    group_id: str = "default"  # 会话分组ID
+    group_name: str = "默认会话"  # 分组名称
     context: List[Message]
     created_at: int
     last_active_at: int
+    tags: List[str] = []  # 场景标签
 
 
 class IMAdapterConfig(BaseModel):

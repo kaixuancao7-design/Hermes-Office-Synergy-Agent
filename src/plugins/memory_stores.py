@@ -913,11 +913,509 @@ class HybridMemory(MemoryBase):
         return self.long_term.persist()
 
 
+class RedisHybridMemory(MemoryBase):
+    """Redis + 向量库混合记忆存储
+    
+    架构设计：
+    - Redis层：存储短期会话窗口（最近N条消息），支持会话分组
+    - 向量库层：存储长期记忆和关键信息，支持语义检索
+    - 自动提炼：当会话窗口超过阈值时，自动提炼关键信息
+    
+    Redis Key 设计：
+    - {prefix}session:{user_id}:{group_id}:messages -> List[Message]
+    - {prefix}session:{user_id}:{group_id}:metadata -> Hash
+    - {prefix}user:{user_id}:groups -> Set[group_id]
+    """
+    
+    def __init__(self):
+        self.redis_client = None
+        self.vector_store = None
+        self.WINDOW_SIZE = 50  # 会话窗口大小
+        self.MIGRATION_THRESHOLD = 100  # 迁移阈值
+        self.SUMMARY_INTERVAL = 20  # 每20条消息生成一次摘要
+        self._initialize()
+    
+    def _initialize(self):
+        try:
+            import redis
+            from src.config import settings
+            
+            # 初始化Redis客户端
+            self.redis_client = redis.Redis(
+                host=settings.REDIS_HOST,
+                port=settings.REDIS_PORT,
+                db=settings.REDIS_DB,
+                password=settings.REDIS_PASSWORD,
+                decode_responses=False  # 保持二进制模式用于JSON序列化
+            )
+            
+            # 测试连接
+            self.redis_client.ping()
+            
+            # 初始化向量库
+            self.vector_store = ChromaMemory()
+            
+            logger.info("RedisHybridMemory初始化成功")
+        except ImportError:
+            logger.warning("redis库未安装，将使用SimpleMemory作为备选")
+            self.redis_client = None
+            self.vector_store = ChromaMemory()
+        except Exception as e:
+            logger.error(f"RedisHybridMemory初始化失败: {str(e)}")
+            self.redis_client = None
+            self.vector_store = ChromaMemory()
+    
+    def _get_session_key(self, user_id: str, group_id: str = "default") -> str:
+        """生成会话消息Key"""
+        from src.config import settings
+        return f"{settings.REDIS_PREFIX}session:{user_id}:{group_id}:messages".encode()
+    
+    def _get_group_key(self, user_id: str) -> str:
+        """生成用户分组Key"""
+        from src.config import settings
+        return f"{settings.REDIS_PREFIX}user:{user_id}:groups".encode()
+    
+    def _get_metadata_key(self, user_id: str, group_id: str) -> str:
+        """生成会话元数据Key"""
+        from src.config import settings
+        return f"{settings.REDIS_PREFIX}session:{user_id}:{group_id}:metadata".encode()
+    
+    def _extract_key_information(self, messages: list) -> dict:
+        """从消息列表中提炼关键信息"""
+        from src.infrastructure.model_router import select_model, call_model
+        
+        if not messages:
+            return {"summary": "", "entities": [], "conclusions": [], "todos": []}
+        
+        # 合并消息内容
+        content = "\n".join([m.get("content", "") for m in messages])
+        
+        try:
+            model = select_model("summarization", "simple")
+            if model:
+                prompt = f"""
+                从以下对话中提取关键信息：
+                
+                {content}
+                
+                请输出JSON格式：
+                {{
+                    "summary": "对话摘要（不超过100字）",
+                    "entities": ["实体1", "实体2"],
+                    "conclusions": ["结论1", "结论2"],
+                    "todos": ["待办1", "待办2"]
+                }}
+                """
+                response = call_model(model, [{"role": "user", "content": prompt}])
+                import json
+                return json.loads(response)
+        except Exception as e:
+            logger.error(f"关键信息提炼失败: {str(e)}")
+        
+        # 降级方案：简单摘要
+        return {
+            "summary": content[:200] + "..." if len(content) > 200 else content,
+            "entities": [],
+            "conclusions": [],
+            "todos": []
+        }
+    
+    def add_memory(self, user_id: str, entry: MemoryEntry) -> bool:
+        if not self.redis_client:
+            return self.vector_store.add_memory(user_id, entry)
+        
+        try:
+            # 获取或设置分组ID
+            group_id = entry.group_id if hasattr(entry, 'group_id') else "default"
+            group_name = entry.group_name if hasattr(entry, 'group_name') else "默认会话"
+            
+            session_key = self._get_session_key(user_id, group_id)
+            group_key = self._get_group_key(user_id)
+            metadata_key = self._get_metadata_key(user_id, group_id)
+            
+            # 添加到Redis会话窗口
+            import json
+            entry_dict = entry.model_dump()
+            self.redis_client.rpush(session_key, json.dumps(entry_dict).encode())
+            
+            # 更新分组集合
+            self.redis_client.sadd(group_key, group_id.encode())
+            
+            # 更新会话元数据
+            self.redis_client.hset(metadata_key, mapping={
+                b"group_id": group_id.encode(),
+                b"group_name": group_name.encode(),
+                b"last_active_at": str(entry.timestamp).encode(),
+                b"user_id": user_id.encode()
+            })
+            
+            # 检查是否需要迁移和生成摘要
+            count = self.redis_client.llen(session_key)
+            
+            if count >= self.MIGRATION_THRESHOLD:
+                self._migrate_to_vector_store(user_id, session_key, group_id)
+            
+            # 定期生成摘要
+            if count % self.SUMMARY_INTERVAL == 0:
+                self._generate_summary(user_id, session_key, group_id)
+            
+            # 关键信息直接写入向量库
+            if hasattr(entry, 'tags') and ("key_info" in entry.tags or "summary" in entry.tags):
+                self.vector_store.add_memory(user_id, entry)
+            
+            return True
+        except Exception as e:
+            logger.error(f"添加记忆失败: {str(e)}")
+            return False
+    
+    def _migrate_to_vector_store(self, user_id: str, session_key: bytes, group_id: str):
+        """将旧消息迁移到向量库"""
+        try:
+            # 获取需要迁移的消息（最早的一半）
+            old_messages = self.redis_client.lrange(session_key, 0, self.WINDOW_SIZE)
+            
+            import json
+            for msg_json in old_messages:
+                try:
+                    msg_dict = json.loads(msg_json.decode())
+                    msg_dict['type'] = 'long'
+                    msg_dict['group_id'] = group_id
+                    entry = MemoryEntry(**msg_dict)
+                    self.vector_store.add_memory(user_id, entry)
+                except Exception as e:
+                    logger.debug(f"迁移消息失败: {str(e)}")
+            
+            # 保留最近 WINDOW_SIZE 条
+            self.redis_client.ltrim(session_key, -self.WINDOW_SIZE, -1)
+        except Exception as e:
+            logger.error(f"迁移失败: {str(e)}")
+    
+    def _generate_summary(self, user_id: str, session_key: bytes, group_id: str):
+        """生成会话摘要"""
+        try:
+            # 获取最近消息
+            messages = self.redis_client.lrange(session_key, -self.SUMMARY_INTERVAL, -1)
+            
+            import json
+            message_dicts = [json.loads(m.decode()) for m in messages]
+            
+            # 提炼关键信息
+            key_info = self._extract_key_information(message_dicts)
+            
+            # 创建摘要记忆条目
+            from src.utils import generate_id, get_timestamp
+            summary_entry = MemoryEntry(
+                id=generate_id(),
+                user_id=user_id,
+                type='long',
+                content=key_info['summary'],
+                timestamp=get_timestamp(),
+                tags=['summary', 'auto_generated', group_id],
+                group_id=group_id,
+                group_name=f"分组_{group_id}"
+            )
+            
+            self.vector_store.add_memory(user_id, summary_entry)
+            
+            # 存储实体和待办
+            if key_info['entities']:
+                entities_entry = MemoryEntry(
+                    id=generate_id(),
+                    user_id=user_id,
+                    type='long',
+                    content=str(key_info['entities']),
+                    timestamp=get_timestamp(),
+                    tags=['entities', group_id],
+                    group_id=group_id
+                )
+                self.vector_store.add_memory(user_id, entities_entry)
+            
+        except Exception as e:
+            logger.error(f"生成摘要失败: {str(e)}")
+    
+    def search_memory(self, user_id: str, query: str, limit: int = 5) -> List[MemoryEntry]:
+        results = []
+        
+        try:
+            # 1. 从Redis获取所有会话组
+            if self.redis_client:
+                group_key = self._get_group_key(user_id)
+                group_ids = self.redis_client.smembers(group_key)
+                
+                for gid in group_ids:
+                    group_id = gid.decode()
+                    session_key = self._get_session_key(user_id, group_id)
+                    
+                    # 获取最近消息
+                    messages = self.redis_client.lrange(session_key, -limit, -1)
+                    
+                    import json
+                    for msg_json in messages:
+                        try:
+                            msg_dict = json.loads(msg_json.decode())
+                            if query.lower() in msg_dict.get('content', '').lower():
+                                entry = MemoryEntry(**msg_dict)
+                                results.append(entry)
+                        except Exception as e:
+                            logger.debug(f"解析消息失败: {str(e)}")
+            
+            # 2. 从向量库检索语义相似内容
+            vector_results = self.vector_store.search_memory(user_id, query, limit)
+            results.extend(vector_results)
+            
+            # 3. 去重并排序
+            unique_results = list({r.id: r for r in results}.values())
+            unique_results.sort(key=lambda x: x.timestamp, reverse=True)
+            
+            return unique_results[:limit]
+        except Exception as e:
+            logger.error(f"搜索失败: {str(e)}")
+            # 降级到向量库搜索
+            return self.vector_store.search_memory(user_id, query, limit)
+    
+    def get_memory(self, user_id: str, memory_id: str) -> Optional[MemoryEntry]:
+        # 先从Redis查找
+        if self.redis_client:
+            group_key = self._get_group_key(user_id)
+            group_ids = self.redis_client.smembers(group_key)
+            
+            import json
+            for gid in group_ids:
+                group_id = gid.decode()
+                session_key = self._get_session_key(user_id, group_id)
+                messages = self.redis_client.lrange(session_key, 0, -1)
+                
+                for msg_json in messages:
+                    try:
+                        msg_dict = json.loads(msg_json.decode())
+                        if msg_dict.get('id') == memory_id:
+                            return MemoryEntry(**msg_dict)
+                    except Exception as e:
+                        pass
+        
+        # 从向量库查找
+        return self.vector_store.get_memory(user_id, memory_id)
+    
+    def get_memory_by_type(self, user_id: str, memory_type: str) -> List[MemoryEntry]:
+        if memory_type == 'short' and self.redis_client:
+            results = []
+            group_key = self._get_group_key(user_id)
+            group_ids = self.redis_client.smembers(group_key)
+            
+            import json
+            for gid in group_ids:
+                group_id = gid.decode()
+                session_key = self._get_session_key(user_id, group_id)
+                messages = self.redis_client.lrange(session_key, 0, -1)
+                
+                for msg_json in messages:
+                    try:
+                        msg_dict = json.loads(msg_json.decode())
+                        if msg_dict.get('type') == 'short':
+                            entry = MemoryEntry(**msg_dict)
+                            results.append(entry)
+                    except Exception as e:
+                        pass
+            
+            results.sort(key=lambda x: x.timestamp, reverse=True)
+            return results
+        else:
+            return self.vector_store.get_memory_by_type(user_id, memory_type)
+    
+    def get_all_memories(self, user_id: str) -> List[MemoryEntry]:
+        results = []
+        
+        # 从Redis获取
+        if self.redis_client:
+            group_key = self._get_group_key(user_id)
+            group_ids = self.redis_client.smembers(group_key)
+            
+            import json
+            for gid in group_ids:
+                group_id = gid.decode()
+                session_key = self._get_session_key(user_id, group_id)
+                messages = self.redis_client.lrange(session_key, 0, -1)
+                
+                for msg_json in messages:
+                    try:
+                        msg_dict = json.loads(msg_json.decode())
+                        entry = MemoryEntry(**msg_dict)
+                        results.append(entry)
+                    except Exception as e:
+                        pass
+        
+        # 从向量库获取
+        vector_results = self.vector_store.get_all_memories(user_id)
+        results.extend(vector_results)
+        
+        # 去重排序
+        unique_results = list({r.id: r for r in results}.values())
+        unique_results.sort(key=lambda x: x.timestamp, reverse=True)
+        
+        return unique_results
+    
+    def get_groups(self, user_id: str) -> List[dict]:
+        """获取用户的所有会话分组"""
+        if not self.redis_client:
+            return [{"group_id": "default", "group_name": "默认会话"}]
+        
+        try:
+            groups = []
+            group_key = self._get_group_key(user_id)
+            group_ids = self.redis_client.smembers(group_key)
+            
+            for gid in group_ids:
+                group_id = gid.decode()
+                metadata_key = self._get_metadata_key(user_id, group_id)
+                metadata = self.redis_client.hgetall(metadata_key)
+                
+                groups.append({
+                    "group_id": group_id,
+                    "group_name": metadata.get(b"group_name", b"default_session").decode(),
+                    "last_active_at": int(metadata.get(b"last_active_at", b"0").decode()),
+                    "message_count": self.redis_client.llen(self._get_session_key(user_id, group_id))
+                })
+            
+            return sorted(groups, key=lambda x: x['last_active_at'], reverse=True)
+        except Exception as e:
+            logger.error(f"获取分组失败: {str(e)}")
+            return [{"group_id": "default", "group_name": "default_session"}]
+    
+    def update_memory(self, user_id: str, memory_id: str, content: str) -> bool:
+        # 更新Redis中的记忆
+        if self.redis_client:
+            group_key = self._get_group_key(user_id)
+            group_ids = self.redis_client.smembers(group_key)
+            
+            import json
+            for gid in group_ids:
+                group_id = gid.decode()
+                session_key = self._get_session_key(user_id, group_id)
+                messages = self.redis_client.lrange(session_key, 0, -1)
+                
+                for i, msg_json in enumerate(messages):
+                    try:
+                        msg_dict = json.loads(msg_json.decode())
+                        if msg_dict.get('id') == memory_id:
+                            msg_dict['content'] = content
+                            msg_dict['timestamp'] = get_timestamp()
+                            self.redis_client.lset(session_key, i, json.dumps(msg_dict).encode())
+                            return True
+                    except Exception as e:
+                        pass
+        
+        # 更新向量库中的记忆
+        return self.vector_store.update_memory(user_id, memory_id, content)
+    
+    def delete_memory(self, user_id: str, memory_id: str) -> bool:
+        # 从Redis删除
+        if self.redis_client:
+            group_key = self._get_group_key(user_id)
+            group_ids = self.redis_client.smembers(group_key)
+            
+            import json
+            for gid in group_ids:
+                group_id = gid.decode()
+                session_key = self._get_session_key(user_id, group_id)
+                messages = self.redis_client.lrange(session_key, 0, -1)
+                
+                new_messages = []
+                deleted = False
+                for msg_json in messages:
+                    try:
+                        msg_dict = json.loads(msg_json.decode())
+                        if msg_dict.get('id') != memory_id:
+                            new_messages.append(msg_json)
+                        else:
+                            deleted = True
+                    except Exception as e:
+                        new_messages.append(msg_json)
+                
+                if deleted:
+                    self.redis_client.delete(session_key)
+                    for msg in new_messages:
+                        self.redis_client.rpush(session_key, msg)
+                    return True
+        
+        # 从向量库删除
+        return self.vector_store.delete_memory(user_id, memory_id)
+    
+    def clear_memory(self, user_id: str) -> bool:
+        try:
+            # 清空Redis中的会话
+            if self.redis_client:
+                group_key = self._get_group_key(user_id)
+                group_ids = self.redis_client.smembers(group_key)
+                
+                for gid in group_ids:
+                    group_id = gid.decode()
+                    session_key = self._get_session_key(user_id, group_id)
+                    metadata_key = self._get_metadata_key(user_id, group_id)
+                    
+                    self.redis_client.delete(session_key)
+                    self.redis_client.delete(metadata_key)
+                
+                self.redis_client.delete(group_key)
+            
+            # 清空向量库
+            self.vector_store.clear_memory(user_id)
+            
+            return True
+        except Exception as e:
+            logger.error(f"清空记忆失败: {str(e)}")
+            return False
+    
+    def clear_memory_by_type(self, user_id: str, memory_type: str) -> bool:
+        if memory_type == 'short' and self.redis_client:
+            try:
+                group_key = self._get_group_key(user_id)
+                group_ids = self.redis_client.smembers(group_key)
+                
+                for gid in group_ids:
+                    group_id = gid.decode()
+                    session_key = self._get_session_key(user_id, group_id)
+                    
+                    # 删除Redis中的短期记忆
+                    self.redis_client.delete(session_key)
+                
+                return True
+            except Exception as e:
+                logger.error(f"清空短期记忆失败: {str(e)}")
+                return False
+        else:
+            return self.vector_store.clear_memory_by_type(user_id, memory_type)
+    
+    def get_memory_count(self, user_id: str) -> int:
+        count = 0
+        
+        # Redis中的消息数
+        if self.redis_client:
+            group_key = self._get_group_key(user_id)
+            group_ids = self.redis_client.smembers(group_key)
+            
+            for gid in group_ids:
+                group_id = gid.decode()
+                session_key = self._get_session_key(user_id, group_id)
+                count += self.redis_client.llen(session_key)
+        
+        # 向量库中的消息数
+        count += self.vector_store.get_memory_count(user_id)
+        
+        return count
+    
+    def get_memory_type(self) -> str:
+        return "redis_hybrid"
+    
+    def persist(self) -> bool:
+        return self.vector_store.persist()
+
+
 # 记忆存储注册表
 MEMORY_STORE_REGISTRY = {
     "chroma": ChromaMemory,
     "simple": SimpleMemory,
     "milvus": MilvusMemory,
     "faiss": FAISSMemory,
-    "hybrid": HybridMemory
+    "hybrid": HybridMemory,
+    "redis_hybrid": RedisHybridMemory
 }
