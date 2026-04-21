@@ -2,18 +2,12 @@ import uvicorn
 import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from src.api.v1.endpoints import router as v1_router
-from src.config import settings
-from src.utils import ensure_directory
-from src.logging_config import setup_logging, get_logger
-from src.data.database import db
-from src.skills.skill_manager import skill_manager
-from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
-from src.gateway.feishu_websocket import feishu_websocket_service
-from src.errors import EXCEPTION_HANDLERS
-from src.middleware.logging_middleware import RequestLoggingMiddleware, ResponseLoggingMiddleware
 
-# 初始化日志系统
+# 先导入配置和日志模块
+from src.config import settings
+from src.logging_config import setup_logging, get_logger
+
+# 初始化日志系统（必须在其他模块导入之前执行）
 setup_logging(
     log_level=settings.LOG_LEVEL,
     log_dir="./logs",
@@ -25,11 +19,22 @@ setup_logging(
         "skill": settings.LOG_LEVEL,
         "tool": settings.LOG_LEVEL,
         "engine": settings.LOG_LEVEL,
-        "gateway": settings.LOG_LEVEL
+        "gateway": settings.LOG_LEVEL,
+        "services": settings.LOG_LEVEL
     }
 )
 
 logger = get_logger("gateway")
+
+# 日志系统初始化完成后，再导入其他模块
+from src.api.v1.endpoints import router as v1_router
+from src.utils import ensure_directory
+from src.data.database import db
+from src.skills.skill_manager import skill_manager
+from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
+from src.gateway.feishu_websocket import feishu_websocket_service
+from src.errors import EXCEPTION_HANDLERS
+from src.middleware.logging_middleware import RequestLoggingMiddleware, ResponseLoggingMiddleware
 
 app = FastAPI(title="Hermes Office Synergy Agent", version="1.0.0")
 

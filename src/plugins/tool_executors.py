@@ -154,7 +154,7 @@ class MemorySearchTool:
             
             return {
                 "success": True,
-                "result": [r.dict() for r in results]
+                "result": [r.model_dump() for r in results]
             }
         except Exception as e:
             return {"success": False, "error": str(e)}

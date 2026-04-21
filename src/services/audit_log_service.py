@@ -175,7 +175,7 @@ class AuditLogService:
         """导出日志到文件"""
         try:
             import json
-            logs_data = [log.dict() for log in self.logs]
+            logs_data = [log.model_dump() for log in self.logs]
             
             with open(file_path, 'w', encoding='utf-8') as f:
                 json.dump(logs_data, f, ensure_ascii=False, indent=2)

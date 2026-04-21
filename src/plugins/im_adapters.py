@@ -1,7 +1,6 @@
 """IM适配器插件实现"""
 import asyncio
 import json
-import logging
 import time
 from typing import Dict, Any, Optional
 from abc import ABC
@@ -10,8 +9,9 @@ from src.plugins.base import IMAdapterBase
 from src.config import settings
 from src.utils import generate_id, get_timestamp, safe_log_string
 from src.data.database import db
+from src.logging_config import get_logger
 
-logger = logging.getLogger("hermes_office_agent")
+logger = get_logger("im")
 
 
 class FeishuAdapter(IMAdapterBase):

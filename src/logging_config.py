@@ -135,13 +135,17 @@ def setup_logging(
         "skill": "INFO",
         "tool": "INFO",
         "engine": "INFO",
-        "gateway": "INFO"
+        "gateway": "INFO",
+        "services": "INFO"
     }
     
     for module_name, module_level in module_configs.items():
         module_logger = logging.getLogger(f"hermes.{module_name}")
         module_logger.setLevel(getattr(logging, module_level.upper()))
         module_logger.propagate = False  # 不向父记录器传播
+        
+        # 清除模块日志器已有的处理器（避免 reload 时重复添加）
+        module_logger.handlers.clear()
         
         # 创建模块专属日志文件处理器
         module_file_handler = logging.handlers.RotatingFileHandler(

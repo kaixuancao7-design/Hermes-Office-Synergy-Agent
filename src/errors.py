@@ -25,8 +25,8 @@ class ErrorResponse(BaseModel):
     timestamp: Optional[int] = None
     request_id: Optional[str] = None
     
-    class Config:
-        schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "error_code": "MODEL_ERROR",
                 "message": "模型服务不可用",
@@ -39,6 +39,7 @@ class ErrorResponse(BaseModel):
                 "request_id": "abc123"
             }
         }
+    }
 
 
 async def agent_exception_handler(request: Request, exc: AgentException) -> JSONResponse:
@@ -56,7 +57,7 @@ async def agent_exception_handler(request: Request, exc: AgentException) -> JSON
     
     return JSONResponse(
         status_code=exc.http_status_code,
-        content=response.dict()
+        content=response.model_dump()
     )
 
 
@@ -114,7 +115,7 @@ async def general_exception_handler(request: Request, exc: Exception) -> JSONRes
     
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        content=response.dict()
+        content=response.model_dump()
     )
 
 

@@ -186,7 +186,7 @@ async def register_adapter(config: IMAdapterConfig):
         raise ValidationException(
             message="适配器类型不能为空",
             detail="type 字段是必需的",
-            context={"config": config.dict()}
+            context={"config": config.model_dump()}
         )
     
     im_adapter_manager.register_adapter(config)
@@ -231,7 +231,7 @@ async def submit_feedback(feedback: Dict[str, Any]):
 async def get_skill_drafts(status: Optional[str] = None, user_id: Optional[str] = None):
     """获取技能草稿列表"""
     drafts = learning_cycle.get_pending_reviews() if status == "pending" else skill_verification_service.list_drafts(user_id=user_id, status=status)
-    return {"drafts": [draft.dict() for draft in drafts]}
+    return {"drafts": [draft.model_dump() for draft in drafts]}
 
 
 @router.get("/skill-drafts/{draft_id}")
@@ -244,7 +244,7 @@ async def get_skill_draft(draft_id: str):
             detail=f"未找到ID为 {draft_id} 的技能草稿",
             context={"draft_id": draft_id}
         )
-    return {"draft": draft.dict()}
+    return {"draft": draft.model_dump()}
 
 
 @router.post("/skill-drafts/{draft_id}/review")
@@ -261,7 +261,7 @@ async def review_skill_draft(draft_id: str, review_data: Dict[str, Any]):
         comments=comments
     )
     
-    return {"result": result.dict()}
+    return {"result": result.model_dump()}
 
 
 @router.get("/learning/stats")
@@ -276,7 +276,7 @@ async def suggest_skill(task_description: str, user_id: str = "default_user"):
     """建议创建技能"""
     skill = learning_cycle.suggest_skill_creation(user_id, task_description)
     if skill:
-        return {"skill": skill.dict()}
+        return {"skill": skill.model_dump()}
     return {"message": "This task is not suitable for skill creation"}
 
 
@@ -286,7 +286,7 @@ async def suggest_skill(task_description: str, user_id: str = "default_user"):
 async def get_skill_versions(skill_id: str):
     """获取技能的所有版本"""
     versions = skill_manager.get_skill_versions(skill_id)
-    return {"versions": [v.dict() for v in versions]}
+    return {"versions": [v.model_dump() for v in versions]}
 
 
 @router.get("/skills/{skill_id}/versions/{version}")
@@ -299,7 +299,7 @@ async def get_skill_version(skill_id: str, version: str):
             detail=f"未找到技能 {skill_id} 的版本 {version}",
             context={"skill_id": skill_id, "version": version}
         )
-    return {"version": version_data.dict()}
+    return {"version": version_data.model_dump()}
 
 
 @router.post("/skills/{skill_id}/rollback/{version}")
@@ -313,7 +313,7 @@ async def rollback_skill(skill_id: str, version: str, user_id: str = "admin"):
                 detail=f"无法回滚到版本 {version}",
                 context={"skill_id": skill_id, "version": version, "user_id": user_id}
             )
-        return {"skill": skill.dict(), "message": f"已回滚到版本 {version}"}
+        return {"skill": skill.model_dump(), "message": f"已回滚到版本 {version}"}
     except PermissionError as e:
         raise ValidationException(
             message="权限不足",
@@ -326,7 +326,7 @@ async def rollback_skill(skill_id: str, version: str, user_id: str = "admin"):
 async def get_skill_change_logs(skill_id: str):
     """获取技能的修改日志"""
     logs = skill_manager.get_skill_change_logs(skill_id)
-    return {"logs": [log.dict() for log in logs]}
+    return {"logs": [log.model_dump() for log in logs]}
 
 
 # ==================== 技能权限控制接口 ====================
@@ -405,7 +405,7 @@ async def revoke_permission(skill_id: str, permission_data: Dict[str, Any]):
 async def get_skill_permissions(skill_id: str):
     """获取技能的所有权限"""
     permissions = skill_manager.skill_permission_manager.get_skill_permissions(skill_id)
-    return {"permissions": [p.dict() for p in permissions]}
+    return {"permissions": [p.model_dump() for p in permissions]}
 
 
 @router.get("/users/{user_id}/permissions")
@@ -433,7 +433,7 @@ async def update_skill(skill_id: str, updates: Dict[str, Any], user_id: str = "a
                 detail=f"未找到ID为 {skill_id} 的技能",
                 context={"skill_id": skill_id}
             )
-        return {"skill": skill.dict()}
+        return {"skill": skill.model_dump()}
     except PermissionError as e:
         raise ValidationException(
             message="权限不足",
@@ -663,7 +663,7 @@ async def query_audit_logs(
         page_size=page_size
     )
     return {
-        "logs": [log.dict() for log in result.logs],
+        "logs": [log.model_dump() for log in result.logs],
         "total": result.total,
         "page": result.page,
         "page_size": result.page_size
@@ -680,21 +680,21 @@ async def get_audit_log(log_id: str):
             detail=f"未找到ID为 {log_id} 的审计日志",
             context={"log_id": log_id}
         )
-    return {"log": log.dict()}
+    return {"log": log.model_dump()}
 
 
 @router.get("/audit/logs/operator/{operator_id}")
 async def get_operator_logs(operator_id: str):
     """获取指定用户的所有操作日志"""
     logs = audit_log_service.get_operator_logs(operator_id)
-    return {"operator_id": operator_id, "logs": [log.dict() for log in logs]}
+    return {"operator_id": operator_id, "logs": [log.model_dump() for log in logs]}
 
 
 @router.get("/audit/logs/type/{operation_type}")
 async def get_logs_by_type(operation_type: str):
     """获取指定类型的操作日志"""
     logs = audit_log_service.get_logs_by_type(operation_type)
-    return {"operation_type": operation_type, "logs": [log.dict() for log in logs]}
+    return {"operation_type": operation_type, "logs": [log.model_dump() for log in logs]}
 
 
 @router.post("/audit/verify")
