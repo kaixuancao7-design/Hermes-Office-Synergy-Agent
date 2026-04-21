@@ -24,7 +24,7 @@ class Thought(BaseModel):
 
 class Action(BaseModel):
     """动作"""
-    type: Literal['tool_call', 'finish', 'summarize', 'memory_search', 'document_search']
+    type: Literal['tool_call', 'finish', 'summarize', 'memory_search', 'document_search', 'tool_executor']
     tool_id: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
 
@@ -357,7 +357,7 @@ class ReActEngine:
             can_recover = True
             
         # 工具不可用
-        elif "not available" in error_message.lower() or "不可用" in error_message or "未初始化" in error_message:
+        elif "not available" in error_message.lower() or "不可用" in error_message or "未初始化" in error_message or "not initialized" in error_message.lower():
             failure_reason = "工具不可用"
             suggested_fix = "尝试使用备用工具或跳过此步骤"
             can_recover = True
@@ -459,17 +459,26 @@ class ReActEngine:
                     parameters=params
                 )
         
-        # 策略2：重新生成参数（针对参数错误）
+        # 策略2：简化参数（移除可选参数）
+        simplified_params = {k: v for k, v in params.items() if v is not None}
+        if simplified_params != params:
+            logger.info(f"Simplifying parameters for action: {action_type}")
+            return Action(
+                type=action_type,
+                parameters=simplified_params if simplified_params else None
+            )
+        
+        # 策略3：重新生成参数（针对参数错误，作为最后手段）
         if "参数" in analysis.failure_reason or "parameter" in analysis.failure_reason.lower():
             logger.info(f"Regenerating parameters for action: {action_type}")
-            return self._regenerate_parameters(original_action, state)
+            regenerated_action = self._regenerate_parameters(original_action, state)
+            if regenerated_action:
+                return regenerated_action
         
-        # 策略3：简化参数（移除可选参数）
-        logger.info(f"Simplifying parameters for action: {action_type}")
-        simplified_params = {k: v for k, v in params.items() if v is not None}
+        # 如果没有可简化的参数且无法重新生成，返回原始动作（会再次失败，但至少不会崩溃）
         return Action(
             type=action_type,
-            parameters=simplified_params if simplified_params else None
+            parameters=params if params else None
         )
     
     def _regenerate_parameters(self, action: Action, state: ReActState) -> Optional[Action]:
