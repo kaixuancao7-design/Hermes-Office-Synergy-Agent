@@ -24,7 +24,7 @@ class Thought(BaseModel):
 
 class Action(BaseModel):
     """动作"""
-    type: Literal['tool_call', 'finish', 'summarize', 'memory_search', 'document_search', 'tool_executor']
+    type: Literal['tool_call', 'finish', 'summarize', 'memory_search', 'document_search', 'tool_executor', 'generate_ppt', 'generate_ppt_from_outline']
     tool_id: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
 
@@ -326,6 +326,40 @@ class ReActEngine:
                     result="总结功能暂时不可用",
                     success=False,
                     error="No model available"
+                )
+            
+            elif action.type == "generate_ppt":
+                title = params.get("title", "Untitled Presentation")
+                slides = params.get("slides", [])
+                # 使用工具执行器生成PPT
+                executor = get_tool_executor()
+                if executor:
+                    result = executor.execute("generate_ppt", {"title": title, "slides": slides})
+                    success = "successfully" in result.lower()
+                else:
+                    result = "Tool executor not available"
+                    success = False
+                return Observation(
+                    action_id=action_id,
+                    result=str(result),
+                    success=success
+                )
+            
+            elif action.type == "generate_ppt_from_outline":
+                title = params.get("title", "Untitled Presentation")
+                outline = params.get("outline", [])
+                # 使用工具执行器从大纲生成PPT
+                executor = get_tool_executor()
+                if executor:
+                    result = executor.execute("generate_ppt_from_outline", {"title": title, "outline": outline})
+                    success = "successfully" in result.lower()
+                else:
+                    result = "Tool executor not available"
+                    success = False
+                return Observation(
+                    action_id=action_id,
+                    result=str(result),
+                    success=success
                 )
             
             else:

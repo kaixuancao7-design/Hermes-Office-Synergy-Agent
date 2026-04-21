@@ -8,7 +8,9 @@
 ## 可用工具
 - document_search: 搜索文档知识库（适用于需要查找特定信息的问题）
 - memory_search: 搜索用户记忆（适用于与用户历史对话相关的问题）
-- tool_executor: 执行工具（适用于需要执行操作的任务）
+- tool_executor: 执行工具（适用于需要执行操作的任务，如生成PPT）
+- generate_ppt: 生成PPT文件（适用于需要创建演示文稿的任务）
+- generate_ppt_from_outline: 从大纲生成PPT（适用于已有大纲结构需要生成演示文稿）
 - finish: 完成任务并给出最终回答
 
 ## 输出格式要求
