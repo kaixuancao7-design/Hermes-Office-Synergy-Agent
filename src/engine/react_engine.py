@@ -48,6 +48,16 @@ class ReActState(BaseModel):
     current_step: int = 0
     is_completed: bool = False
     final_response: Optional[str] = None
+    recovery_attempts: int = 0  # 恢复尝试次数
+    max_recovery_attempts: int = 2  # 最大恢复尝试次数
+
+
+class RecoveryAnalysis(BaseModel):
+    """恢复分析结果"""
+    failure_reason: str
+    suggested_fix: str
+    fixed_action: Optional[Action] = None
+    can_recover: bool = False
 
 
 class ReActOutput(BaseModel):
@@ -65,6 +75,13 @@ class ReActEngine:
         self.output_parser = PydanticOutputParser(pydantic_object=ReActOutput)
         self.system_prompt = self._get_system_prompt()
         self.current_user_id = None  # 当前用户ID
+        
+        # 备用工具映射（当主工具失败时使用）
+        self.backup_tools = {
+            "document_search": ["memory_search"],
+            "memory_search": ["document_search"],
+            "tool_executor": []
+        }
     
     def _init_llm(self):
         """初始化语言模型（优先使用插件系统）"""
@@ -311,6 +328,200 @@ class ReActEngine:
             return state.current_step >= state.max_steps
         return action.type == "finish" or state.current_step >= state.max_steps
     
+    def _analyze_failure(self, action: Action, observation: Observation) -> RecoveryAnalysis:
+        """
+        分析工具调用失败原因
+        
+        Args:
+            action: 失败的动作
+            observation: 观察结果（包含错误信息）
+        
+        Returns:
+            RecoveryAnalysis: 恢复分析结果
+        """
+        error_message = observation.error or "Unknown error"
+        action_type = action.type if action else "unknown"
+        
+        logger.debug(f"Analyzing failure: action_type={action_type}, error={error_message}")
+        
+        # 识别失败原因
+        failure_reason = "未知错误"
+        suggested_fix = ""
+        can_recover = False
+        fixed_action = None
+        
+        # 参数错误
+        if "parameter" in error_message.lower() or "参数" in error_message:
+            failure_reason = "参数错误"
+            suggested_fix = "需要重新生成正确的参数"
+            can_recover = True
+            
+        # 工具不可用
+        elif "not available" in error_message.lower() or "不可用" in error_message or "未初始化" in error_message:
+            failure_reason = "工具不可用"
+            suggested_fix = "尝试使用备用工具或跳过此步骤"
+            can_recover = True
+            
+        # 连接错误
+        elif "connection" in error_message.lower() or "连接" in error_message:
+            failure_reason = "连接失败"
+            suggested_fix = "尝试重新连接或使用备用工具"
+            can_recover = True
+            
+        # 超时错误
+        elif "timeout" in error_message.lower() or "超时" in error_message:
+            failure_reason = "操作超时"
+            suggested_fix = "重试操作或使用备用工具"
+            can_recover = True
+            
+        # 权限错误
+        elif "permission" in error_message.lower() or "权限" in error_message:
+            failure_reason = "权限不足"
+            suggested_fix = "检查权限或使用其他方法"
+            can_recover = False
+            
+        # 资源不存在
+        elif "not found" in error_message.lower() or "不存在" in error_message:
+            failure_reason = "资源不存在"
+            suggested_fix = "检查资源路径或使用其他资源"
+            can_recover = True
+            
+        # 格式错误
+        elif "format" in error_message.lower() or "格式" in error_message:
+            failure_reason = "格式错误"
+            suggested_fix = "修正数据格式后重试"
+            can_recover = True
+            
+        logger.info(f"Failure analysis: reason={failure_reason}, fix={suggested_fix}, can_recover={can_recover}")
+        
+        return RecoveryAnalysis(
+            failure_reason=failure_reason,
+            suggested_fix=suggested_fix,
+            fixed_action=fixed_action,
+            can_recover=can_recover
+        )
+    
+    def _reflect_and_recover(self, action: Action, observation: Observation, state: ReActState) -> Optional[Action]:
+        """
+        反思并尝试恢复
+        
+        Args:
+            action: 失败的动作
+            observation: 观察结果
+            state: 当前状态
+            
+        Returns:
+            Optional[Action]: 修复后的动作，如果无法修复则返回 None
+        """
+        if state.recovery_attempts >= state.max_recovery_attempts:
+            logger.info(f"Max recovery attempts ({state.max_recovery_attempts}) reached, skipping recovery")
+            return None
+            
+        analysis = self._analyze_failure(action, observation)
+        
+        if not analysis.can_recover:
+            logger.info(f"Cannot recover from failure: {analysis.failure_reason}")
+            return None
+            
+        # 尝试修复
+        try:
+            fixed_action = self._generate_fixed_action(action, analysis, state)
+            if fixed_action:
+                state.recovery_attempts += 1
+                logger.info(f"Generated fixed action: {fixed_action.type}")
+                return fixed_action
+        except Exception as e:
+            logger.error(f"Failed to generate fixed action: {e}")
+            
+        return None
+    
+    def _generate_fixed_action(self, original_action: Action, analysis: RecoveryAnalysis, state: ReActState) -> Optional[Action]:
+        """
+        根据分析结果生成修复后的动作
+        
+        Args:
+            original_action: 原始失败的动作
+            analysis: 恢复分析结果
+            state: 当前状态
+            
+        Returns:
+            Optional[Action]: 修复后的动作
+        """
+        action_type = original_action.type
+        params = original_action.parameters or {}
+        
+        # 策略1：尝试切换备用工具
+        if action_type in self.backup_tools and self.backup_tools[action_type]:
+            for backup_type in self.backup_tools[action_type]:
+                logger.info(f"Trying backup tool: {backup_type} instead of {action_type}")
+                return Action(
+                    type=backup_type,
+                    parameters=params
+                )
+        
+        # 策略2：重新生成参数（针对参数错误）
+        if "参数" in analysis.failure_reason or "parameter" in analysis.failure_reason.lower():
+            logger.info(f"Regenerating parameters for action: {action_type}")
+            return self._regenerate_parameters(original_action, state)
+        
+        # 策略3：简化参数（移除可选参数）
+        logger.info(f"Simplifying parameters for action: {action_type}")
+        simplified_params = {k: v for k, v in params.items() if v is not None}
+        return Action(
+            type=action_type,
+            parameters=simplified_params if simplified_params else None
+        )
+    
+    def _regenerate_parameters(self, action: Action, state: ReActState) -> Optional[Action]:
+        """
+        重新生成参数
+        
+        Args:
+            action: 原始动作
+            state: 当前状态
+            
+        Returns:
+            Optional[Action]: 修复后的动作
+        """
+        # 获取历史上下文
+        history_text = "\n".join([t.content for t in state.thoughts[-3:]]) if state.thoughts else ""
+        
+        prompt = f"""
+        以下动作执行失败，需要重新生成参数：
+        
+        动作类型: {action.type}
+        原始参数: {action.parameters}
+        错误原因: 参数错误
+        
+        上下文: {history_text}
+        用户问题: {state.user_query}
+        
+        请分析并生成正确的参数。只返回 JSON 格式的参数对象，不要包含其他内容。
+        
+        例如:
+        {{
+            "key1": "value1",
+            "key2": "value2"
+        }}
+        """
+        
+        try:
+            response = self.llm.invoke([
+                SystemMessage(content="你是一个参数修复专家，根据上下文生成正确的参数。"),
+                HumanMessage(content=prompt)
+            ])
+            
+            import json
+            new_params = json.loads(response.content)
+            
+            return Action(
+                type=action.type,
+                parameters=new_params
+            )
+        except Exception as e:
+            logger.error(f"Failed to regenerate parameters: {e}")
+            return None
+    
     def _generate_final_response(self, state: ReActState) -> str:
         """生成最终响应"""
         # 获取最后一个成功的观察结果
@@ -387,6 +598,26 @@ class ReActEngine:
                 observation = self._execute_action(output.action)
                 logger.debug(f"Observation result: success={observation.success}, error={observation.error}")
                 state.observations.append(observation)
+                
+                # 反思环节：如果动作失败，尝试恢复
+                if not observation.success and output.action is not None:
+                    logger.info(f"Action failed, attempting recovery...")
+                    fixed_action = self._reflect_and_recover(output.action, observation, state)
+                    if fixed_action:
+                        # 添加反思思考
+                        reflect_thought = Thought(
+                            id=generate_id(),
+                            content=f"反思：工具调用失败，原因是{observation.error}。尝试修复：切换到{fixed_action.type}",
+                            timestamp=get_timestamp()
+                        )
+                        state.thoughts.append(reflect_thought)
+                        logger.info(f"Reflecting on failure and trying fixed action: {fixed_action.type}")
+                        
+                        # 执行修复后的动作
+                        fixed_observation = self._execute_action(fixed_action)
+                        state.observations.append(fixed_observation)
+                        state.actions.append(fixed_action)
+                        logger.info(f"Fixed action result: success={fixed_observation.success}")
                 
                 # 更新步骤计数
                 state.current_step += 1
