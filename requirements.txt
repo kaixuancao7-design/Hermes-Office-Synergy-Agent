@@ -21,6 +21,9 @@ langchain-chroma>=0.1.0
 langchain-text-splitters>=0.1.0
 # ChromaDB vector database
 chromadb>=0.4.0
+# Redis for caching and session management
+redis>=5.0.0
+
 # Document processing
 python-docx>=0.8.0
 python-pptx>=0.6.0

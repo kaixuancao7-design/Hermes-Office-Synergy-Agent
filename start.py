@@ -35,7 +35,8 @@ def main():
         host=settings.HOST,
         port=settings.PORT,
         reload=True,
-        reload_excludes=["logs", "data", "workspace", "output", "__pycache__", ".git"]
+        reload_dirs=["src"],  # 只监控 src 目录
+        reload_excludes=["logs", "data", "workspace", "output", "__pycache__", ".git", "*.pyc", "*.pyo", ".pytest_cache", ".tox", ".eggs", "*.egg-info"]
     )
 
 

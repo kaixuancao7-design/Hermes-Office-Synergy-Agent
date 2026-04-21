@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     ALLOWED_ORIGINS: str = "*"
     MAX_FILE_SIZE: int = 52428800
     
-    LOG_LEVEL: str = "INFO"
+    LOG_LEVEL: str = "DEBUG"
     
     # 插件配置
     IM_ADAPTER_TYPE: str = "feishu"  # feishu, dingtalk, wecom, slack, discord

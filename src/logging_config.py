@@ -134,7 +134,7 @@ def setup_logging(
         "memory": "INFO",
         "skill": "INFO",
         "tool": "INFO",
-        "engine": "INFO",
+        "engine": "DEBUG",  # engine 模块使用 DEBUG 级别便于调试
         "gateway": "INFO",
         "services": "INFO"
     }
