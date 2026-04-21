@@ -6,6 +6,8 @@ venv/
 
 # 环境配置文件（.env.example 作为模板应提交）
 .env
+.env.local
+.env.*.local
 .env.prod
 
 # 日志文件
