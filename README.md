@@ -19,6 +19,9 @@
 - **技能版本管理**：支持版本回滚、修改日志记录、变更diff检查
 - **细粒度权限控制**：基于角色的访问控制（RBAC），支持按部门划分权限范围
 - **操作审计日志**：SHA-256哈希链防篡改，满足企业合规要求
+- **IM→演示稿全流程智能协同**：支持从IM消息触发PPT生成，自动发送到IM
+- **文件服务支持**：支持文件上传、读取和内容解析，可基于上传文件生成PPT
+- **任务执行反思**：工具调用失败时自动分析原因并尝试修复（切换备用工具、重新生成参数）
 
 ## 架构设计
 
@@ -34,13 +37,16 @@
 ├─────────────────────────────────────────────────────────────────────────┤
 │  核心引擎层 (Engine)                                                     │
 │  IntentRecognition / TaskPlanner / MemoryManager / LearningCycle         │
-│  ReActEngine / 自我进化闭环                                              │
+│  ReActEngine / 自我进化闭环 / 需求解析器 / IM触发器                        │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  数据与记忆层 (Data & Memory)                                            │
 │  SQLite数据库 / MemoryBase (Chroma/Milvus/FAISS) / 程序性记忆             │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  基础设施层 (Infrastructure)                                             │
 │  ModelRouterBase / 安全沙箱 / 配置管理 / 权限服务 / 审计服务               │
+├─────────────────────────────────────────────────────────────────────────┤
+│  服务层 (Services)                                                       │
+│  PPT服务 / 技能验证服务 / 技能管理服务                                    │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,7 +56,7 @@
 
 - Python 3.10+
 - pip 20.0+
-- Ollama（可选，用于本地模型）
+- Ollama（推荐，用于本地模型，避免API密钥依赖）
 
 ### 安装依赖
 
@@ -64,9 +70,9 @@ pip install -r requirements.txt
 
 ```env
 # 模型配置（任选其一或多个）
-OPENAI_API_KEY=your-openai-api-key
-ANTHROPIC_API_KEY=your-anthropic-api-key
-OLLAMA_HOST=http://localhost:11434
+# OPENAI_API_KEY=your-openai-api-key  # 如果使用OpenAI模型
+# ANTHROPIC_API_KEY=your-anthropic-api-key
+OLLAMA_HOST=http://localhost:11434  # 推荐使用Ollama，无需API密钥
 
 # 数据库配置
 DATABASE_PATH=./data/agent.db
@@ -75,22 +81,31 @@ VECTOR_DB_PATH=./data/vectors
 # 服务配置
 PORT=3000
 HOST=0.0.0.0
-LOG_LEVEL=INFO
+LOG_LEVEL=DEBUG
 
-# 记忆存储配置
-MEMORY_STORE_TYPE=chroma  # chroma, milvus, faiss, hybrid
+# 记忆存储配置（使用simple避免嵌入问题）
+MEMORY_STORE_TYPE=simple  # chroma, milvus, faiss, hybrid, simple, redis_hybrid
 
 # Milvus配置（当MEMORY_STORE_TYPE=milvus时）
-MILVUS_URI=http://localhost:19530
-MILVUS_TOKEN=your-milvus-token
+# MILVUS_URI=http://localhost:19530
+# MILVUS_TOKEN=your-milvus-token
+
+# 插件配置
+MODEL_ROUTER_TYPE=ollama  # ollama, openai, anthropic, zhipu, moonshot, multi
+TOOL_EXECUTOR_TYPE=sandboxed
 
 # 飞书配置（可选）
-FEISHU_APP_ID=your-feishu-app-id
-FEISHU_APP_SECRET=your-feishu-app-secret
-FEISHU_BOT_NAME=Hermes-Office-Synergy-Agent
+# FEISHU_APP_ID=your-feishu-app-id
+# FEISHU_APP_SECRET=your-feishu-app-secret
+# FEISHU_BOT_NAME=Hermes-Office-Synergy-Agent
+
+# Redis配置（当MEMORY_STORE_TYPE=redis_hybrid时）
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
 ```
 
-### 启动 Ollama（可选）
+### 启动 Ollama（推荐）
 
 ```bash
 # 启动 Ollama 服务
@@ -107,6 +122,44 @@ python start.py
 ```
 
 服务将在 http://localhost:3000 启动。
+
+## 核心功能：IM→演示稿全流程智能协同
+
+### 功能概述
+
+从IM消息触发到PPT生成并自动发送的完整闭环：
+
+1. **IM端触发**：支持@机器人、关键词、文件附件等多种触发方式
+2. **需求智能解析**：自动提取PPT主题、页数、受众、风格等需求要素
+3. **智能大纲生成**：基于需求生成结构化大纲
+4. **内容创作**：自动填充内容，支持多种幻灯片类型
+5. **演示稿生成**：基于python-pptx库自动生成PPT文件
+6. **IM发送**：生成后自动上传并发送给用户
+
+### 触发方式
+
+| 触发类型 | 说明 | 示例 |
+|----------|------|------|
+| @机器人 | 直接@机器人触发 | `@Hermes-Office-Synergy-Agent 帮我生成一份产品介绍PPT` |
+| 关键词触发 | 包含关键词自动触发 | `生成周报PPT` |
+| 附件触发 | 上传文件自动分析 | 上传需求文档 |
+
+### PPT生成工具
+
+系统提供多种PPT生成工具：
+
+- `generate_ppt`：直接生成PPT（不发送）
+- `generate_ppt_from_outline`：从大纲生成PPT
+- `generate_and_send_ppt`：生成PPT并通过IM发送给用户
+
+### 支持的幻灯片类型
+
+| 类型 | 说明 | 示例 |
+|------|------|------|
+| title | 标题页 | 演示稿封面 |
+| bullet | 项目符号页 | 要点列表 |
+| chart | 图表页 | 数据可视化 |
+| content | 内容页 | 详细内容展示 |
 
 ## 飞书配置
 
@@ -298,6 +351,29 @@ POST /api/v1/audit/verify
 POST /api/v1/audit/export?file_path=./audit_logs.json
 ```
 
+### PPT服务接口
+
+```bash
+# 生成PPT并发送
+POST /api/v1/ppt/generate-and-send
+{
+    "user_id": "user123",
+    "title": "产品介绍",
+    "slides": [
+        {"type": "title", "content": {"title": "产品介绍", "subtitle": "2024年Q4"}},
+        {"type": "bullet", "content": {"title": "核心功能", "items": ["功能1", "功能2", "功能3"]}}
+    ],
+    "im_adapter_type": "feishu"
+}
+
+# 仅生成PPT
+POST /api/v1/ppt/generate
+{
+    "title": "产品介绍",
+    "slides": [...]
+}
+```
+
 ## 自我进化闭环
 
 系统通过学习循环实现自我进化，包含完整的技能提炼与验证流程：
@@ -313,6 +389,18 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 ```
 用户提问 → 生成响应 → 用户反馈修正 → 差异分析 → 生成草稿 → 自动/人工验证 → 存入技能库 → 下次自动匹配
 ```
+
+## 任务执行反思环节
+
+系统具备任务执行反思能力，当工具调用失败时会自动分析并尝试修复，避免断链：
+
+1. **失败分析**：识别失败原因（参数错误、工具不可用、连接失败、超时、权限不足、Pydantic验证错误等）
+2. **恢复策略**：
+   - **切换备用工具**：当当前工具不可用时，自动切换到备用工具
+   - **重新生成参数**：分析参数错误原因，重新生成正确的参数
+   - **简化参数**：移除不必要的复杂参数，使用默认值
+3. **最大恢复尝试**：可配置最大重试次数，避免无限循环
+4. **错误日志记录**：详细记录失败原因、恢复尝试次数和最终结果，便于问题排查
 
 ## 角色与权限体系
 
@@ -366,6 +454,8 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 | Milvus | `milvus` | 大规模生产环境 |
 | FAISS | `faiss` | 单机高性能场景 |
 | Hybrid | `hybrid` | 混合存储策略 |
+| Simple | `simple` | 开发测试，无需嵌入 |
+| Redis Hybrid | `redis_hybrid` | Redis + 向量库混合 |
 
 ## 项目结构
 
@@ -384,7 +474,9 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 │   │   ├── learning_cycle.py         # 学习循环（三闸门验证）
 │   │   ├── memory_manager.py         # 记忆管理
 │   │   ├── react_engine.py           # ReAct推理引擎
-│   │   └── task_planner.py           # 任务规划
+│   │   ├── task_planner.py           # 任务规划
+│   │   ├── demand_parser.py          # 需求解析器（PPT需求提取）
+│   │   └── im_trigger.py             # IM触发器（多模态触发）
 │   ├── gateway/
 │   │   ├── feishu_websocket.py       # 飞书WebSocket服务
 │   │   ├── im_adapter.py             # IM适配器管理
@@ -393,6 +485,7 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 │   ├── exceptions.py                 # 统一异常处理
 │   ├── main.py                       # FastAPI入口
 │   ├── plugins/
+│   │   ├── __init__.py               # 插件初始化与获取函数
 │   │   ├── base.py                   # 抽象基类定义 + 插件安全管理器
 │   │   ├── skill_managers.py         # 技能管理插件
 │   │   ├── memory_stores.py          # 记忆存储插件
@@ -402,7 +495,8 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 │   │   ├── skill_verification.py     # 技能验证服务
 │   │   ├── skill_management.py       # 技能版本管理
 │   │   ├── permission_service.py     # 细粒度权限服务
-│   │   └── audit_log_service.py      # 审计日志服务（SHA-256防篡改）
+│   │   ├── audit_log_service.py      # 审计日志服务（SHA-256防篡改）
+│   │   └── ppt_service.py            # PPT服务（生成与发送）
 │   ├── skills/
 │   │   └── skill_manager.py          # 技能管理（复杂度检查、变更验证）
 │   ├── tools/
@@ -410,17 +504,23 @@ POST /api/v1/audit/export?file_path=./audit_logs.json
 │   │   └── tool_executor.py          # 工具执行器
 │   ├── types.py                      # 类型定义（含AssumptionChecklist）
 │   └── utils.py                      # 工具函数
+├── prompts/
+│   └── react_system_prompt.txt       # ReAct系统提示词（外部化管理）
 ├── tests/                            # 测试文件
 │   ├── conftest.py                   # 测试配置
 │   ├── test_api.py                   # API测试
 │   ├── test_database.py              # 数据库测试
 │   ├── test_utils.py                 # 工具函数测试
-│   └── test_agent_self_verification.py # Agent自验证用例库
+│   ├── test_agent_self_verification.py # Agent自验证用例库
+│   ├── test_ppt_generator.py         # PPT生成测试
+│   ├── test_demand_parser.py         # 需求解析测试
+│   └── test_react_engine_recovery.py # ReAct引擎恢复测试
 ├── logs/                             # 日志目录（按模块拆分）
 │   ├── api.log
 │   ├── model.log
 │   ├── im.log
 │   ├── engine.log
+│   ├── gateway.log
 │   └── audit.log                     # 审计日志（不可篡改）
 ├── data/                             # 数据目录
 ├── .gitignore
@@ -476,329 +576,86 @@ await im_adapter_manager.send_message(
 
 ---
 
-### 2. 技能与工具层 (Skills & Tools)
+### 2. 核心引擎层 (Engine)
 
-#### 2.1 技能管理器 (`src/skills/skill_manager.py`)
+#### 2.1 ReAct引擎 (`src/engine/react_engine.py`)
 
-管理技能的完整生命周期：
-
-**核心功能：**
-- 技能创建/编辑/删除
-- 技能版本管理
-- 技能执行与调度
-- 权限检查集成
-
-**技能结构：**
-```python
-{
-    "id": "skill-001",
-    "name": "周报生成",
-    "description": "自动生成周报",
-    "type": "preset",
-    "version": "1.0.0",
-    "created_by": "admin",
-    "steps": [
-        {"action": "execute", "parameters": {"instruction": "分析本周工作内容"}}
-    ],
-    "trigger_patterns": ["周报", "总结"],
-    "metadata": {...}
-}
-```
-
-**版本管理特性：**
-- 自动版本号递增（语义化版本）
-- 支持回滚到历史版本
-- 完整的修改日志记录
-
-#### 2.2 工具执行器 (`src/tools/tool_executor.py`)
-
-安全执行各类工具：
-
-**核心功能：**
-- 工具注册与发现
-- 参数校验
-- 沙箱隔离执行
-- 执行结果处理
-
-**内置工具：**
-| 工具类型 | 说明 | 危险级别 |
-|----------|------|----------|
-| `file_read` | 读取文件 | 低 |
-| `file_write` | 写入文件 | 中 |
-| `file_delete` | 删除文件 | 高 |
-| `system_command` | 执行系统命令 | 高 |
-| `web_search` | 网络搜索 | 低 |
-
-**危险工具控制：**
-- 需要管理员授权才能执行
-- 执行前进行权限检查
-- 详细记录审计日志
-
----
-
-### 3. 核心引擎层 (Engine)
-
-#### 3.1 ReAct引擎 (`src/engine/react_engine.py`)
-
-实现推理-行动循环：
+实现推理-行动循环，支持任务执行反思：
 
 **核心流程：**
 1. **思考**：分析当前状态，决定下一步行动
 2. **行动**：调用工具或技能
 3. **观察**：获取执行结果
-4. **总结**：生成最终回复
+4. **反思**：如果失败，分析原因并尝试修复
+5. **总结**：生成最终回复
 
-**状态管理：**
-- 维护对话状态
-- 追踪已执行步骤
-- 管理上下文信息
+**支持的动作类型：**
+- `tool_call`: 调用工具
+- `finish`: 完成任务
+- `summarize`: 总结内容
+- `memory_search`: 搜索记忆
+- `document_search`: 搜索文档
+- `tool_executor`: 执行工具
+- `generate_ppt`: 生成PPT
+- `generate_ppt_from_outline`: 从大纲生成PPT
+- `generate_and_send_ppt`: 生成并发送PPT
 
-#### 3.2 意图识别 (`src/engine/intent_recognition.py`)
+#### 2.2 需求解析器 (`src/engine/demand_parser.py`)
 
-识别用户意图：
-
-**核心功能：**
-- 关键词匹配
-- LLM意图分类
-- 技能匹配
-- 上下文理解
-
-**意图类型：**
-- `skill_execution`: 执行技能
-- `question_answering`: 问答
-- `task_planning`: 任务规划
-- `feedback`: 反馈提交
-
-#### 3.3 任务规划 (`src/engine/task_planner.py`)
-
-将复杂任务分解为子任务：
+解析用户PPT生成需求：
 
 **核心功能：**
-- 任务分解
-- 步骤排序
-- 依赖分析
-- 执行调度
+- 从自然语言提取PPT需求（标题、页数、受众、风格等）
+- 生成需求确认消息
+- 聚合群聊需求
 
-#### 3.4 记忆管理 (`src/engine/memory_manager.py`)
+**支持的受众类型：**
+- 内部团队
+- 客户
+- 公众/公开演讲
+- 管理层
 
-管理三层记忆体系：
+**支持的风格类型：**
+- 正式/商务
+- 简洁/极简
+- 创意/活泼
 
-**记忆层次：**
-| 层次 | 存储位置 | 生命周期 | 用途 |
-|------|----------|----------|------|
-| 短期记忆 | 内存 | 会话级别 | 当前对话上下文 |
-| 长期记忆 | 向量库 | 持久化 | 知识检索、历史对话 |
-| 程序性记忆 | 技能库 | 持久化 | 可复用的工作流程 |
+#### 2.3 IM触发器 (`src/engine/im_trigger.py`)
 
-**记忆操作：**
-- `search`: 搜索相关记忆
-- `save`: 保存新记忆
-- `update`: 更新记忆
-- `delete`: 删除记忆
+处理IM多模态触发：
 
-#### 3.5 学习循环 (`src/engine/learning_cycle.py`)
-
-实现自我进化闭环：
-
-**学习流程：**
-```
-用户反馈 → 差异分析 → 技能提炼 → 技能验证 → 技能存储 → 自动应用
-```
-
-**核心功能：**
-- 反馈收集与分析
-- 技能自动生成
-- 技能验证（自动+人工）
-- 技能优化迭代
+**触发类型：**
+- **主动触发**：@机器人
+- **被动触发**：关键词匹配
+- **附件触发**：文件上传
 
 ---
 
-### 4. 数据与记忆层 (Data & Memory)
+### 3. 服务层 (Services)
 
-#### 4.1 SQLite数据库 (`src/data/database.py`)
+#### 3.1 PPT服务 (`src/services/ppt_service.py`)
 
-存储结构化数据：
+整合PPT生成与IM发送：
 
-**数据表：**
-| 表名 | 用途 |
-|------|------|
-| `skills` | 技能定义 |
-| `skill_versions` | 技能版本历史 |
-| `users` | 用户信息 |
-| `roles` | 用户角色 |
-| `permissions` | 权限配置 |
-| `audit_logs` | 审计日志 |
-
-**数据库操作：**
-- 连接池管理
-- 事务支持
-- 数据迁移
-
-#### 4.2 向量库 (`src/data/vector_store.py`)
-
-存储非结构化数据的向量表示：
-
-**支持的向量数据库：**
-| 数据库 | 配置方式 | 适用场景 |
-|--------|----------|----------|
-| Chroma | 内置 | 开发测试 |
-| Milvus | 独立部署 | 大规模生产 |
-| FAISS | 内置 | 单机高性能 |
-
-**向量操作：**
-- 向量化文本
-- 相似性搜索
-- 向量存储与更新
+**核心方法：**
+- `generate_and_send_ppt()`: 生成PPT并发送给用户
+- `generate_from_outline_and_send()`: 从大纲生成PPT并发送
+- `generate_ppt_only()`: 仅生成PPT（不发送）
 
 ---
 
-### 5. 基础设施层 (Infrastructure)
+### 4. 插件系统 (`src/plugins/`)
 
-#### 5.1 模型路由 (`src/infrastructure/model_router.py`)
+#### 4.1 插件初始化 (`src/plugins/__init__.py`)
 
-管理多个AI模型的调用：
-
-**核心功能：**
-- 模型选择策略
-- 负载均衡
-- 故障切换
-- 成本控制
-
-**支持的模型：**
-| 模型 | 提供商 | API类型 |
-|------|--------|----------|
-| GPT-4o | OpenAI | REST |
-| Claude 3.5 | Anthropic | REST |
-| Qwen | Ollama | 本地 |
-| GLM-4 | 智谱 | REST |
-
-**模型选择策略：**
-- `auto`: 根据任务类型自动选择
-- `fallback`: 主模型失败时切换备用模型
-- `round-robin`: 轮询调度
-
-#### 5.2 安全沙箱 (`src/infrastructure/sandbox.py`)
-
-隔离危险操作：
-
-**核心功能：**
-- 代码执行隔离
-- 文件系统访问控制
-- 网络访问限制
-- 资源使用限制
-
-**安全策略：**
-- 限制执行时间
-- 限制内存使用
-- 白名单机制
+提供插件获取函数：
+- `get_im_adapter(im_type=None)`: 获取IM适配器
+- `get_model_router()`: 获取模型路由
+- `get_memory_store()`: 获取记忆存储
+- `get_skill_manager()`: 获取技能管理器
+- `get_tool_executor()`: 获取工具执行器
 
 ---
-
-### 6. 权限与审计服务
-
-#### 6.1 细粒度权限服务 (`src/services/permission_service.py`)
-
-实现企业级权限管理：
-
-**角色体系：**
-| 角色 | 权限范围 |
-|------|----------|
-| `admin` | 全权限 |
-| `developer` | 技能开发、工具配置 |
-| `user` | 技能使用、反馈提交 |
-| `guest` | 只读访问 |
-
-**权限类型：**
-| 资源 | 权限 |
-|------|------|
-| 技能 | read, execute, edit, delete, grant |
-| 工具 | execute, configure |
-| 记忆 | read, write, delete, search |
-| 配置 | view, modify |
-
-**权限范围：**
-- `user`: 针对特定用户
-- `department`: 针对部门所有用户
-- `all`: 全局权限
-
-**使用示例：**
-```python
-from src.services.permission_service import permission_service
-
-# 设置用户角色
-permission_service.set_user_role("admin", "user123", "user", "研发部")
-
-# 授予权限
-permission_service.grant_skill_permission("admin", "skill-001", "user123", "execute")
-
-# 检查权限
-result = permission_service.check_skill_permission("user123", "skill-001", "execute")
-```
-
-#### 6.2 审计日志服务 (`src/services/audit_log_service.py`)
-
-记录所有关键操作：
-
-**记录的操作类型：**
-| 类别 | 操作类型 |
-|------|----------|
-| 用户管理 | login, logout, user_create, role_change |
-| 技能管理 | skill_create, skill_edit, skill_delete, skill_execute |
-| 工具操作 | tool_execute, tool_configure |
-| 权限管理 | permission_grant, permission_revoke |
-| 系统配置 | config_modify |
-
-**防篡改机制：**
-- SHA-256哈希链
-- 每条日志包含前一条日志的校验和
-- 支持完整日志链验证
-
-**日志查询：**
-- 按操作人查询
-- 按操作类型查询
-- 按时间范围查询
-- 支持分页
-
----
-
-### 7. API接口层 (`src/api/v1/endpoints.py`)
-
-提供RESTful API接口：
-
-**接口分类：**
-| 类别 | 接口数量 | 说明 |
-|------|----------|------|
-| 消息处理 | 2 | 发送消息、接收消息 |
-| 技能管理 | 5 | CRUD操作、版本管理 |
-| 记忆管理 | 3 | 搜索、存储、删除 |
-| 学习反馈 | 3 | 提交反馈、学习统计 |
-| 权限管理 | 8 | 角色管理、权限授予 |
-| 审计日志 | 5 | 查询、验证、导出 |
-
-**API安全：**
-- 请求ID追踪
-- 用户身份验证
-- 权限检查
-- 速率限制
-
----
-
-## 技能架构
-
-系统采用 **流程编排型技能架构**，支持三种技能类型：
-
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| `preset` | 预置技能 | 会议纪要、周报生成、竞品分析 |
-| `custom` | 用户自定义 | 用户创建的工作流 |
-| `learned` | 自动习得 | 通过学习循环获得 |
-
-技能结构包含：
-- **触发模式**：匹配用户意图的关键词列表
-- **步骤链**：有序的工具调用步骤
-- **条件分支**：根据执行结果选择不同路径
-- **版本号**：技能版本管理
-- **元数据**：创建者、来源等信息
 
 ## 日志系统
 
@@ -810,6 +667,7 @@ result = permission_service.check_skill_permission("user123", "skill-001", "exec
 | `model.log` | 模型调用日志，包含耗时、令牌数 |
 | `im.log` | IM消息日志，包含消息路由、推送 |
 | `engine.log` | 引擎日志，包含技能执行、学习循环 |
+| `gateway.log` | 网关日志，包含WebSocket连接、事件处理 |
 
 日志格式包含：请求ID、用户ID、时间戳、模块、级别、消息、堆栈信息。
 
@@ -823,7 +681,8 @@ pip install pytest httpx
 python -m pytest tests/ -v
 
 # 运行特定测试文件
-python -m pytest tests/test_database.py -v
+python -m pytest tests/test_ppt_generator.py -v
+python -m pytest tests/test_react_engine_recovery.py -v
 ```
 
 ## 常见问题
@@ -842,9 +701,19 @@ A: 请确保 Ollama 服务正在运行：
 ollama serve
 ```
 
-### Q: 向量数据库初始化失败
+### Q: OpenAI API密钥无效（401 错误）
 
-A: 请确保配置了 OpenAI API Key 或使用支持嵌入模型的本地方案。
+A: 推荐使用Ollama避免API密钥问题：
+1. 在 `.env` 中设置 `MODEL_ROUTER_TYPE=ollama`
+2. 确保 `OLLAMA_HOST=http://localhost:11434` 正确配置
+3. 启动Ollama服务并拉取模型
+
+### Q: PPT生成后未发送
+
+A: 请检查：
+1. IM适配器配置是否正确
+2. `get_im_adapter()` 函数调用是否正确
+3. 飞书API权限是否完整
 
 ### Q: 如何启用学习循环
 
