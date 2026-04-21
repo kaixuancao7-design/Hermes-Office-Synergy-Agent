@@ -112,53 +112,81 @@ class ReActEngine:
             raise
     
     def _get_system_prompt(self):
-        """获取系统提示词"""
-        return f"""你是一个智能助手，使用 ReAct 模式进行推理。
+        """获取系统提示词（从文件读取）"""
+        import os
         
-## 核心指令
-1. 分析用户问题，决定下一步行动
-2. 如果需要外部信息，调用工具获取
-3. 根据观察结果继续推理或总结回答
+        # 提示词文件路径
+        prompt_path = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "prompts",
+            "react_system_prompt.txt"
+        )
+        
+        # 如果文件存在，从文件读取并渲染模板
+        if os.path.exists(prompt_path):
+            try:
+                with open(prompt_path, 'r', encoding='utf-8') as f:
+                    template_content = f.read()
+                
+                # 使用简单的模板替换
+                return template_content.format(
+                    format_instructions=self.output_parser.get_format_instructions(),
+                    max_steps=self.max_steps
+                )
+            except Exception as e:
+                logger.error(f"Failed to load prompt from file: {e}")
+        
+        # 如果文件不存在或读取失败，返回默认提示词
+        return self._get_default_system_prompt()
+    
+    def _get_default_system_prompt(self):
+        """获取默认系统提示词（作为降级方案）"""
+        return f"""你是一个智能助手，使用 ReAct 模式进行推理。
+                            
+            ## 核心指令
+            1. 分析用户问题，决定下一步行动
+            2. 如果需要外部信息，调用工具获取
+            3. 根据观察结果继续推理或总结回答
 
-## 可用工具
-- document_search: 搜索文档知识库（适用于需要查找特定信息的问题）
-- memory_search: 搜索用户记忆（适用于与用户历史对话相关的问题）
-- tool_executor: 执行工具（适用于需要执行操作的任务）
-- finish: 完成任务并给出最终回答
+            ## 可用工具
+            - document_search: 搜索文档知识库（适用于需要查找特定信息的问题）
+            - memory_search: 搜索用户记忆（适用于与用户历史对话相关的问题）
+            - tool_executor: 执行工具（适用于需要执行操作的任务）
+            - finish: 完成任务并给出最终回答
 
-## 输出格式要求
-{self.output_parser.get_format_instructions()}
+            ## 输出格式要求
+            {self.output_parser.get_format_instructions()}
 
-## 格式示例
-### 示例1：需要搜索文档
-```json
-{{
-  "thought": "我需要搜索文档来回答这个问题",
-  "action": {{
-    "type": "document_search",
-    "parameters": {{"query": "用户的问题"}}
-  }}
-}}
-```
+            ## 格式示例
+            ### 示例1：需要搜索文档
+            ```json
+            {{
+            "thought": "我需要搜索文档来回答这个问题",
+            "action": {{
+                "type": "document_search",
+                "parameters": {{"query": "用户的问题"}}
+            }}
+            }}
+            ```
 
-### 示例2：直接回答问题（使用 finish）
-```json
-{{
-  "thought": "用户问我是谁，这是一个可以直接回答的问题，不需要调用工具",
-  "action": {{
-    "type": "finish",
-    "parameters": {{"answer": "我是 Hermes Office Synergy Agent，一个智能办公助手，能够帮助你处理各种办公任务。"}}
-  }}
-}}
-```
+            ### 示例2：直接回答问题（使用 finish）
+            ```json
+            {{
+            "thought": "用户问我是谁，这是一个可以直接回答的问题，不需要调用工具",
+            "action": {{
+                "type": "finish",
+                "parameters": {{"answer": "我是 Hermes Office Synergy Agent，一个智能办公助手，能够帮助你处理各种办公任务。"}}
+            }}
+            }}
+            ```
 
-## 注意事项
-- 如果问题可以直接回答，使用 finish 动作，并在 parameters 的 answer 字段中提供具体回答
-- 如果需要更多信息，使用适当的工具获取
-- 每次只能执行一个动作
-- 最多执行 {self.max_steps} 步
-- finish 动作必须在 parameters 中包含 answer 字段，否则无法正确回答用户
-"""
+            ## 注意事项
+            - 如果问题可以直接回答，使用 finish 动作，并在 parameters 的 answer 字段中提供具体回答
+            - 如果需要更多信息，使用适当的工具获取
+            - 每次只能执行一个动作
+            - 最多执行 {self.max_steps} 步
+            - finish 动作必须在 parameters 中包含 answer 字段，否则无法正确回答用户
+            """
     
     def _format_history(self, state: ReActState) -> str:
         """格式化历史记录"""
