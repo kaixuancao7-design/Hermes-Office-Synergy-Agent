@@ -74,6 +74,19 @@ class SkillChangeLog(BaseModel):
     new_version: Optional[str] = None
 
 
+class AssumptionChecklist(BaseModel):
+    """假设澄清清单 - 遵循HERMES.md Think Before Coding原则"""
+    is_valid: bool
+    core_need: str = ""
+    ambiguities: List[str] = []
+    resources: List[str] = []
+    permissions_needed: List[str] = []
+    potential_exceptions: List[str] = []
+    compliance_risks: List[str] = []
+    confidence_score: float = 0.0
+    issues: List[str] = []
+
+
 class UserRole(BaseModel):
     """用户角色"""
     user_id: str

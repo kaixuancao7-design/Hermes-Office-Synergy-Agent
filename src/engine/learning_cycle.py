@@ -1,6 +1,13 @@
-"""学习循环模块 - 实现反馈捕获、差异分析、技能提炼与验证"""
+"""学习循环模块 - 实现反馈捕获、差异分析、技能提炼与验证
+
+遵循HERMES.md原则：
+1. Think Before Coding: 技能生成前必须进行假设澄清
+2. Simplicity First: 技能保持极简，不过度设计
+3. Surgical Changes: 精准修改，只做必要变更
+4. Goal-Driven Execution: 目标可验证，测试闭环
+"""
 from typing import List, Dict, Any, Optional
-from src.types import Skill, SkillStep, Intent, CorrectionAnalysis, SkillDraft, VerificationResult
+from src.types import Skill, SkillStep, Intent, CorrectionAnalysis, SkillDraft, VerificationResult, AssumptionChecklist
 from src.data.database import db
 from src.utils import generate_id, get_timestamp
 from src.plugins import get_model_router, get_skill_manager, get_memory_store
@@ -15,6 +22,13 @@ class LearningCycle:
     def __init__(self):
         self.pending_corrections: List[Dict[str, Any]] = []
         self.VERIFICATION_THRESHOLD = settings.LEARNING_VERIFICATION_THRESHOLD if hasattr(settings, 'LEARNING_VERIFICATION_THRESHOLD') else 0.7
+        # 复杂度阈值（遵循HERMES.md）
+        self.COMPLEXITY_THRESHOLDS = {
+            'max_steps': 10,
+            'max_branches': 3,
+            'max_nesting': 2,
+            'max_tools': 5
+        }
     
     def capture_correction(
         self,
@@ -73,8 +87,14 @@ class LearningCycle:
             return "unknown"
     
     def process_single_correction(self, correction: Dict[str, Any]) -> None:
-        """处理单个修正，执行完整的技能提炼与验证流程"""
+        """处理单个修正，执行完整的技能提炼与验证流程（遵循HERMES.md三闸门）"""
         try:
+            # === 闸门1: 假设澄清 ===
+            checklist = self._clarify_assumptions(correction)
+            if not checklist.is_valid:
+                logger.info(f"Assumption clarification failed, skipping: {checklist.issues}")
+                return
+            
             # Step 1: 深度差异分析
             analysis = self._analyze_correction(correction)
             
@@ -83,10 +103,20 @@ class LearningCycle:
                 logger.debug("No actionable content found in correction")
                 return
             
-            # Step 2: 生成技能草稿
-            draft = self._generate_skill_draft(correction, analysis)
+            # Step 2: 生成技能草稿（包含假设清单）
+            draft = self._generate_skill_draft(correction, analysis, checklist)
+            
+            # === 闸门2: 复杂度检查 ===
+            complexity_result = self._check_complexity(draft)
+            if not complexity_result.is_acceptable:
+                draft.status = "pending_review"
+                draft.metadata["complexity_issues"] = complexity_result.issues
+                logger.info(f"Skill complexity exceeds threshold, needs review: {draft.skill_name}")
+                skill_verification_service.save_draft(draft)
+                return
             
             # Step 3: 自动验证
+            # === 闸门3: 测试验证 ===
             verification_result = self._verify_skill_draft(draft)
             
             if verification_result.verified:
@@ -96,6 +126,120 @@ class LearningCycle:
                 
         except Exception as e:
             logger.error(f"Processing correction failed: {str(e)}", exc_info=True)
+    
+    def _clarify_assumptions(self, correction: Dict[str, Any]) -> AssumptionChecklist:
+        """
+        假设澄清 - HERMES.md第一道闸门
+        
+        在生成技能草稿前，先分析并列出所有假设、方案和风险点，
+        确保Agent理解正确，避免"瞎做"
+        """
+        model_router = get_model_router()
+        if not model_router:
+            return AssumptionChecklist(
+                is_valid=False,
+                issues=["No model router available for assumption clarification"]
+            )
+        
+        prompt = f"""
+        Analyze the following user feedback and generate an assumption checklist:
+        
+        User Intent: {correction.get('intent', 'unknown')}
+        Original Output: {correction.get('original', '')}
+        Corrected Output: {correction.get('corrected', '')}
+        Context: {correction.get('context', '')}
+        
+        Please answer the following questions:
+        
+        1. What is the user's core need? (1-2 sentences)
+        2. Are there any ambiguities or points that need confirmation?
+        3. What system resources are involved? (files, APIs, databases)
+        4. Are special permissions required? If yes, what kind?
+        5. What exceptions might occur during execution?
+        6. Are there any compliance risks?
+        
+        Format your response as JSON with the following structure:
+        {{
+            "core_need": "...",
+            "ambiguities": ["...", "..."],
+            "resources": ["...", "..."],
+            "permissions_needed": ["...", "..."],
+            "potential_exceptions": ["...", "..."],
+            "compliance_risks": ["...", "..."],
+            "is_understanding_clear": true/false,
+            "confidence_score": 0.0-1.0
+        }}
+        """
+        
+        try:
+            model = model_router.select_model("analysis", "simple")
+            response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+            
+            import json
+            result = json.loads(response)
+            
+            issues = []
+            if not result.get("is_understanding_clear", False):
+                issues.append("Understanding not clear")
+            if result.get("confidence_score", 0) < 0.7:
+                issues.append(f"Low confidence score: {result.get('confidence_score')}")
+            if len(result.get("ambiguities", [])) > 0:
+                issues.append(f"Unresolved ambiguities: {', '.join(result['ambiguities'])}")
+            
+            return AssumptionChecklist(
+                is_valid=len(issues) == 0,
+                core_need=result.get("core_need", ""),
+                ambiguities=result.get("ambiguities", []),
+                resources=result.get("resources", []),
+                permissions_needed=result.get("permissions_needed", []),
+                potential_exceptions=result.get("potential_exceptions", []),
+                compliance_risks=result.get("compliance_risks", []),
+                confidence_score=result.get("confidence_score", 0),
+                issues=issues
+            )
+        except Exception as e:
+            logger.error(f"Assumption clarification failed: {str(e)}")
+            return AssumptionChecklist(
+                is_valid=False,
+                issues=[f"Clarification failed: {str(e)}"]
+            )
+    
+    def _check_complexity(self, draft: SkillDraft) -> Dict[str, Any]:
+        """
+        复杂度检查 - HERMES.md第二道闸门
+        
+        检查技能草稿的复杂度是否在允许范围内
+        """
+        issues = []
+        steps = draft.steps or []
+        
+        # 检查步骤数
+        if len(steps) > self.COMPLEXITY_THRESHOLDS['max_steps']:
+            issues.append(f"Steps ({len(steps)}) exceed threshold ({self.COMPLEXITY_THRESHOLDS['max_steps']})")
+        
+        # 检查条件分支数
+        branch_count = sum(1 for step in steps if 'if' in step.action.lower() or 'branch' in step.action.lower())
+        if branch_count > self.COMPLEXITY_THRESHOLDS['max_branches']:
+            issues.append(f"Branches ({branch_count}) exceed threshold ({self.COMPLEXITY_THRESHOLDS['max_branches']})")
+        
+        # 检查嵌套深度（简单估算）
+        nesting_count = sum(step.parameters.get('nesting_level', 0) for step in steps)
+        if nesting_count > self.COMPLEXITY_THRESHOLDS['max_nesting']:
+            issues.append(f"Nesting depth ({nesting_count}) exceed threshold ({self.COMPLEXITY_THRESHOLDS['max_nesting']})")
+        
+        # 检查工具调用数
+        tool_count = sum(1 for step in steps if step.action == 'execute')
+        if tool_count > self.COMPLEXITY_THRESHOLDS['max_tools']:
+            issues.append(f"Tool calls ({tool_count}) exceed threshold ({self.COMPLEXITY_THRESHOLDS['max_tools']})")
+        
+        return {
+            'is_acceptable': len(issues) == 0,
+            'issues': issues,
+            'step_count': len(steps),
+            'branch_count': branch_count,
+            'nesting_count': nesting_count,
+            'tool_count': tool_count
+        }
     
     def _analyze_correction(self, correction: Dict[str, Any]) -> CorrectionAnalysis:
         """
@@ -112,8 +256,9 @@ class LearningCycle:
             user_intent=correction["intent"]
         )
     
-    def _generate_skill_draft(self, correction: Dict[str, Any], analysis: CorrectionAnalysis) -> SkillDraft:
-        """根据分析结果生成技能草稿"""
+    def _generate_skill_draft(self, correction: Dict[str, Any], analysis: CorrectionAnalysis, 
+                              checklist: Optional[AssumptionChecklist] = None) -> SkillDraft:
+        """根据分析结果生成技能草稿（包含假设清单）"""
         draft = skill_verification_service.generate_skill_draft(
             user_id=correction["user_id"],
             analysis=analysis,
@@ -121,7 +266,19 @@ class LearningCycle:
             user_intent=correction["intent"]
         )
         
-        # 设置为待审核状态
+        # 将假设清单存入metadata，便于管理员审核
+        if checklist:
+            draft.metadata["assumption_checklist"] = {
+                "core_need": checklist.core_need,
+                "ambiguities": checklist.ambiguities,
+                "resources": checklist.resources,
+                "permissions_needed": checklist.permissions_needed,
+                "potential_exceptions": checklist.potential_exceptions,
+                "compliance_risks": checklist.compliance_risks,
+                "confidence_score": checklist.confidence_score
+            }
+        
+        # 设置为待审核状态（默认）
         draft.status = "pending_review"
         return draft
     

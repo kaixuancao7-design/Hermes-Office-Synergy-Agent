@@ -1,4 +1,4 @@
-"""插件抽象基类定义"""
+"""插件抽象基类定义 - 遵循HERMES.md原则"""
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional, List
 from src.types import Message, MemoryEntry, Skill
@@ -9,6 +9,94 @@ from src.exceptions import (
     SkillException,
     ToolException
 )
+
+# 插件白名单配置（遵循HERMES.md安全原则）
+PLUGIN_WHITELIST = {
+    'im_adapters': ['feishu', 'dingtalk', 'wecom', 'wechat', 'slack', 'discord'],
+    'model_routers': ['openai', 'anthropic', 'ollama', 'zhipu', 'moonshot'],
+    'memory_stores': ['chroma', 'milvus', 'faiss'],
+    'skill_managers': ['default'],
+    'tool_executors': ['default']
+}
+
+# 危险工具列表（需要管理员授权）
+HAZARDOUS_TOOLS = ['file_delete', 'system_command', 'network_scan', 'data_export']
+
+
+class PluginSecurityManager:
+    """插件安全管理器 - 负责白名单校验和权限预检查"""
+    
+    @staticmethod
+    def is_plugin_whitelisted(plugin_type: str, plugin_name: str) -> bool:
+        """
+        检查插件是否在白名单中
+        
+        Args:
+            plugin_type: 插件类型（im_adapters, model_routers, memory_stores, etc.）
+            plugin_name: 插件名称
+        
+        Returns:
+            是否在白名单中
+        """
+        allowed_plugins = PLUGIN_WHITELIST.get(plugin_type, [])
+        return plugin_name.lower() in allowed_plugins
+    
+    @staticmethod
+    def check_tool_permission(user_id: str, tool_id: str) -> bool:
+        """
+        检查用户是否有权限执行工具
+        
+        Args:
+            user_id: 用户ID
+            tool_id: 工具ID
+        
+        Returns:
+            是否有权限
+        """
+        from src.services.permission_service import permission_service
+        
+        # 危险工具需要管理员授权
+        if tool_id in HAZARDOUS_TOOLS:
+            user_role = permission_service.get_user_role(user_id)
+            return user_role and user_role.role == 'admin'
+        
+        # 普通工具检查execute权限
+        result = permission_service.check_tool_permission(user_id, tool_id, 'execute')
+        return result.allowed
+    
+    @staticmethod
+    def validate_plugin_config(plugin_type: str, config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        验证插件配置的安全性
+        
+        Args:
+            plugin_type: 插件类型
+            config: 插件配置
+        
+        Returns:
+            验证结果，包含是否通过和警告信息
+        """
+        issues = []
+        warnings = []
+        
+        # 检查敏感信息
+        sensitive_keys = ['password', 'secret', 'token', 'key']
+        for key in sensitive_keys:
+            if key in config:
+                value = config[key]
+                if isinstance(value, str) and len(value) > 0:
+                    warnings.append(f"配置包含敏感信息: {key}")
+        
+        # 检查危险配置
+        if plugin_type == 'im_adapters':
+            if config.get('webhook_url'):
+                warnings.append("使用Webhook可能存在安全风险")
+        
+        return {
+            'is_valid': len(issues) == 0,
+            'issues': issues,
+            'warnings': warnings
+        }
 
 
 class IMAdapterBase(ABC):

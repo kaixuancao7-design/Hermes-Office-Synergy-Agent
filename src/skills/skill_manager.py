@@ -12,6 +12,14 @@ logger = setup_logging(settings.LOG_LEVEL)
 
 
 class SkillManager:
+    # 复杂度阈值（遵循HERMES.md原则）
+    COMPLEXITY_THRESHOLDS = {
+        'max_steps': 10,
+        'max_branches': 3,
+        'max_nesting': 2,
+        'max_tools': 5
+    }
+    
     def __init__(self):
         self._load_skills()
     
@@ -443,6 +451,128 @@ class SkillManager:
             audit_log_service.log_skill_execute(user_id, skill_id, skill.name)
         
         return permission.allowed
+    
+    def check_complexity(self, skill: Skill) -> Dict[str, Any]:
+        """
+        技能复杂度检查 - 遵循HERMES.md Simplicity First原则
+        
+        检查技能的复杂度是否在允许范围内，超过阈值需要人工审核
+        
+        Args:
+            skill: 技能对象
+        
+        Returns:
+            检查结果，包含是否通过、问题列表和各项指标
+        """
+        issues = []
+        steps = skill.steps or []
+        
+        # 检查步骤数
+        step_count = len(steps)
+        if step_count > self.COMPLEXITY_THRESHOLDS['max_steps']:
+            issues.append(f"步骤数({step_count})超过阈值({self.COMPLEXITY_THRESHOLDS['max_steps']})")
+        
+        # 检查条件分支数
+        branch_count = sum(1 for step in steps if step.condition is not None)
+        if branch_count > self.COMPLEXITY_THRESHOLDS['max_branches']:
+            issues.append(f"条件分支数({branch_count})超过阈值({self.COMPLEXITY_THRESHOLDS['max_branches']})")
+        
+        # 检查嵌套深度（通过next_step_id链估算）
+        nesting_count = 0
+        step_map = {s.id: s for s in steps}
+        for step in steps:
+            current_depth = 0
+            current_id = step.next_step_id
+            while current_id and current_depth < 10:
+                current_depth += 1
+                current_id = step_map.get(current_id, None).next_step_id
+            nesting_count = max(nesting_count, current_depth)
+        
+        if nesting_count > self.COMPLEXITY_THRESHOLDS['max_nesting']:
+            issues.append(f"嵌套深度({nesting_count})超过阈值({self.COMPLEXITY_THRESHOLDS['max_nesting']})")
+        
+        # 检查工具调用数
+        tool_count = sum(1 for step in steps if step.action == 'execute')
+        if tool_count > self.COMPLEXITY_THRESHOLDS['max_tools']:
+            issues.append(f"工具调用数({tool_count})超过阈值({self.COMPLEXITY_THRESHOLDS['max_tools']})")
+        
+        return {
+            'is_acceptable': len(issues) == 0,
+            'issues': issues,
+            'step_count': step_count,
+            'branch_count': branch_count,
+            'nesting_count': nesting_count,
+            'tool_count': tool_count,
+            'thresholds': self.COMPLEXITY_THRESHOLDS
+        }
+    
+    def validate_skill_changes(self, original_skill: Skill, updated_skill: Skill, 
+                                user_request: str) -> Dict[str, Any]:
+        """
+        技能变更验证 - 遵循HERMES.md Surgical Changes原则
+        
+        检查技能变更是否符合"最小diff"原则，拒绝无关变更
+        
+        Args:
+            original_skill: 原始技能
+            updated_skill: 更新后的技能
+            user_request: 用户的修改请求
+        
+        Returns:
+            验证结果，包含是否通过、变更摘要、警告信息
+        """
+        changes = []
+        warnings = []
+        
+        # 检查名称变更
+        if original_skill.name != updated_skill.name:
+            changes.append(f"名称: '{original_skill.name}' -> '{updated_skill.name}'")
+        
+        # 检查描述变更
+        if original_skill.description != updated_skill.description:
+            changes.append("描述已修改")
+        
+        # 检查触发模式变更
+        if set(original_skill.trigger_patterns) != set(updated_skill.trigger_patterns):
+            changes.append(f"触发模式: {original_skill.trigger_patterns} -> {updated_skill.trigger_patterns}")
+        
+        # 检查步骤变更
+        original_step_ids = {s.id for s in original_skill.steps}
+        updated_step_ids = {s.id for s in updated_skill.steps}
+        
+        added_steps = updated_step_ids - original_step_ids
+        removed_steps = original_step_ids - updated_step_ids
+        
+        if added_steps:
+            changes.append(f"新增步骤: {len(added_steps)}个")
+        
+        if removed_steps:
+            changes.append(f"删除步骤: {len(removed_steps)}个")
+        
+        # 检查步骤内容变更
+        for step in updated_skill.steps:
+            original_step = next((s for s in original_skill.steps if s.id == step.id), None)
+            if original_step:
+                if original_step.action != step.action:
+                    changes.append(f"步骤{step.id}动作变更: {original_step.action} -> {step.action}")
+                if original_step.parameters != step.parameters:
+                    changes.append(f"步骤{step.id}参数变更")
+        
+        # 检查无关变更警告（遵循Surgical Changes原则）
+        if len(changes) > 3:
+            warnings.append("变更较多，请确认是否都为用户请求所需")
+        
+        # 检查是否有未请求的变更
+        if not user_request and len(changes) > 0:
+            warnings.append("没有用户请求，但技能发生了变更")
+        
+        return {
+            'is_valid': len(warnings) == 0,
+            'changes': changes,
+            'warnings': warnings,
+            'change_count': len(changes),
+            'change_summary': '; '.join(changes) if changes else '无变更'
+        }
 
 
 skill_manager = SkillManager()
