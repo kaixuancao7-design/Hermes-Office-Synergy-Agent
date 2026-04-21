@@ -94,6 +94,78 @@ class FeishuAdapter(IMAdapterBase):
             logger.error(f"发送飞书消息异常: {str(e)}")
             return False
     
+    async def send_file(self, user_id: str, file_path: str, file_name: str = None) -> bool:
+        """发送文件到飞书"""
+        if self._api_client is None:
+            logger.error("飞书API客户端未初始化")
+            return False
+        
+        try:
+            import os
+            
+            # 使用文件名或从路径提取
+            if not file_name:
+                file_name = os.path.basename(file_path)
+            
+            # 检查文件是否存在
+            if not os.path.exists(file_path):
+                logger.error(f"文件不存在: {file_path}")
+                return False
+            
+            # 步骤1：上传文件获取file_key
+            from lark_oapi.api.drive.v1 import UploadFileRequest
+            
+            # 读取文件内容
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            # 构建上传请求
+            upload_request = UploadFileRequest.builder() \
+                .request_body({
+                    "file_name": file_name,
+                    "parent_type": "tmp"  # 临时空间
+                }) \
+                .file_content(file_content) \
+                .build()
+            
+            upload_response = self._api_client.drive.v1.file.upload(upload_request)
+            
+            if not upload_response.success():
+                logger.error(f"文件上传失败: {upload_response.code}, {upload_response.msg}")
+                return False
+            
+            file_key = upload_response.data.file_key
+            logger.info(f"文件上传成功: file_key={file_key}")
+            
+            # 步骤2：发送文件消息
+            from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
+            
+            file_content = json.dumps({
+                "file_key": file_key,
+                "file_name": file_name
+            })
+            
+            request = CreateMessageRequest.builder() \
+                .receive_id_type("user_id") \
+                .request_body(CreateMessageRequestBody.builder() \
+                    .receive_id(user_id) \
+                    .content(file_content) \
+                    .msg_type("file") \
+                    .build()) \
+                .build()
+            
+            response = self._api_client.im.v1.message.create(request)
+            if response.success():
+                logger.info(f"飞书文件消息发送成功: user_id={user_id}, file={file_name}")
+                return True
+            else:
+                logger.error(f"飞书文件消息发送失败: {response.code}, {response.msg}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"发送飞书文件异常: {str(e)}", exc_info=True)
+            return False
+    
     def get_adapter_type(self) -> str:
         return "feishu"
     

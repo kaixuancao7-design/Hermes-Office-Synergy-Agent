@@ -261,7 +261,8 @@ class ToolExecutor:
             "web_search": self._web_search,
             "summarize": self._summarize,
             "generate_ppt": self._generate_ppt,
-            "generate_ppt_from_outline": self._generate_ppt_from_outline
+            "generate_ppt_from_outline": self._generate_ppt_from_outline,
+            "generate_and_send_ppt": self._generate_and_send_ppt
         }
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> str:
@@ -360,6 +361,54 @@ class ToolExecutor:
         except Exception as e:
             logger.error(f"PPT generation from outline failed: {str(e)}")
             return f"PPT generation failed: {str(e)}"
+    
+    def _generate_and_send_ppt(self, params: Dict[str, Any]) -> str:
+        """
+        生成PPT并发送给用户
+        
+        Parameters:
+            user_id: 用户ID
+            title: PPT标题
+            slides: 幻灯片列表
+            im_type: IM类型（feishu, dingtalk, wecom）
+        
+        Returns:
+            操作结果
+        """
+        import asyncio
+        
+        user_id = params.get("user_id", "")
+        title = params.get("title", "Untitled Presentation")
+        slides = params.get("slides", [])
+        im_type = params.get("im_type", "feishu")
+        
+        if not user_id:
+            return "Error: user_id is required"
+        
+        try:
+            # 生成PPT
+            output_path = self.ppt_generator.generate_ppt(title, slides)
+            
+            # 获取IM适配器并发送
+            from src.plugins import get_im_adapter
+            
+            adapter = get_im_adapter(im_type)
+            if adapter:
+                # 发送文件
+                import os
+                file_name = os.path.basename(output_path)
+                send_success = asyncio.run(adapter.send_file(user_id, output_path, file_name))
+                
+                if send_success:
+                    return f"PPT generated and sent successfully! File: {file_name}"
+                else:
+                    return f"PPT generated but failed to send. Path: {output_path}"
+            else:
+                return f"PPT generated but IM adapter not available. Path: {output_path}"
+                
+        except Exception as e:
+            logger.error(f"Generate and send PPT failed: {str(e)}")
+            return f"Failed to generate and send PPT: {str(e)}"
 
 
 tool_executor = ToolExecutor()

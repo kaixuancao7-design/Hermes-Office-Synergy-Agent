@@ -79,9 +79,32 @@ def init_plugins(config: Dict[str, Any] = None) -> bool:
         return False
 
 
-def get_im_adapter() -> Optional[IMAdapterBase]:
-    """获取IM适配器实例"""
-    return im_adapter
+def get_im_adapter(im_type: Optional[str] = None) -> Optional[IMAdapterBase]:
+    """获取IM适配器实例
+    
+    Args:
+        im_type: IM适配器类型，如果为None则返回全局初始化的适配器
+    
+    Returns:
+        IM适配器实例
+    """
+    global im_adapter
+    
+    if im_type is None:
+        return im_adapter
+    
+    # 根据指定类型获取适配器
+    if im_type in IM_ADAPTER_REGISTRY:
+        try:
+            adapter = IM_ADAPTER_REGISTRY[im_type]()
+            logger.info(f"动态获取IM适配器: {im_type}")
+            return adapter
+        except Exception as e:
+            logger.error(f"创建IM适配器失败: {im_type}, 错误: {str(e)}")
+            return None
+    else:
+        logger.warning(f"未找到IM适配器类型: {im_type}")
+        return None
 
 
 def get_model_router() -> Optional[ModelRouterBase]:

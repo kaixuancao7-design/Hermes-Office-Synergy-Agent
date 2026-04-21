@@ -24,7 +24,7 @@ class Thought(BaseModel):
 
 class Action(BaseModel):
     """动作"""
-    type: Literal['tool_call', 'finish', 'summarize', 'memory_search', 'document_search', 'tool_executor', 'generate_ppt', 'generate_ppt_from_outline']
+    type: Literal['tool_call', 'finish', 'summarize', 'memory_search', 'document_search', 'tool_executor', 'generate_ppt', 'generate_ppt_from_outline', 'generate_and_send_ppt']
     tool_id: Optional[str] = None
     parameters: Optional[Dict[str, Any]] = None
 
@@ -353,6 +353,30 @@ class ReActEngine:
                 if executor:
                     result = executor.execute("generate_ppt_from_outline", {"title": title, "outline": outline})
                     success = "successfully" in result.lower()
+                else:
+                    result = "Tool executor not available"
+                    success = False
+                return Observation(
+                    action_id=action_id,
+                    result=str(result),
+                    success=success
+                )
+            
+            elif action.type == "generate_and_send_ppt":
+                title = params.get("title", "Untitled Presentation")
+                slides = params.get("slides", [])
+                user_id = params.get("user_id", "")
+                im_type = params.get("im_type", "feishu")
+                # 使用工具执行器生成并发送PPT
+                executor = get_tool_executor()
+                if executor:
+                    result = executor.execute("generate_and_send_ppt", {
+                        "title": title,
+                        "slides": slides,
+                        "user_id": user_id,
+                        "im_type": im_type
+                    })
+                    success = "sent successfully" in result.lower() or "generated and sent" in result.lower()
                 else:
                     result = "Tool executor not available"
                     success = False

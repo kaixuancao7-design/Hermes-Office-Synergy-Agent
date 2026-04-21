@@ -117,6 +117,22 @@ class IMAdapterBase(ABC):
         """发送消息"""
         pass
     
+    async def send_file(self, user_id: str, file_path: str, file_name: str = None) -> bool:
+        """
+        发送文件
+        
+        Args:
+            user_id: 用户ID
+            file_path: 文件路径
+            file_name: 文件名（可选）
+        
+        Returns:
+            是否发送成功
+        """
+        logger = get_logger("im")
+        logger.warning(f"send_file not implemented for adapter type: {self.get_adapter_type()}")
+        return False
+    
     @abstractmethod
     def get_adapter_type(self) -> str:
         """获取适配器类型"""
