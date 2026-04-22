@@ -3,7 +3,7 @@ from typing import Dict, Any, Optional, List
 from src.types import Message, Skill, UserProfile, SkillDraft, VerificationResult, AuditQueryResult
 from src.gateway.message_router import message_router
 from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
-from src.skills.skill_manager import skill_manager
+from src.skills import skill_manager
 from src.engine.memory_manager import memory_manager
 from src.engine.learning_cycle import learning_cycle
 from src.services.skill_verification import skill_verification_service

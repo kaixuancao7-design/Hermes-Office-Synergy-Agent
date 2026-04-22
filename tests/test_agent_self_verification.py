@@ -6,7 +6,7 @@ Agent自验证用例库 - 遵循HERMES.md Goal-Driven Execution原则
 """
 import pytest
 from typing import Dict, Any
-from src.skills.skill_manager import skill_manager
+from src.skills import skill_manager
 from src.types import Skill, SkillStep
 from src.services.permission_service import permission_service
 from src.services.audit_log_service import audit_log_service

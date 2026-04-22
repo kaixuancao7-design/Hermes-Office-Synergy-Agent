@@ -30,7 +30,7 @@ logger = get_logger("gateway")
 from src.api.v1.endpoints import router as v1_router
 from src.utils import ensure_directory
 from src.data.database import db
-from src.skills.skill_manager import skill_manager
+from src.skills import skill_manager
 from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
 from src.gateway.feishu_websocket import feishu_websocket_service
 from src.errors import EXCEPTION_HANDLERS

@@ -1,4 +1,4 @@
-from src.skills.skill_manager import skill_manager
+from src.skills import skill_manager
 from src.utils import generate_id, get_timestamp
 
 
