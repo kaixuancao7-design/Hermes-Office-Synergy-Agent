@@ -47,11 +47,11 @@ class IMTrigger:
         
         # 支持的附件类型
         self.supported_attachments = [
-            ".xlsx", ".xls", ".csv",
-            ".docx", ".doc",
+            ".xlsx", ".xls", ".csv", ".tsv",
+            ".docx", ".doc", ".rtf",
             ".pdf",
             ".pptx", ".ppt",
-            ".txt", ".md"
+            ".txt", ".md", ".json", ".xml", ".html"
         ]
     
     def process_message(self, message: Dict[str, Any]) -> TriggerResult:
@@ -239,11 +239,13 @@ class IMTrigger:
     def handle_attachment_upload(self, attachment: Dict[str, Any], context: Dict[str, Any]) -> TriggerResult:
         """处理附件上传"""
         file_name = attachment.get("name", "")
+        user_id = context.get("user_id", "unknown")
+        user_name = context.get("user_name", "unknown")
         
         # 检查是否是支持的文件类型
         for ext in self.supported_attachments:
             if file_name.lower().endswith(ext):
-                logger.info(f"Attachment trigger: {file_name}")
+                logger.info(f"Attachment trigger: user_id={user_id}, user_name={user_name}, file={file_name}")
                 
                 # 构建消息上下文
                 message = {

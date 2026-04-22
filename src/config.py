@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     MODEL_ROUTER_TYPE: str = "ollama"  # ollama, openai, anthropic, zhipu, moonshot, multi
     MEMORY_STORE_TYPE: str = "redis_hybrid"  # chroma, simple, milvus, faiss, hybrid, redis_hybrid
     SKILL_MANAGER_TYPE: str = "hybrid"  # database, file, hybrid
+    EMBEDDING_SERVICE_TYPE: str = "default"  # default, openai, ollama, sentence_transformer, zhipu, moonshot
     
     # Redis配置
     REDIS_HOST: str = "localhost"

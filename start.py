@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import os
 import sys
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning, message="pkg_resources is deprecated as an API")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 

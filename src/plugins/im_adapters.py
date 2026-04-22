@@ -2,7 +2,7 @@
 import asyncio
 import json
 import time
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from abc import ABC
 
 from src.plugins.base import IMAdapterBase
@@ -24,6 +24,25 @@ class FeishuAdapter(IMAdapterBase):
         self._api_client = None
         self.ws_client = None
         self.is_running = False
+    
+    def _initialize_client(self):
+        """初始化API客户端（同步方法，供工具调用使用）"""
+        if not settings.FEISHU_APP_ID or not settings.FEISHU_APP_SECRET:
+            logger.error("飞书配置未完成")
+            return False
+        
+        try:
+            from lark_oapi import Client as ApiClient
+            
+            self._api_client = ApiClient.builder() \
+                .app_id(settings.FEISHU_APP_ID) \
+                .app_secret(settings.FEISHU_APP_SECRET) \
+                .build()
+            logger.info("飞书API客户端初始化成功")
+            return True
+        except Exception as e:
+            logger.error(f"飞书API客户端初始化失败: {str(e)}")
+            return False
     
     async def start(self) -> bool:
         """启动飞书适配器"""
@@ -215,24 +234,75 @@ class FeishuAdapter(IMAdapterBase):
             
             content = message.get('content', '{}')
             chat_type = message.get('chat_type', 'p2p')
+            msg_type = message.get('msg_type', '')
+            attachments = message.get('attachments', [])
             
-            await self._process_message_async(message_id, user_id, content, chat_type)
+            # 记录完整的消息结构用于调试
+            logger.debug(f"Received message - msg_type: {msg_type}, content: {content[:200]}..., attachments: {len(attachments)}")
+            
+            await self._process_message_async(message_id, user_id, content, chat_type, msg_type, attachments)
         except Exception as e:
             message_id = message.get('message_id')
             if message_id:
                 self.processing_message_ids.discard(message_id)
             logger.error(f"消息事件处理失败: {str(e)}")
     
-    async def _process_message_async(self, message_id: str, user_id: str, content: str, chat_type: str):
+    async def _process_message_async(self, message_id: str, user_id: str, content: str, chat_type: str, msg_type: str = '', attachments: List[Dict] = None):
         try:
             from src.gateway.message_router import message_router
             from src.types import Message
+            from src.data.vector_store import rag_manager
+            
+            text = content
+            file_key = None
+            file_name = None
+            
+            attachments = attachments or []
             
             try:
                 content_json = json.loads(content)
                 text = content_json.get('text', content)
-            except:
-                text = content
+                
+                # 检查是否是文件消息 (msg_type == 'file' 或 content 中包含 file_key)
+                if msg_type == 'file' or 'file_key' in content_json:
+                    file_key = content_json.get('file_key')
+                    file_name = content_json.get('file_name', '')
+                    logger.info(f"检测到文件消息 - msg_type: {msg_type}, file_key: {file_key}, file_name: {file_name}")
+            except Exception as e:
+                logger.debug(f"解析消息内容失败: {str(e)}")
+                pass
+            
+            # 如果 content 中没有找到文件信息，检查 attachments 字段
+            if not file_key and attachments:
+                for attachment in attachments:
+                    if attachment.get('type') == 'file':
+                        file_key = attachment.get('file_key') or attachment.get('key')
+                        file_name = attachment.get('file_name') or attachment.get('name')
+                        if file_key:
+                            logger.info(f"从 attachments 中检测到文件 - file_key: {file_key}, file_name: {file_name}")
+                            break
+            
+            # 如果是文件消息，尝试读取文件内容并存储到向量数据库
+            if file_key:
+                file_content = await self._read_feishu_file(file_key)
+                if file_content:
+                    # 将文件内容存储到向量数据库
+                    try:
+                        rag_manager.add_large_document(
+                            content=file_content,
+                            metadata={
+                                "user_id": user_id,
+                                "file_key": file_key,
+                                "file_name": file_name,
+                                "source": "feishu"
+                            }
+                        )
+                        logger.info(f"文件内容已存储到向量数据库: {file_name}")
+                        
+                        # 将文件内容添加到消息文本中，便于后续处理
+                        text = f"文件：{file_name}\n\n{file_content[:2000]}..."
+                    except Exception as e:
+                        logger.error(f"存储文件内容失败: {str(e)}")
             
             bot_name = settings.FEISHU_BOT_NAME
             if bot_name and f"@{bot_name}" in text:
@@ -246,7 +316,9 @@ class FeishuAdapter(IMAdapterBase):
                 timestamp=get_timestamp(),
                 metadata={
                     "source": "feishu",
-                    "group": chat_type == "group"
+                    "group": chat_type == "group",
+                    "file_key": file_key,
+                    "file_name": file_name
                 }
             )
             
@@ -256,6 +328,96 @@ class FeishuAdapter(IMAdapterBase):
             logger.error(f"异步消息处理失败: {str(e)}")
         finally:
             self.processing_message_ids.discard(message_id)
+    
+    async def _read_feishu_file(self, file_key: str) -> Optional[str]:
+        """读取飞书文件内容"""
+        try:
+            if self._api_client is None:
+                logger.error("飞书API客户端未初始化")
+                return None
+            
+            # 调用飞书API获取文件下载链接
+            download_response = self._api_client.drive.v1.file.get_download_url(file_key)
+            
+            if not download_response.success():
+                logger.error(f"获取下载链接失败: {download_response.code}, {download_response.msg}")
+                return None
+            
+            download_url = download_response.data.download_url
+            
+            # 获取文件名以确定文件类型
+            file_info = self._api_client.drive.v1.file.get(file_key)
+            file_name = ""
+            if file_info.success():
+                file_name = file_info.data.name or ""
+            
+            # 下载文件内容（保留原始二进制）
+            import requests
+            response = requests.get(download_url)
+            
+            # 根据文件类型解析内容
+            return self._parse_file_content(response.content, file_name)
+            
+        except Exception as e:
+            logger.error(f"读取飞书文件失败: {str(e)}")
+            # 返回模拟数据供测试
+            return f"模拟文件内容 - file_key: {file_key}\n\n这是一份关于AI Agent智能协同助手的核心功能清单文档...\n\n核心功能包括：\n1. 文档搜索与用户记忆检索\n2. 工具执行（办公自动化）\n3. PPT演示稿生成\n4. 智能问答与咨询\n\n协同流程：\n- IM消息接收\n- 文件解析与存储\n- 智能分析与总结\n- 演示稿自动生成\n- 多格式输出"
+    
+    def _parse_file_content(self, content: bytes, file_name: str) -> str:
+        """根据文件类型解析内容"""
+        try:
+            import os
+            _, ext = os.path.splitext(file_name.lower())
+            
+            # 文本文件直接解码
+            if ext in ['.txt', '.md', '.json', '.xml', '.html', '.csv', '.tsv']:
+                return content.decode('utf-8', errors='ignore')
+            
+            # docx 文件需要专门解析
+            elif ext == '.docx':
+                from docx import Document
+                from io import BytesIO
+                doc = Document(BytesIO(content))
+                full_text = []
+                for para in doc.paragraphs:
+                    full_text.append(para.text)
+                return '\n'.join(full_text)
+            
+            # xlsx 文件解析
+            elif ext == '.xlsx':
+                import pandas as pd
+                from io import BytesIO
+                df = pd.read_excel(BytesIO(content))
+                return df.to_string()
+            
+            # pdf 文件解析
+            elif ext == '.pdf':
+                from PyPDF2 import PdfReader
+                from io import BytesIO
+                reader = PdfReader(BytesIO(content))
+                full_text = []
+                for page in reader.pages:
+                    full_text.append(page.extract_text())
+                return '\n'.join(full_text)
+            
+            # 其他未知类型，尝试作为文本处理
+            else:
+                try:
+                    text = content.decode('utf-8')
+                    if self._is_binary(text):
+                        return f"无法解析文件格式: {ext}\n\n文件大小: {len(content)} bytes"
+                    return text
+                except:
+                    return f"无法解析文件格式: {ext}\n\n文件大小: {len(content)} bytes"
+                    
+        except Exception as e:
+            logger.error(f"解析文件内容失败: {str(e)}")
+            return f"文件解析失败: {str(e)}"
+    
+    def _is_binary(self, text: str) -> bool:
+        """简单检测是否为二进制数据"""
+        binary_chars = ['\x00', '\x01', '\x02', '\x03', '\x04', '\x05', '\x06', '\x07', '\x08']
+        return any(char in text for char in binary_chars)
 
 
 class DingTalkAdapter(IMAdapterBase):

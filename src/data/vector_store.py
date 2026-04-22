@@ -8,6 +8,7 @@ from langchain_core.documents import Document
 
 from src.utils import setup_logging, generate_id
 from src.config import settings
+from src.plugins.embedding_services import get_embedding_service
 
 logger = setup_logging(settings.LOG_LEVEL)
 
@@ -22,29 +23,61 @@ class VectorStore:
     
     def _init_embedding_model(self):
         """Initialize embedding model"""
-        if not settings.OPENAI_API_KEY:
-            logger.error("OpenAI API key is required for embeddings")
-            raise ValueError("OpenAI API key not configured. Please set OPENAI_API_KEY in .env file")
+        # 尝试获取配置的嵌入服务
+        embedding_service = get_embedding_service()
         
-        try:
-            return OpenAIEmbeddings(
-                model="text-embedding-3-small",
-                api_key=settings.OPENAI_API_KEY
-            )
-        except Exception as e:
-            logger.error(f"Failed to initialize embedding model: {e}")
-            raise
+        if embedding_service and embedding_service != "default":
+            # 使用自定义嵌入服务
+            try:
+                from langchain_community.embeddings import OllamaEmbeddings
+                
+                if settings.EMBEDDING_SERVICE_TYPE == "ollama":
+                    return OllamaEmbeddings(
+                        model="Mxbai-embed-large",
+                        base_url=settings.OLLAMA_HOST
+                    )
+                elif settings.EMBEDDING_SERVICE_TYPE == "openai" and settings.OPENAI_API_KEY:
+                    return OpenAIEmbeddings(
+                        model="text-embedding-3-small",
+                        api_key=settings.OPENAI_API_KEY
+                    )
+                else:
+                    # 使用Chroma默认嵌入
+                    logger.info("Using default Chroma embedding")
+                    return None  # None表示使用Chroma默认嵌入
+            except Exception as e:
+                logger.warning(f"Failed to initialize custom embedding: {e}, falling back to default")
+                return None
+        else:
+            # 回退到默认行为
+            if settings.OPENAI_API_KEY:
+                try:
+                    return OpenAIEmbeddings(
+                        model="text-embedding-3-small",
+                        api_key=settings.OPENAI_API_KEY
+                    )
+                except Exception as e:
+                    logger.warning(f"Failed to initialize OpenAI embedding: {e}, falling back to default")
+                    return None
+            else:
+                logger.info("No OpenAI API key configured, using default Chroma embedding")
+                return None
     
     def _init_chroma(self):
         """初始化 ChromaDB"""
         os.makedirs(self.vector_path, exist_ok=True)
         
         try:
-            self.chroma = Chroma(
-                persist_directory=self.vector_path,
-                embedding_function=self.embedding_model,
-                collection_name="hermes_documents"
-            )
+            chroma_kwargs = {
+                "persist_directory": self.vector_path,
+                "collection_name": "hermes_documents"
+            }
+            
+            # 如果嵌入模型不为 None，则传入
+            if self.embedding_model is not None:
+                chroma_kwargs["embedding_function"] = self.embedding_model
+            
+            self.chroma = Chroma(**chroma_kwargs)
             logger.info("ChromaDB initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize ChromaDB: {e}")
@@ -60,7 +93,7 @@ class VectorStore:
         
         try:
             self.chroma.add_documents([document], ids=[doc_id])
-            self.chroma.persist()
+            # 新版本 Chroma 不需要手动 persist
             logger.debug(f"Added vector with id: {doc_id}")
             return doc_id
         except Exception as e:
@@ -82,7 +115,7 @@ class VectorStore:
         
         try:
             self.chroma.add_documents(langchain_docs, ids=doc_ids)
-            self.chroma.persist()
+            # 新版本 Chroma 不需要手动 persist
             logger.info(f"Added {len(doc_ids)} documents")
             return doc_ids
         except Exception as e:
@@ -116,7 +149,7 @@ class VectorStore:
         """删除向量"""
         try:
             self.chroma.delete([vector_id])
-            self.chroma.persist()
+            # 新版本 Chroma 不需要手动 persist
             logger.debug(f"Deleted vector with id: {vector_id}")
             return True
         except Exception as e:

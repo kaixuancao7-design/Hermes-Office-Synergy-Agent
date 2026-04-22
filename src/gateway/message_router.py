@@ -147,8 +147,14 @@ class MessageRouter:
             if model:
                 prompt = f"总结以下内容：\n{text_to_summarize}"
                 return model_router.call_model(model, [{"role": "user", "content": prompt}])
+            else:
+                logger.warning("无法选择总结模型")
+        else:
+            logger.warning("模型路由不可用")
         
-        return "总结功能暂时不可用"
+        # 如果插件不可用，尝试使用 ReAct 模式
+        logger.info("总结功能降级到 ReAct 模式")
+        return react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
     
     def _handle_question_answering(self, user_id: str, intent: Intent, context: str) -> str:
         # 使用插件系统的记忆存储进行检索
@@ -231,8 +237,14 @@ class MessageRouter:
             if model:
                 prompt = f"创作内容：\n{context}"
                 return model_router.call_model(model, [{"role": "user", "content": prompt}])
+            else:
+                logger.warning("无法选择创作模型")
+        else:
+            logger.warning("模型路由不可用")
         
-        return "创作功能暂时不可用"
+        # 如果插件不可用，尝试使用 ReAct 模式
+        logger.info("创作功能降级到 ReAct 模式")
+        return react_engine.run(user_id, f"根据以下内容创作或生成PPT：\n{context}")
     
     def _handle_unknown(self, user_id: str, context: str) -> str:
         try:

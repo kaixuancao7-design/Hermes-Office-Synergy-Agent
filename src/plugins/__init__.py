@@ -31,6 +31,9 @@ def init_plugins(config: Dict[str, Any] = None) -> bool:
     global im_adapter, model_router, memory_store, skill_manager, tool_executor
     
     try:
+        # 检测并执行向量数据迁移（在初始化记忆存储之前）
+        _check_vector_migration()
+        
         # 初始化IM适配器
         im_adapter_type = config.get("im_adapter", settings.IM_ADAPTER_TYPE) if config else settings.IM_ADAPTER_TYPE
         if im_adapter_type in IM_ADAPTER_REGISTRY:
@@ -125,6 +128,19 @@ def get_skill_manager() -> Optional[SkillManagerBase]:
 def get_tool_executor() -> Optional[ToolExecutorBase]:
     """获取工具执行器实例"""
     return tool_executor
+
+
+def _check_vector_migration():
+    """检查并执行向量数据迁移"""
+    try:
+        from src.tools.vector_migration import VectorMigrationTool
+        
+        migration_tool = VectorMigrationTool()
+        migration_tool.run_auto_migration()
+    except ImportError:
+        logger.warning("向量迁移工具未找到，跳过迁移检测")
+    except Exception as e:
+        logger.error(f"向量迁移检测失败: {str(e)}")
 
 
 # 导出注册表供外部使用

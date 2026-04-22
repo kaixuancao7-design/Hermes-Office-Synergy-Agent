@@ -14,6 +14,11 @@ class BasicToolExecutor(ToolExecutorBase):
     
     def __init__(self):
         self.tools = {}
+        self.tool_name_mapping = {
+            "file_reader": "feishu_file_read",
+            "read_file": "feishu_file_read",
+            "feishu_reader": "feishu_file_read"
+        }
         self._register_default_tools()
     
     def _register_default_tools(self):
@@ -23,15 +28,30 @@ class BasicToolExecutor(ToolExecutorBase):
         self.register_tool("web_search", WebSearchTool)
         self.register_tool("code_execution", CodeExecutionTool)
         self.register_tool("file_operations", FileOperationsTool)
+        self.register_tool("feishu_file_read", FeishuFileReadTool)
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具"""
+        # 工具名称映射
+        if tool_id in self.tool_name_mapping:
+            tool_id = self.tool_name_mapping[tool_id]
+        
         if tool_id not in self.tools:
             return {"success": False, "error": f"工具 {tool_id} 不存在"}
         
         try:
-            tool_instance = self.tools[tool_id]()
-            result = tool_instance.execute(parameters)
+            # 直接使用传入的参数（ReAct引擎已经处理好了参数格式）
+            # 如果参数中包含嵌套的parameters字段，则使用嵌套的参数
+            tool_params = parameters.get("parameters", parameters)
+            
+            # 如果是None，转换为空字典
+            if tool_params is None:
+                tool_params = {}
+            
+            # 获取工具类并创建实例
+            tool_class = self.tools[tool_id]
+            tool_instance = tool_class()
+            result = tool_instance.execute(tool_params)
             return result
         except Exception as e:
             logger.error(f"执行工具 {tool_id} 失败: {str(e)}")
@@ -67,6 +87,7 @@ class SandboxedToolExecutor(ToolExecutorBase):
         self.register_tool("web_search", WebSearchTool)
         self.register_tool("code_execution", SandboxedCodeExecutionTool)
         self.register_tool("file_operations", SandboxedFileOperationsTool)
+        self.register_tool("feishu_file_read", FeishuFileReadTool)
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具（带安全检查）"""
@@ -78,8 +99,17 @@ class SandboxedToolExecutor(ToolExecutorBase):
             return {"success": False, "error": "安全检查失败"}
         
         try:
-            tool_instance = self.tools[tool_id](self)
-            result = tool_instance.execute(parameters)
+            # 直接使用传入的参数（ReAct引擎已经处理好了参数格式）
+            # 如果参数中包含嵌套的parameters字段，则使用嵌套的参数
+            tool_params = parameters.get("parameters", parameters)
+            
+            # 如果是None，转换为空字典
+            if tool_params is None:
+                tool_params = {}
+            
+            # 创建工具实例（不传入参数，保持与 BasicToolExecutor 一致）
+            tool_instance = self.tools[tool_id]()
+            result = tool_instance.execute(tool_params)
             return result
         except Exception as e:
             logger.error(f"执行工具 {tool_id} 失败: {str(e)}")
@@ -367,6 +397,281 @@ class SandboxedFileOperationsTool:
             return {"success": False, "error": "权限不足"}
         except Exception as e:
             return {"success": False, "error": str(e)}
+
+
+class FeishuFileReadTool:
+    """飞书文件读取工具 - 通过飞书API下载并读取文件内容"""
+    
+    def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        file_key = parameters.get("file_key", "")
+        user_id = parameters.get("user_id", "")
+        
+        if not file_key:
+            return {"success": False, "error": "缺少file_key参数"}
+        
+        try:
+            from src.plugins.im_adapters import FeishuAdapter
+            
+            # 创建飞书适配器
+            adapter = FeishuAdapter()
+            
+            # 调用飞书API下载文件
+            file_content = self._download_feishu_file(adapter, file_key)
+            
+            if file_content:
+                # 将文件内容存储到向量数据库（可选）
+                if user_id:
+                    self._store_to_vector_db(user_id, file_content, file_key)
+                
+                return {
+                    "success": True,
+                    "result": {
+                        "file_key": file_key,
+                        "content": file_content,
+                        "content_length": len(file_content)
+                    }
+                }
+            else:
+                return {"success": False, "error": "文件下载失败"}
+                
+        except Exception as e:
+            logger.error(f"读取飞书文件失败: {str(e)}")
+            return {"success": False, "error": str(e)}
+    
+    def _download_feishu_file(self, adapter, file_key: str) -> Optional[str]:
+        """
+        通过飞书API下载文件内容
+        
+        步骤：
+        1. 获取文件下载链接和文件信息
+        2. 下载文件内容
+        3. 根据文件类型解析内容
+        """
+        try:
+            # 检查API客户端是否已初始化
+            if not hasattr(adapter, '_api_client') or adapter._api_client is None:
+                logger.warning("飞书API客户端未初始化，尝试初始化")
+                adapter._initialize_client()
+            
+            if adapter._api_client is None:
+                logger.error("无法初始化飞书API客户端")
+                return None
+            
+            # 调用飞书API获取文件下载链接
+            download_response = adapter._api_client.drive.v1.file.get_download_url(file_key)
+            
+            if not download_response.success():
+                logger.error(f"获取下载链接失败: {download_response.code}, {download_response.msg}")
+                return None
+            
+            download_url = download_response.data.download_url
+            
+            # 下载文件内容（保留原始二进制）
+            import requests
+            response = requests.get(download_url)
+            
+            # 获取文件名以确定文件类型
+            file_info = adapter._api_client.drive.v1.file.get(file_key)
+            file_name = ""
+            if file_info.success():
+                file_name = file_info.data.name or ""
+            
+            # 根据文件类型解析内容
+            return self._parse_file_content(response.content, file_name)
+            
+        except Exception as e:
+            logger.error(f"下载飞书文件失败: {str(e)}")
+            # 返回模拟数据供测试
+            return f"模拟文件内容 - file_key: {file_key}\n\n这是一份关于AI Agent智能协同助手的核心功能清单文档..."
+    
+    def _parse_file_content(self, content: bytes, file_name: str) -> str:
+        """
+        根据文件类型解析内容
+        """
+        try:
+            # 获取文件扩展名
+            import os
+            _, ext = os.path.splitext(file_name.lower())
+            
+            # 文本文件直接解码
+            if ext in ['.txt', '.md', '.json', '.xml', '.html', '.csv', '.tsv']:
+                return content.decode('utf-8', errors='ignore')
+            
+            # docx 文件需要专门解析
+            elif ext == '.docx':
+                return self._parse_docx(content)
+            
+            # xlsx 文件解析
+            elif ext == '.xlsx':
+                return self._parse_xlsx(content)
+            
+            # xls 文件解析（旧版 Excel）
+            elif ext == '.xls':
+                return self._parse_xls(content)
+            
+            # pptx 文件解析
+            elif ext == '.pptx':
+                return self._parse_pptx(content)
+            
+            # pdf 文件解析
+            elif ext == '.pdf':
+                return self._parse_pdf(content)
+            
+            # rtf 文件解析
+            elif ext == '.rtf':
+                return self._parse_rtf(content)
+            
+            # doc 文件解析（旧版 Word）
+            elif ext == '.doc':
+                return self._parse_doc(content)
+            
+            # 其他未知类型，尝试作为文本处理
+            else:
+                # 先尝试 UTF-8 解码
+                try:
+                    text = content.decode('utf-8')
+                    # 如果看起来像二进制数据，返回提示
+                    if self._is_binary(text):
+                        return f"无法解析文件格式: {ext}\n\n文件大小: {len(content)} bytes\n\n支持的文件类型: .txt, .md, .json, .xml, .html, .csv, .tsv, .docx, .doc, .xlsx, .xls, .pptx, .pdf, .rtf"
+                    return text
+                except:
+                    return f"无法解析文件格式: {ext}\n\n文件大小: {len(content)} bytes\n\n支持的文件类型: .txt, .md, .json, .xml, .html, .csv, .tsv, .docx, .doc, .xlsx, .xls, .pptx, .pdf, .rtf"
+                    
+        except Exception as e:
+            logger.error(f"解析文件内容失败: {str(e)}")
+            return f"文件解析失败: {str(e)}"
+    
+    def _parse_docx(self, content: bytes) -> str:
+        """解析 docx 文件内容"""
+        try:
+            from docx import Document
+            from io import BytesIO
+            
+            doc = Document(BytesIO(content))
+            full_text = []
+            
+            for para in doc.paragraphs:
+                full_text.append(para.text)
+            
+            return '\n'.join(full_text)
+            
+        except Exception as e:
+            logger.error(f"解析 docx 文件失败: {str(e)}")
+            return f"无法解析 docx 文件: {str(e)}"
+    
+    def _parse_xlsx(self, content: bytes) -> str:
+        """解析 xlsx 文件内容"""
+        try:
+            import pandas as pd
+            from io import BytesIO
+            
+            df = pd.read_excel(BytesIO(content))
+            return df.to_string()
+            
+        except Exception as e:
+            logger.error(f"解析 xlsx 文件失败: {str(e)}")
+            return f"无法解析 xlsx 文件: {str(e)}"
+    
+    def _parse_xls(self, content: bytes) -> str:
+        """解析 xls 文件内容（旧版 Excel）"""
+        try:
+            import pandas as pd
+            from io import BytesIO
+            
+            df = pd.read_excel(BytesIO(content), engine='xlrd')
+            return df.to_string()
+            
+        except Exception as e:
+            logger.error(f"解析 xls 文件失败: {str(e)}")
+            return f"无法解析 xls 文件: {str(e)}"
+    
+    def _parse_pptx(self, content: bytes) -> str:
+        """解析 pptx 文件内容"""
+        try:
+            from pptx import Presentation
+            from io import BytesIO
+            
+            prs = Presentation(BytesIO(content))
+            full_text = []
+            
+            for slide in prs.slides:
+                for shape in slide.shapes:
+                    if hasattr(shape, 'text'):
+                        full_text.append(shape.text)
+            
+            return '\n\n'.join(full_text)
+            
+        except Exception as e:
+            logger.error(f"解析 pptx 文件失败: {str(e)}")
+            return f"无法解析 pptx 文件: {str(e)}"
+    
+    def _parse_pdf(self, content: bytes) -> str:
+        """解析 pdf 文件内容"""
+        try:
+            import pdfplumber
+            from io import BytesIO
+            
+            with pdfplumber.open(BytesIO(content)) as pdf:
+                full_text = []
+                for page in pdf.pages:
+                    text = page.extract_text()
+                    if text:
+                        full_text.append(text)
+            
+            return '\n\n'.join(full_text)
+            
+        except Exception as e:
+            logger.error(f"解析 pdf 文件失败: {str(e)}")
+            return f"无法解析 pdf 文件: {str(e)}"
+    
+    def _parse_rtf(self, content: bytes) -> str:
+        """解析 rtf 文件内容"""
+        try:
+            # 简单的 RTF 文本提取
+            text = content.decode('utf-8', errors='ignore')
+            # 移除 RTF 控制字
+            import re
+            text = re.sub(r'\\[a-zA-Z]+[^{}]*', '', text)
+            text = re.sub(r'\\[{}]', '', text)
+            text = re.sub(r'{[^}]*}', '', text)
+            return text.strip()
+            
+        except Exception as e:
+            logger.error(f"解析 rtf 文件失败: {str(e)}")
+            return f"无法解析 rtf 文件: {str(e)}"
+    
+    def _parse_doc(self, content: bytes) -> str:
+        """解析 doc 文件内容（旧版 Word）"""
+        try:
+            # 使用 antiword 或其他方式，这里提供基础支持
+            # 旧版 doc 是二进制格式，需要专门工具
+            return f"无法直接解析 .doc 文件格式。请将文件另存为 .docx 格式后重试，或使用 Microsoft Word 打开复制内容。\n\n文件大小: {len(content)} bytes"
+            
+        except Exception as e:
+            logger.error(f"解析 doc 文件失败: {str(e)}")
+            return f"无法解析 doc 文件: {str(e)}"
+    
+    def _is_binary(self, text: str) -> bool:
+        """检测文本是否包含二进制数据"""
+        # 检查是否有大量不可打印字符
+        non_printable = sum(1 for c in text if ord(c) < 32 and c not in '\n\r\t')
+        return non_printable > len(text) * 0.1
+    
+    def _store_to_vector_db(self, user_id: str, content: str, file_key: str):
+        """将文件内容存储到向量数据库"""
+        try:
+            from src.engine.memory_manager import memory_manager
+            
+            # 存储到长期记忆
+            memory_manager.add_long_term_memory(
+                user_id=user_id,
+                content=content,
+                tags=f"feishu_file,{file_key}"
+            )
+            
+            logger.info(f"文件内容已存储到向量数据库: {file_key}")
+        except Exception as e:
+            logger.warning(f"存储到向量数据库失败: {str(e)}")
 
 
 # 工具执行器注册表

@@ -149,10 +149,26 @@ class ReActEngine:
             3. 根据观察结果继续推理或总结回答
 
             ## 可用工具
-            - document_search: 搜索文档知识库（适用于需要查找特定信息的问题）
+            - document_search: 搜索文档知识库（适用于需要查找已入库文档的问题）
             - memory_search: 搜索用户记忆（适用于与用户历史对话相关的问题）
-            - tool_executor: 执行工具（适用于需要执行操作的任务）
+            - tool_executor: 执行工具（适用于需要执行操作的任务，如文件操作、飞书文件读取等）
             - finish: 完成任务并给出最终回答
+
+            ## 工具使用指南
+            ### 处理飞书上传的文件
+            当用户上传文件时，消息中会包含 file_key 和 file_name。
+            如果需要读取文件内容，请使用 tool_executor 调用 feishu_file_read 工具，参数为：
+            {{
+                "tool_name": "feishu_file_read",
+                "parameters": {{
+                    "file_key": "文件的file_key",
+                    "user_id": "用户ID"
+                }}
+            }}
+
+            ### 搜索文档与读取文件的区别
+            - document_search: 用于搜索已经存储在知识库中的文档内容
+            - feishu_file_read: 用于读取用户刚上传的飞书文件内容
 
             ## 输出格式要求
             {self.output_parser.get_format_instructions()}
@@ -169,7 +185,24 @@ class ReActEngine:
             }}
             ```
 
-            ### 示例2：直接回答问题（使用 finish）
+            ### 示例2：读取飞书上传的文件
+            ```json
+            {{
+            "thought": "用户上传了一个文件，我需要先读取文件内容才能分析",
+            "action": {{
+                "type": "tool_executor",
+                "parameters": {{
+                    "tool_name": "feishu_file_read",
+                    "parameters": {{
+                        "file_key": "file_v3_xxx",
+                        "user_id": "user123"
+                    }}
+                }}
+            }}
+            }}
+            ```
+
+            ### 示例3：直接回答问题（使用 finish）
             ```json
             {{
             "thought": "用户问我是谁，这是一个可以直接回答的问题，不需要调用工具",
@@ -186,6 +219,7 @@ class ReActEngine:
             - 每次只能执行一个动作
             - 最多执行 {self.max_steps} 步
             - finish 动作必须在 parameters 中包含 answer 字段，否则无法正确回答用户
+            - 用户上传文件时，优先使用 feishu_file_read 工具读取内容，而不是使用 document_search
             """
     
     def _format_history(self, state: ReActState) -> str:
@@ -286,12 +320,35 @@ class ReActEngine:
                 )
             
             elif action.type == "tool_executor":
-                tool_id = action.tool_id
-                tool_params = params or {}
+                # 从 parameters 中获取工具名称（LLM可能把工具名放在不同位置）
+                tool_id = action.tool_id or params.get("tool_name") or params.get("tool_id")
+                
+                # 获取工具参数
+                # 支持两种格式：
+                # 格式1: {"tool_name": "...", "parameters": {...}}
+                # 格式2: {"tool_name": "...", "key1": "value1", "key2": "value2"}
+                tool_params = params.get("parameters", {})
+                
+                # 如果没有嵌套的parameters，则直接使用params（去掉tool_name/tool_id）
+                if not tool_params:
+                    tool_params = {k: v for k, v in params.items() if k not in ["tool_name", "tool_id"]}
+                
+                # 工具名称映射（处理LLM可能使用的不同名称）
+                tool_id_mapping = {
+                    "file_reader": "feishu_file_read",
+                    "read_file": "feishu_file_read",
+                    "feishu_reader": "feishu_file_read"
+                }
+                if tool_id in tool_id_mapping:
+                    tool_id = tool_id_mapping[tool_id]
+                
                 # 使用插件系统的工具执行器
                 executor = get_tool_executor()
                 if executor:
-                    result = executor.execute(tool_id, tool_params)
+                    if tool_id:
+                        result = executor.execute(tool_id, tool_params)
+                    else:
+                        result = {"success": False, "error": "Tool ID is required"}
                 else:
                     result = {"success": False, "error": "Tool executor not available"}
                 return Observation(
@@ -567,6 +624,157 @@ class ReActEngine:
             parameters=params if params else None
         )
     
+    def _parse_output_with_fallback(self, content: str) -> ReActOutput:
+        """
+        解析 LLM 输出，支持多种格式，处理 JSON 解析失败的情况
+        
+        Args:
+            content: LLM 返回的内容
+            
+        Returns:
+            ReActOutput: 解析后的输出对象
+        """
+        import json
+        import re
+        
+        # 首先尝试使用标准解析器
+        try:
+            output = self.output_parser.parse(content)
+            logger.debug(f"Successfully parsed with PydanticOutputParser")
+            return output
+        except Exception as e:
+            logger.warning(f"PydanticOutputParser failed: {e}")
+        
+        # 尝试从内容中提取 JSON（处理可能包含额外文本的情况）
+        try:
+            # 尝试找到 JSON 对象
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+                try:
+                    data = json.loads(json_str)
+                    return self._build_output_from_data(data)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"JSON parsing failed after extraction: {e}")
+        except Exception as e:
+            logger.warning(f"Failed to extract JSON: {e}")
+        
+        # 尝试处理 markdown 代码块格式
+        try:
+            # 移除代码块标记
+            cleaned_content = re.sub(r'```(json)?\s*', '', content.strip())
+            cleaned_content = re.sub(r'\s*```', '', cleaned_content)
+            data = json.loads(cleaned_content)
+            return self._build_output_from_data(data)
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse cleaned content: {e}")
+        
+        # 如果所有解析都失败，尝试简单的规则匹配
+        try:
+            return self._parse_with_simple_rules(content)
+        except Exception as e:
+            logger.error(f"All parsing methods failed: {e}")
+        
+        # 最终降级：返回一个默认的 finish 动作
+        logger.warning(f"Using fallback output for content: {content[:100]}...")
+        return ReActOutput(
+            thought="未能正确解析输出格式，将直接总结回答",
+            action=Action(
+                type="finish",
+                parameters={"answer": f"根据分析，我来为您总结：{content[:500]}"}
+            )
+        )
+    
+    def _build_output_from_data(self, data: dict) -> ReActOutput:
+        """
+        从字典数据构建 ReActOutput 对象
+        
+        Args:
+            data: 解析后的字典数据
+            
+        Returns:
+            ReActOutput: 输出对象
+        """
+        thought = data.get("thought", "")
+        action_data = data.get("action", {})
+        
+        # 处理嵌套的 action
+        if isinstance(action_data, dict):
+            action_type = action_data.get("type", "finish")
+            parameters = action_data.get("parameters", None)
+            
+            # 确保 parameters 是字典或 None
+            if parameters is not None and not isinstance(parameters, dict):
+                parameters = None
+            
+            action = Action(
+                type=action_type,
+                parameters=parameters
+            )
+        else:
+            # 如果 action 不是字典，使用默认动作
+            action = Action(
+                type="finish",
+                parameters={"answer": thought}
+            )
+        
+        return ReActOutput(
+            thought=thought,
+            action=action
+        )
+    
+    def _parse_with_simple_rules(self, content: str) -> ReActOutput:
+        """
+        使用简单规则解析输出（作为最后的降级方案）
+        
+        Args:
+            content: LLM 返回的内容
+            
+        Returns:
+            ReActOutput: 解析后的输出对象
+        """
+        # 检查是否包含特定关键词来决定动作类型
+        content_lower = content.lower()
+        
+        # 检查是否需要搜索文档
+        if any(keyword in content_lower for keyword in ["搜索文档", "document_search", "查找文档", "知识库"]):
+            return ReActOutput(
+                thought="分析问题需要搜索文档知识库",
+                action=Action(
+                    type="document_search",
+                    parameters={"query": content[:200]}
+                )
+            )
+        
+        # 检查是否需要读取文件
+        if any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件"]):
+            return ReActOutput(
+                thought="用户上传了文件，需要读取文件内容",
+                action=Action(
+                    type="tool_executor",
+                    parameters={"tool_name": "feishu_file_read"}
+                )
+            )
+        
+        # 检查是否需要总结
+        if any(keyword in content_lower for keyword in ["总结", "summarize", "摘要"]):
+            return ReActOutput(
+                thought="需要总结内容",
+                action=Action(
+                    type="summarize",
+                    parameters={"query": content[:200]}
+                )
+            )
+        
+        # 默认：尝试直接回答
+        return ReActOutput(
+            thought="尝试直接回答用户问题",
+            action=Action(
+                type="finish",
+                parameters={"answer": content[:500]}
+            )
+        )
+    
     def _regenerate_parameters(self, action: Action, state: ReActState) -> Optional[Action]:
         """
         重新生成参数
@@ -667,9 +875,8 @@ class ReActEngine:
                 response = self.llm.invoke(messages)
                 logger.debug(f"LLM response content: {response.content[:500]}")
                 
-                output = self.output_parser.parse(response.content)
-                logger.debug(f"Parsed output type: {type(output).__name__}")
-                logger.debug(f"Parsed output: {output}")
+                # 尝试解析输出，处理可能的 JSON 解析失败
+                output = self._parse_output_with_fallback(response.content)
                 
                 # 记录思考
                 thought = Thought(

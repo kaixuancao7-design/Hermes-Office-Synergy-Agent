@@ -14,9 +14,9 @@ class OllamaRouter(ModelRouterBase):
     
     def __init__(self):
         self.models = {
-            "simple": "qwen3.5:7b",
+            "simple": "qwen3.5:9b",
             "medium": "qwen3.5:9b",
-            "complex": "qwen3.5:14b"
+            "complex": "qwen3.5:9b"
         }
         self.clients = {}
     

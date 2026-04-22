@@ -14,9 +14,10 @@ logger = get_logger("memory")
 class ChromaMemory(MemoryBase):
     """Chroma向量数据库记忆存储"""
     
-    def __init__(self):
+    def __init__(self, embedding_service=None):
         self.client = None
         self.collections = {}
+        self.embedding_service = embedding_service
         self._initialize()
     
     def _initialize(self):
@@ -29,13 +30,36 @@ class ChromaMemory(MemoryBase):
                 anonymized_telemetry=False
             ))
             
-            self.collections = {
-                "short_term": self.client.get_or_create_collection("short_term"),
-                "long_term": self.client.get_or_create_collection("long_term"),
-                "user_preferences": self.client.get_or_create_collection("user_preferences")
-            }
-            
-            logger.info("Chroma记忆存储初始化成功")
+            # 如果指定了外部embedding服务，配置给Chroma
+            if self.embedding_service and self.embedding_service != "default":
+                try:
+                    from src.plugins.embedding_services import get_embedding_service
+                    embedding_service = get_embedding_service(self.embedding_service)
+                    if embedding_service:
+                        # 自定义Chroma集合，使用外部embedding函数
+                        self.collections = {
+                            "short_term": self.client.get_or_create_collection(
+                                "short_term",
+                                embedding_function=self._create_embedding_function(embedding_service)
+                            ),
+                            "long_term": self.client.get_or_create_collection(
+                                "long_term",
+                                embedding_function=self._create_embedding_function(embedding_service)
+                            ),
+                            "user_preferences": self.client.get_or_create_collection(
+                                "user_preferences",
+                                embedding_function=self._create_embedding_function(embedding_service)
+                            )
+                        }
+                        logger.info(f"Chroma记忆存储初始化成功，使用外部Embedding服务: {self.embedding_service}")
+                    else:
+                        self._create_default_collections()
+                except Exception as e:
+                    logger.warning(f"配置外部Embedding服务失败，使用默认配置: {str(e)}")
+                    self._create_default_collections()
+            else:
+                self._create_default_collections()
+                
         except Exception as e:
             logger.error(f"Chroma记忆存储初始化失败: {str(e)}")
             raise MemoryException(
@@ -43,24 +67,42 @@ class ChromaMemory(MemoryBase):
                 detail=str(e)
             )
     
+    def _create_default_collections(self):
+        """创建默认集合"""
+        self.collections = {
+            "short_term": self.client.get_or_create_collection("short_term"),
+            "long_term": self.client.get_or_create_collection("long_term"),
+            "user_preferences": self.client.get_or_create_collection("user_preferences")
+        }
+        logger.info("Chroma记忆存储初始化成功，使用默认Embedding")
+    
+    def _create_embedding_function(self, embedding_service):
+        """创建Chroma兼容的embedding函数"""
+        def embedding_function(texts: List[str]) -> List[List[float]]:
+            return embedding_service.embed(texts)
+        return embedding_function
+    
     def add_memory(self, user_id: str, entry: MemoryEntry) -> bool:
         try:
             collection = self.collections.get(entry.type, self.collections["long_term"])
             
-            if not entry.embedding:
-                entry.embedding = [0.0] * 384
-            
-            collection.add(
-                ids=[entry.id],
-                documents=[entry.content],
-                embeddings=[entry.embedding],
-                metadatas=[{
+            # 构建 add 方法的参数
+            add_params = {
+                "ids": [entry.id],
+                "documents": [entry.content],
+                "metadatas": [{
                     "user_id": user_id,
                     "type": entry.type,
                     "timestamp": entry.timestamp,
                     "tags": ",".join(entry.tags) if entry.tags else ""
                 }]
-            )
+            }
+            
+            # 只有当 embedding 存在时才传入，否则让 Chroma 使用配置的embedding服务自动处理
+            if entry.embedding:
+                add_params["embeddings"] = [entry.embedding]
+            
+            collection.add(**add_params)
             
             return True
         except Exception as e:
@@ -952,18 +994,25 @@ class RedisHybridMemory(MemoryBase):
             # 测试连接
             self.redis_client.ping()
             
-            # 初始化向量库
-            self.vector_store = ChromaMemory()
+            # 初始化向量库（支持自定义embedding服务）
+            self.vector_store = ChromaMemory(embedding_service=settings.EMBEDDING_SERVICE_TYPE)
             
             logger.info("RedisHybridMemory初始化成功")
         except ImportError:
-            logger.warning("redis库未安装，将使用SimpleMemory作为备选")
+            logger.warning("redis库未安装，将使用向量库作为备选")
             self.redis_client = None
-            self.vector_store = ChromaMemory()
+            self.vector_store = ChromaMemory(embedding_service=settings.EMBEDDING_SERVICE_TYPE)
         except Exception as e:
             logger.error(f"RedisHybridMemory初始化失败: {str(e)}")
+            logger.warning("Redis连接失败，将使用向量库作为备选存储")
             self.redis_client = None
-            self.vector_store = ChromaMemory()
+            # 即使Redis失败，也要初始化向量库作为备选
+            try:
+                self.vector_store = ChromaMemory(embedding_service=settings.EMBEDDING_SERVICE_TYPE)
+                logger.info("向量库备选初始化成功")
+            except Exception as vec_e:
+                logger.error(f"向量库初始化也失败: {str(vec_e)}")
+                self.vector_store = None
     
     def _get_session_key(self, user_id: str, group_id: str = "default") -> str:
         """生成会话消息Key"""
@@ -1021,8 +1070,13 @@ class RedisHybridMemory(MemoryBase):
         }
     
     def add_memory(self, user_id: str, entry: MemoryEntry) -> bool:
+        # 如果Redis不可用，尝试使用向量库
         if not self.redis_client:
-            return self.vector_store.add_memory(user_id, entry)
+            if self.vector_store:
+                return self.vector_store.add_memory(user_id, entry)
+            else:
+                logger.error("Redis和向量库都不可用，无法添加记忆")
+                return False
         
         try:
             # 获取或设置分组ID
@@ -1159,9 +1213,12 @@ class RedisHybridMemory(MemoryBase):
                         except Exception as e:
                             logger.debug(f"解析消息失败: {str(e)}")
             
-            # 2. 从向量库检索语义相似内容
-            vector_results = self.vector_store.search_memory(user_id, query, limit)
-            results.extend(vector_results)
+            # 2. 从向量库检索语义相似内容（检查vector_store是否可用）
+            if self.vector_store:
+                vector_results = self.vector_store.search_memory(user_id, query, limit)
+                results.extend(vector_results)
+            else:
+                logger.debug("向量库不可用，跳过语义检索")
             
             # 3. 去重并排序
             unique_results = list({r.id: r for r in results}.values())
@@ -1170,8 +1227,8 @@ class RedisHybridMemory(MemoryBase):
             return unique_results[:limit]
         except Exception as e:
             logger.error(f"搜索失败: {str(e)}")
-            # 降级到向量库搜索
-            return self.vector_store.search_memory(user_id, query, limit)
+            # 返回已获取的结果（如果有的话）
+            return results[:limit]
     
     def get_memory(self, user_id: str, memory_id: str) -> Optional[MemoryEntry]:
         # 先从Redis查找

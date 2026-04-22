@@ -35,6 +35,7 @@ from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
 from src.gateway.feishu_websocket import feishu_websocket_service
 from src.errors import EXCEPTION_HANDLERS
 from src.middleware.logging_middleware import RequestLoggingMiddleware, ResponseLoggingMiddleware
+from src.plugins import init_plugins
 
 app = FastAPI(title="Hermes Office Synergy Agent", version="1.0.0")
 
@@ -130,6 +131,9 @@ def register_im_adapters():
 
 async def start_feishu_websocket():
     """启动飞书 WebSocket 长连接服务"""
+    # 延迟1秒启动，确保插件系统完全初始化
+    await asyncio.sleep(1)
+    
     if settings.FEISHU_APP_ID and settings.FEISHU_APP_SECRET:
         logger.info("尝试启动飞书 WebSocket 长连接服务...")
         try:
@@ -147,9 +151,14 @@ async def startup_event():
     ensure_directory("./workspace")
     ensure_directory("./output")
     
+    # 初始化插件系统（必须在其他服务启动之前）
+    if not init_plugins():
+        logger.error("插件系统初始化失败")
+        return
+    
     register_im_adapters()
     
-    # 启动飞书 WebSocket 长连接服务（后台运行）
+    # 启动飞书 WebSocket 长连接服务（后台运行）- 仅在插件初始化成功后启动
     asyncio.create_task(start_feishu_websocket())
     
     logger.info("Hermes Office Synergy Agent started successfully")
