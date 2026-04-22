@@ -21,6 +21,16 @@ from .data_processor import DataProcessor, data_processor, clean_text, extract_k
 # 网络工具
 from .web_tools import WebTools, web_tools, fetch_webpage, download_file, search_web, make_request
 
+# IM适配工具
+from .im_adapter import (
+    IMFileParser, im_file_parser,
+    IMMessagingTool, im_messaging_tool,
+    IMUserContext, im_user_context,
+    parse_file_for_im, split_message, format_quote, format_list,
+    format_table, get_user_context, set_user_context,
+    IM_MAX_MESSAGE_LENGTH, IM_MAX_FILE_SIZE, IM_SUPPORTED_FILE_TYPES
+)
+
 __all__ = [
     # 文件检查工具
     'FileChecker',
@@ -61,4 +71,23 @@ __all__ = [
     'download_file',
     'search_web',
     'make_request',
+    
+    # IM适配工具
+    'IMFileParser',
+    'im_file_parser',
+    'IMMessagingTool',
+    'im_messaging_tool',
+    'IMUserContext',
+    'im_user_context',
+    'parse_file_for_im',
+    'split_message',
+    'format_quote',
+    'format_list',
+    'get_user_context',
+    'set_user_context',
+    
+    # IM常量
+    'IM_MAX_MESSAGE_LENGTH',
+    'IM_MAX_FILE_SIZE',
+    'IM_SUPPORTED_FILE_TYPES',
 ]

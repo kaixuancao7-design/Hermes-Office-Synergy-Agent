@@ -1,3 +1,4 @@
+"""向量存储模块 - 整合文档加载、版本管理、多模态支持和高级检索"""
 import os
 from typing import List, Dict, Any, Optional
 
@@ -9,6 +10,11 @@ from langchain_core.documents import Document
 from src.utils import setup_logging, generate_id
 from src.config import settings
 from src.plugins.embedding_services import get_embedding_service
+
+from .document_loader import document_pipeline
+from .version_manager import version_manager
+from .multimodal_processor import multimodal_processor
+from .advanced_retrieval import default_retrieval
 
 logger = setup_logging(settings.LOG_LEVEL)
 
@@ -44,7 +50,7 @@ class VectorStore:
                 else:
                     # 使用Chroma默认嵌入
                     logger.info("Using default Chroma embedding")
-                    return None  # None表示使用Chroma默认嵌入
+                    return None
             except Exception as e:
                 logger.warning(f"Failed to initialize custom embedding: {e}, falling back to default")
                 return None
@@ -122,7 +128,8 @@ class VectorStore:
             logger.error(f"Failed to add documents: {e}")
             raise
     
-    def search(self, query: str, k: int = 5, filter: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    def search(self, query: str, k: int = 5, filter: Optional[Dict[str, Any]] = None,
+              use_advanced: bool = False) -> List[Dict[str, Any]]:
         """搜索相似向量"""
         try:
             results = self.chroma.similarity_search_with_score(
@@ -139,6 +146,10 @@ class VectorStore:
                     "distance": score,
                     "id": doc.metadata.get("id", "")
                 })
+            
+            # 如果启用高级检索优化
+            if use_advanced:
+                formatted_results = default_retrieval.process(query, formatted_results)
             
             return formatted_results
         except Exception as e:
@@ -188,7 +199,7 @@ class VectorStore:
 
 
 class RAGManager:
-    """基于 LangChain 的 RAG 管理器"""
+    """基于 LangChain 的 RAG 管理器（整合版）"""
     
     def __init__(self):
         self.vector_store = VectorStore()
@@ -197,6 +208,69 @@ class RAGManager:
             chunk_overlap=50,
             length_function=len
         )
+    
+    def load_and_add_document(self, file_path: str = None, content: bytes = None, 
+                             file_name: str = None, metadata: Optional[Dict[str, Any]] = None,
+                             version_note: str = "", created_by: str = "system") -> Dict[str, Any]:
+        """
+        加载文档并添加到向量存储（完整流程）
+        
+        Args:
+            file_path: 文件路径
+            content: 文件内容（字节）
+            file_name: 文件名
+            metadata: 元数据
+            version_note: 版本备注
+            created_by: 创建者
+        
+        Returns:
+            处理结果
+        """
+        # 1. 使用统一文档加载器加载文档
+        load_result = document_pipeline.process(file_path, content, file_name)
+        
+        if not load_result["success"]:
+            return {"success": False, "error": load_result["error"]}
+        
+        # 2. 获取处理后的内容
+        content = load_result["processed_content"]
+        
+        # 3. 如果内容很大，自动分割
+        if len(content) > 2000:
+            chunks = load_result.get("chunks", self.text_splitter.split_text(content))
+        else:
+            chunks = [content]
+        
+        # 4. 添加到向量存储
+        doc_ids = []
+        for i, chunk in enumerate(chunks):
+            chunk_metadata = {
+                **(metadata or {}),
+                **load_result.get("metadata", {}),
+                "chunk_index": i,
+                "total_chunks": len(chunks),
+                "filename": file_name or file_path
+            }
+            doc_id = self.vector_store.add_vector(chunk, chunk_metadata)
+            doc_ids.append(doc_id)
+        
+        # 5. 创建版本记录
+        if doc_ids:
+            version_manager.create_version(
+                document_id=doc_ids[0],
+                content=content,
+                metadata=load_result.get("metadata", {}),
+                created_by=created_by,
+                change_note=version_note
+            )
+        
+        return {
+            "success": True,
+            "doc_ids": doc_ids,
+            "chunk_count": len(chunks),
+            "content_length": len(content),
+            "metadata": load_result.get("metadata", {})
+        }
     
     def add_document(self, content: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """添加文档到向量存储"""
@@ -214,15 +288,114 @@ class RAGManager:
         
         return doc_ids
     
-    def query(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
+    def add_multimodal_document(self, data: Any, filename: Optional[str] = None,
+                               metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        添加多模态文档
+        
+        Args:
+            data: 数据内容（文本、图片、音频等）
+            filename: 文件名
+            metadata: 元数据
+        
+        Returns:
+            处理结果
+        """
+        # 使用多模态处理器处理数据
+        result = multimodal_processor.process(data, filename=filename)
+        
+        if not result["success"]:
+            return result
+        
+        # 如果是文本类型，直接添加到向量存储
+        if result["data_type"] == "text":
+            doc_id = self.vector_store.add_vector(result["content"], metadata)
+            return {
+                "success": True,
+                "doc_id": doc_id,
+                "data_type": "text",
+                "metadata": result.get("metadata", {})
+            }
+        
+        # 如果是图片，使用图片描述作为内容
+        elif result["data_type"] == "image" and "caption" in result:
+            content = f"图片描述: {result['caption']}"
+            doc_id = self.vector_store.add_vector(content, {
+                **(metadata or {}),
+                "data_type": "image",
+                "caption": result["caption"],
+                **result.get("metadata", {})
+            })
+            return {
+                "success": True,
+                "doc_id": doc_id,
+                "data_type": "image",
+                "caption": result["caption"],
+                "metadata": result.get("metadata", {})
+            }
+        
+        # 如果是音频，使用转录文本作为内容
+        elif result["data_type"] == "audio" and "transcription" in result:
+            doc_id = self.vector_store.add_vector(result["transcription"], {
+                **(metadata or {}),
+                "data_type": "audio",
+                **result.get("metadata", {})
+            })
+            return {
+                "success": True,
+                "doc_id": doc_id,
+                "data_type": "audio",
+                "transcription": result["transcription"],
+                "metadata": result.get("metadata", {})
+            }
+        
+        # 如果是视频，使用关键帧描述作为内容
+        elif result["data_type"] == "video" and "keyframes" in result:
+            content = "\n".join([f"帧 {k['frame_index']} ({k['timestamp']}s): {k['caption']}" 
+                                for k in result["keyframes"]])
+            doc_id = self.vector_store.add_vector(content, {
+                **(metadata or {}),
+                "data_type": "video",
+                **result.get("metadata", {})
+            })
+            return {
+                "success": True,
+                "doc_id": doc_id,
+                "data_type": "video",
+                "keyframes_count": len(result["keyframes"]),
+                "metadata": result.get("metadata", {})
+            }
+        
+        return {"success": False, "error": "无法处理该类型的数据"}
+    
+    def query(self, query: str, k: int = 5, use_advanced: bool = True) -> List[Dict[str, Any]]:
         """查询相关文档"""
-        return self.vector_store.search(query, k)
+        return self.vector_store.search(query, k, use_advanced=use_advanced)
     
     def get_context(self, query: str, k: int = 5) -> str:
         """获取查询的上下文文本"""
         results = self.query(query, k)
         context = "\n\n".join([doc.get("content", "") for doc in results])
         return context
+    
+    def get_document_versions(self, document_id: str) -> List[Dict[str, Any]]:
+        """获取文档的版本历史"""
+        versions = version_manager.get_all_versions(document_id)
+        return [v.to_dict() for v in versions]
+    
+    def restore_document_version(self, document_id: str, version_number: int) -> Optional[Dict[str, Any]]:
+        """恢复文档到指定版本"""
+        version = version_manager.restore_version(document_id, version_number)
+        if version:
+            # 将恢复的版本添加到向量存储
+            new_doc_id = self.vector_store.add_vector(version.content, version.metadata)
+            return {
+                "success": True,
+                "new_doc_id": new_doc_id,
+                "restored_from_version": version_number,
+                "version_info": version.to_dict()
+            }
+        return {"success": False, "error": "版本不存在"}
 
 
 # 全局实例
