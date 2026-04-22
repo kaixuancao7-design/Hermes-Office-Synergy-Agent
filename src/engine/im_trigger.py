@@ -1,11 +1,11 @@
 from typing import Dict, Any, List, Optional, Union
 from pydantic import BaseModel
 from src.engine.demand_parser import demand_parser, PPTDemand
-from src.utils import setup_logging, generate_id
-from src.config import settings
+from src.utils import generate_id
+from src.logging_config import get_logger
 import re
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("engine")
 
 
 class MessageContext(BaseModel):

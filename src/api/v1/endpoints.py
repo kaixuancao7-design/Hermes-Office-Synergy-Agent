@@ -50,10 +50,6 @@ async def send_message(message: Dict[str, Any]):
 
 @router.post("/im/webhook/{adapter_type}")
 async def im_webhook(adapter_type: str, payload: Dict[str, Any]):
-    from src.utils import setup_logging
-    from src.config import settings
-    logger = setup_logging(settings.LOG_LEVEL)
-    
     logger.info(f"Received webhook from {adapter_type}: {str(payload)[:500]}")
     
     adapter = im_adapter_manager.get_adapter(adapter_type)

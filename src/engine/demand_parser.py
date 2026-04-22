@@ -1,10 +1,9 @@
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
-from src.utils import setup_logging, generate_id, get_timestamp
-from src.config import settings
-import re
+from src.utils import generate_id, get_timestamp
+from src.logging_config import get_logger
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("engine")
 
 
 class PPTDemand(BaseModel):

@@ -7,9 +7,9 @@ from langchain_core.output_parsers import StrOutputParser
 
 from src.types import ModelRoute
 from src.config import settings
-from src.utils import setup_logging
+from src.logging_config import get_logger
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("model")
 
 
 def create_langchain_model(route: ModelRoute):

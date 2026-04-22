@@ -1,10 +1,9 @@
 from typing import List, Dict, Any, Optional
 from src.types import Intent
 from src.infrastructure.model_router import select_model, call_model
-from src.utils import setup_logging
-from src.config import settings
+from src.logging_config import get_logger
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("engine")
 
 INTENT_TYPES = [
     "summarization",

@@ -1,14 +1,14 @@
 from typing import List, Dict, Any, Optional
 from src.types import Skill, SkillStep, UserProfile, SkillVersion, SkillChangeLog, PermissionCheckResult
 from src.data.database import db
-from src.utils import generate_id, get_timestamp, setup_logging
+from src.utils import generate_id, get_timestamp
+from src.logging_config import get_logger
 from src.engine.memory_manager import memory_manager
-from src.config import settings
 from src.services.skill_management import skill_version_manager
 from src.services.permission_service import permission_service
 from src.services.audit_log_service import audit_log_service
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("skill")
 
 
 class SkillManager:

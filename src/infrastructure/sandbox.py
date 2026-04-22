@@ -2,10 +2,9 @@ import subprocess
 import os
 import shutil
 from typing import Optional, Tuple, Dict, Any
-from src.utils import setup_logging
-from src.config import settings
+from src.logging_config import get_logger
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("tool")
 
 
 class SandboxConfig:

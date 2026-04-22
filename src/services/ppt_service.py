@@ -3,11 +3,11 @@
 from typing import Dict, Any, List, Optional
 from src.tools.tool_executor import PPTGenerator
 from src.plugins import get_im_adapter
-from src.utils import setup_logging, generate_id
-from src.config import settings
+from src.utils import generate_id
+from src.logging_config import get_logger
 import os
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("services")
 
 
 class PPTService:

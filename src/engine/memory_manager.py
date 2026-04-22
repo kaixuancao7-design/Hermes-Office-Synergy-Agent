@@ -1,10 +1,10 @@
 from typing import List, Dict, Any, Optional
 from src.types import UserProfile, Message, MemoryEntry, Skill
 from src.data.database import db
-from src.utils import generate_id, get_timestamp, setup_logging, truncate_text
-from src.config import settings
+from src.utils import generate_id, get_timestamp, truncate_text
+from src.logging_config import get_logger
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("memory")
 
 
 class MemoryManager:

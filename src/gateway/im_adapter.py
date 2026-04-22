@@ -1,11 +1,11 @@
 from typing import Dict, Any, Optional, List
 from src.types import IMAdapterConfig, Message
-from src.utils import generate_id, get_timestamp, setup_logging
-from src.config import settings
+from src.utils import generate_id, get_timestamp
+from src.logging_config import get_logger
 import requests
 import json
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("im")
 
 
 class IMAdapter:

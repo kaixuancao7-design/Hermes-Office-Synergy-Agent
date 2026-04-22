@@ -2,11 +2,11 @@ from typing import List, Dict, Any, Optional
 from src.types import Task, TaskStep, ToolCall, Intent, Skill
 from src.data.database import db
 from src.engine.intent_recognition import intent_recognizer
-from src.utils import generate_id, get_timestamp, setup_logging
+from src.utils import generate_id, get_timestamp
+from src.logging_config import get_logger
 from src.infrastructure.model_router import select_model, call_model
-from src.config import settings
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("engine")
 
 
 class TaskPlanner:

@@ -5,11 +5,11 @@ from src.engine.task_planner import task_planner
 from src.engine.learning_cycle import learning_cycle
 from src.engine.react_engine import react_engine
 from src.data.database import db
-from src.utils import generate_id, get_timestamp, setup_logging
-from src.config import settings
+from src.utils import generate_id, get_timestamp
+from src.logging_config import get_logger
 from src.plugins import get_memory_store, get_skill_manager, get_model_router
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("gateway")
 
 
 class MessageRouter:

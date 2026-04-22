@@ -1,14 +1,14 @@
 from typing import Dict, Any, Optional, List
 from src.infrastructure.sandbox import sandbox
-from src.utils import setup_logging, generate_id, get_timestamp
-from src.config import settings
+from src.utils import generate_id, get_timestamp
+from src.logging_config import get_logger
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
 from pptx.enum.shapes import MSO_SHAPE
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("tool")
 
 
 class PPTGenerator:
