@@ -325,7 +325,8 @@ class FeishuAdapter(IMAdapterBase):
                     "source": "feishu",
                     "group": chat_type == "group",
                     "file_key": file_key,
-                    "file_name": file_name
+                    "file_name": file_name,
+                    "message_id": str(message_id)
                 }
             )
             
@@ -350,6 +351,9 @@ class FeishuAdapter(IMAdapterBase):
             if self._api_client is None:
                 logger.error(f"读取飞书文件失败：file_key={file_key}, 飞书API客户端未初始化，请检查.env文件配置")
                 return None
+            
+            # 检查 file_key 是否为 file_v3 格式
+            is_file_v3 = file_key.startswith("file_v3_")
             
             # ======================
             # 方法 1：官方标准接口（唯一支持 file_v3）
@@ -381,42 +385,54 @@ class FeishuAdapter(IMAdapterBase):
                         # 解析文件内容
                         return self._parse_file_content(response.raw.content, file_name)
                     
-                    logger.debug(f"message resource 接口未返回内容: {response.code}, {response.msg}")
+                    logger.debug(f"message resource 接口未返回内容: code={response.code}, msg={response.msg}")
                 except Exception as e:
                     logger.error(f"方法1(message resource)失败: {str(e)}")
+            elif is_file_v3:
+                # file_v3 格式必须有 message_id
+                logger.error(f"读取飞书文件失败：file_v3 格式文件需要有效的 message_id，当前 message_id 为空")
+                return None
             
             # ======================
-            # 方法 2：云文档 API（兼容旧版）
+            # 方法 2：云文档 API（兼容旧版，不支持 file_v3）
             # ======================
-            try:
-                from lark_oapi.api.drive.v1 import DownloadFileRequest
-                
-                req = DownloadFileRequest.builder().file_id(file_key).build()
-                response = self._api_client.drive.v1.file.download(req)
-                
-                if response.success() and response.raw.content:
-                    logger.info(f"使用 drive API 下载文件成功: {file_key}")
+            if not is_file_v3:
+                try:
+                    from lark_oapi.api.drive.v1 import DownloadFileRequest
                     
-                    # 尝试从响应头获取文件名
-                    file_name = ""
-                    if hasattr(response.raw, 'headers'):
-                        import re
-                        content_disposition = response.raw.headers.get('Content-Disposition', '')
-                        match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                        if match:
-                            file_name = match.group(1).strip('"')
+                    req = DownloadFileRequest.builder().file_token(file_key).build()
+                    response = self._api_client.drive.v1.file.download(req)
                     
-                    # 解析文件内容
-                    return self._parse_file_content(response.raw.content, file_name)
-                
-                logger.debug(f"drive API 未返回内容: {response.code}, {response.msg}")
-            except Exception as e:
-                logger.error(f"方法2(drive API)失败: {str(e)}")
+                    if response.success() and response.raw.content:
+                        logger.info(f"使用 drive API 下载文件成功: {file_key}")
+                        
+                        # 尝试从响应头获取文件名
+                        file_name = ""
+                        if hasattr(response.raw, 'headers'):
+                            import re
+                            content_disposition = response.raw.headers.get('Content-Disposition', '')
+                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+                            if match:
+                                file_name = match.group(1).strip('"')
+                        
+                        # 解析文件内容
+                        return self._parse_file_content(response.raw.content, file_name)
+                    
+                    logger.debug(f"drive API 未返回内容: code={response.code}, msg={response.msg}")
+                except Exception as e:
+                    logger.error(f"方法2(drive API)失败: {str(e)}")
             
-            raise Exception("飞书文件下载失败：请确认 message_id 和 file_key 正确")
+            # 构建详细错误信息
+            error_msg = f"飞书文件下载失败"
+            if is_file_v3:
+                error_msg += f"（file_v3格式需要有效的message_id）"
+            else:
+                error_msg += f"（请确认file_key正确）"
+            
+            raise Exception(error_msg)
             
         except Exception as e:
-            logger.error(f"读取飞书文件失败：file_key={file_key}, 错误详情: {str(e)}", exc_info=True)
+            logger.error(f"读取飞书文件失败：file_key={file_key}, message_id={message_id}, 错误详情: {str(e)}", exc_info=True)
             return None
 
     def _download_via_message_resource(self, message_id: str, file_key: str) -> tuple:

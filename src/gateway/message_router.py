@@ -89,7 +89,7 @@ class MessageRouter:
         # 判断是否使用 ReAct 模式
         if self.use_react_mode and self._should_use_react(intent):
             logger.info(f"Using ReAct mode for intent: {intent.type}")
-            response = self._handle_with_react(user_id, message.content)
+            response = self._handle_with_react(user_id, message.content, message.metadata)
         else:
             response = self._handle_intent(user_id, intent, message.content)
         
@@ -286,12 +286,19 @@ class MessageRouter:
             "code_generation",
             "unknown"  # 未知意图使用 ReAct 进行探索
         ]
+        # document_analysis 总是使用 ReAct（需要调用工具读取文件），其他意图需要置信度低于0.8
+        if intent.type == "document_analysis":
+            return True
         return intent.type in react_intents and intent.confidence < 0.8
     
-    def _handle_with_react(self, user_id: str, query: str) -> str:
+    def _handle_with_react(self, user_id: str, query: str, metadata: Optional[Dict[str, Any]] = None) -> str:
         """使用 ReAct 引擎处理消息"""
         try:
-            return react_engine.run(user_id, query)
+            # 调试日志：检查元数据内容
+            logger.debug(f"_handle_with_react - user_id={user_id}, query={query[:100]}..., metadata={metadata}")
+            if metadata and "message_id" not in metadata:
+                logger.warning(f"元数据中缺少 message_id: {metadata}")
+            return react_engine.run(user_id, query, metadata=metadata)
         except Exception as e:
             logger.error(f"ReAct engine failed: {str(e)}")
             # 降级到普通处理

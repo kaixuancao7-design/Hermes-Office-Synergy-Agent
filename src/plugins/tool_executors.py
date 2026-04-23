@@ -1,4 +1,5 @@
 """工具执行插件实现"""
+import os
 from typing import Dict, Any, List, Optional
 
 from src.plugins.base import ToolExecutorBase
@@ -19,7 +20,45 @@ class BasicToolExecutor(ToolExecutorBase):
             "read_file": "feishu_file_read",
             "feishu_reader": "feishu_file_read"
         }
+        
+        # 初始化飞书客户端
+        self._initialize_feishu_client()
+        
+        # 初始化记忆存储
+        self._initialize_memory_store()
+        
         self._register_default_tools()
+    
+    def _initialize_feishu_client(self):
+        """初始化飞书API客户端"""
+        feishu_app_id = os.getenv("FEISHU_APP_ID")
+        feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+        
+        if feishu_app_id and feishu_app_secret:
+            try:
+                from lark_oapi import Client, FEISHU_DOMAIN
+                self._feishu_client = Client.builder() \
+                    .app_id(feishu_app_id) \
+                    .app_secret(feishu_app_secret) \
+                    .domain(FEISHU_DOMAIN) \
+                    .build()
+                logger.info("飞书API客户端初始化成功")
+            except Exception as e:
+                self._feishu_client = None
+                logger.error(f"飞书API客户端初始化失败: {str(e)}")
+        else:
+            self._feishu_client = None
+            logger.warning("飞书API客户端未初始化：缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET")
+    
+    def _initialize_memory_store(self):
+        """初始化记忆存储"""
+        try:
+            from src.engine.memory_manager import MemoryManager
+            self.memory_manager = MemoryManager()
+            logger.info("记忆存储初始化成功")
+        except Exception as e:
+            self.memory_manager = None
+            logger.warning(f"记忆存储未初始化：{str(e)}")
     
     def _register_default_tools(self):
         """注册默认工具"""
@@ -41,16 +80,12 @@ class BasicToolExecutor(ToolExecutorBase):
         
         try:
             # 直接使用传入的参数（ReAct引擎已经处理好了参数格式）
-            # 如果参数中包含嵌套的parameters字段，则使用嵌套的参数
-            tool_params = parameters.get("parameters", parameters)
+            # 注意：不再尝试提取嵌套的parameters，因为ReAct引擎已经处理过了
+            tool_params = parameters or {}
             
-            # 如果是None，转换为空字典
-            if tool_params is None:
-                tool_params = {}
-            
-            # 获取工具类并创建实例
+            # 获取工具类并创建实例（传入executor，以便工具可以访问客户端和存储）
             tool_class = self.tools[tool_id]
-            tool_instance = tool_class()
+            tool_instance = tool_class(executor=self)
             result = tool_instance.execute(tool_params)
             return result
         except Exception as e:
@@ -78,7 +113,45 @@ class SandboxedToolExecutor(ToolExecutorBase):
         self.tools = {}
         self.allowed_paths = settings.SANDBOX_ALLOWED_PATHS or []
         self.max_execution_time = settings.SANDBOX_MAX_EXECUTION_TIME or 30
+        
+        # 初始化飞书客户端
+        self._initialize_feishu_client()
+        
+        # 初始化记忆存储
+        self._initialize_memory_store()
+        
         self._register_default_tools()
+    
+    def _initialize_feishu_client(self):
+        """初始化飞书API客户端"""
+        feishu_app_id = os.getenv("FEISHU_APP_ID")
+        feishu_app_secret = os.getenv("FEISHU_APP_SECRET")
+        
+        if feishu_app_id and feishu_app_secret:
+            try:
+                from lark_oapi import Client, FEISHU_DOMAIN
+                self._feishu_client = Client.builder() \
+                    .app_id(feishu_app_id) \
+                    .app_secret(feishu_app_secret) \
+                    .domain(FEISHU_DOMAIN) \
+                    .build()
+                logger.info("飞书API客户端初始化成功")
+            except Exception as e:
+                self._feishu_client = None
+                logger.error(f"飞书API客户端初始化失败: {str(e)}")
+        else:
+            self._feishu_client = None
+            logger.warning("飞书API客户端未初始化：缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET")
+    
+    def _initialize_memory_store(self):
+        """初始化记忆存储"""
+        try:
+            from src.engine.memory_manager import MemoryManager
+            self.memory_manager = MemoryManager()
+            logger.info("记忆存储初始化成功")
+        except Exception as e:
+            self.memory_manager = None
+            logger.warning(f"记忆存储未初始化：{str(e)}")
     
     def _register_default_tools(self):
         """注册默认工具"""
@@ -107,8 +180,8 @@ class SandboxedToolExecutor(ToolExecutorBase):
             if tool_params is None:
                 tool_params = {}
             
-            # 创建工具实例（不传入参数，保持与 BasicToolExecutor 一致）
-            tool_instance = self.tools[tool_id]()
+            # 创建工具实例（传入executor，以便工具可以访问客户端和存储）
+            tool_instance = self.tools[tool_id](executor=self)
             result = tool_instance.execute(tool_params)
             return result
         except Exception as e:
@@ -154,6 +227,9 @@ class SandboxedToolExecutor(ToolExecutorBase):
 class DocumentSearchTool:
     """文档搜索工具"""
     
+    def __init__(self, executor=None):
+        self.executor = executor
+    
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         query = parameters.get("query", "")
         limit = parameters.get("limit", 5)
@@ -172,6 +248,9 @@ class DocumentSearchTool:
 
 class MemorySearchTool:
     """记忆搜索工具"""
+    
+    def __init__(self, executor=None):
+        self.executor = executor
     
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         user_id = parameters.get("user_id", "")
@@ -193,6 +272,9 @@ class MemorySearchTool:
 class WebSearchTool:
     """网页搜索工具"""
     
+    def __init__(self, executor=None):
+        self.executor = executor
+    
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         query = parameters.get("query", "")
         
@@ -213,6 +295,9 @@ class WebSearchTool:
 
 class CodeExecutionTool:
     """代码执行工具"""
+    
+    def __init__(self, executor=None):
+        self.executor = executor
     
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         code = parameters.get("code", "")
@@ -310,6 +395,9 @@ class SandboxedCodeExecutionTool:
 class FileOperationsTool:
     """文件操作工具"""
     
+    def __init__(self, executor=None):
+        self.executor = executor
+    
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         operation = parameters.get("operation", "")
         path = parameters.get("path", "")
@@ -402,30 +490,65 @@ class SandboxedFileOperationsTool:
 class FeishuFileReadTool:
     """飞书文件读取工具 - 通过飞书API下载并读取文件内容"""
     
+    def __init__(self, executor=None):
+        self.executor = executor
+    
+    def _validate_message_id(self, message_id: str) -> bool:
+        """验证 message_id 格式是否正确"""
+        if not message_id:
+            return True  # 允许为空（旧版文件可能不需要）
+        
+        # 飞书 message_id 格式：om_ + 32-64位字母数字字符（支持多种版本，包括包含x的格式）
+        import re
+        pattern = r"^om_[0-9a-z]{32,64}$"
+        return bool(re.match(pattern, message_id.lower()))
+    
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         file_key = parameters.get("file_key", "")
         user_id = parameters.get("user_id", "")
         message_id = parameters.get("message_id", "")
         
+        # 记录详细请求参数
+        logger.info(f"📋 收到文件读取请求 - file_key={file_key}, message_id={message_id}, user_id={user_id}")
+        
         if not file_key:
-            logger.error("文件读取失败：缺少file_key参数")
+            logger.error("❌ 文件读取失败：缺少file_key参数")
             return {"success": False, "error": "参数错误：缺少file_key参数"}
         
+        # 验证 message_id 格式（如果提供了）
+        if message_id and not self._validate_message_id(message_id):
+            logger.error(f"❌ message_id 格式无效: {message_id}")
+            logger.info(f"   正确格式示例: om_da5e1234567890abcdef1234567890ab")
+            return {"success": False, "error": f"参数错误：message_id格式无效"}
+        
+        # 检查 file_v3 格式是否需要 message_id
+        is_file_v3 = file_key.startswith("file_v3_")
+        if is_file_v3 and not message_id:
+            logger.error(f"❌ file_v3 格式文件需要有效的 message_id，当前 message_id 为空")
+            return {"success": False, "error": "参数错误：file_v3格式文件需要message_id参数"}
+        
         try:
-            from src.plugins.im_adapters import FeishuAdapter
+            # 优先使用executor的飞书客户端，如果没有则创建新的适配器
+            api_client = None
+            if self.executor and hasattr(self.executor, '_feishu_client'):
+                api_client = self.executor._feishu_client
             
-            # 创建飞书适配器
-            adapter = FeishuAdapter()
-            
-            # 调用飞书API下载文件（使用推荐的 message resource 接口）
-            file_content = self._download_feishu_file(adapter, file_key, message_id)
+            if api_client:
+                # 使用executor的客户端下载文件
+                file_content = self._download_feishu_file_direct(api_client, file_key, message_id)
+            else:
+                from src.plugins.im_adapters import FeishuAdapter
+                # 创建飞书适配器
+                adapter = FeishuAdapter()
+                # 调用飞书API下载文件（使用推荐的 message resource 接口）
+                file_content = self._download_feishu_file(adapter, file_key, message_id)
             
             if file_content:
                 # 将文件内容存储到向量数据库（可选）
                 if user_id:
                     self._store_to_vector_db(user_id, file_content, file_key)
                 
-                logger.info(f"文件读取成功：file_key={file_key}, content_length={len(file_content)}")
+                logger.info(f"✅ 文件读取成功：file_key={file_key}, content_length={len(file_content)}")
                 return {
                     "success": True,
                     "result": {
@@ -435,16 +558,118 @@ class FeishuFileReadTool:
                     }
                 }
             else:
-                logger.error(f"文件下载失败：file_key={file_key}")
+                logger.error(f"❌ 文件下载失败：file_key={file_key}, message_id={message_id}")
                 return {"success": False, "error": "文件下载失败，请检查飞书配置或网络连接"}
                 
         except Exception as e:
-            logger.error(f"读取飞书文件失败：file_key={file_key}, 错误详情: {str(e)}", exc_info=True)
+            logger.error(f"❌ 读取飞书文件失败：file_key={file_key}, message_id={message_id}, 错误详情: {str(e)}", exc_info=True)
             return {"success": False, "error": f"文件读取失败: {str(e)}"}
+    
+    def _download_feishu_file_direct(self, api_client, file_key: str, message_id: str = None) -> Optional[str]:
+        """
+        直接使用api_client下载飞书文件（新版 file_v3 专用）
+        支持：单聊、群聊、私聊、所有飞书文件格式
+        
+        Args:
+            api_client: 飞书API客户端实例
+            file_key: 文件标识（支持 file_v3_xxx 格式）
+            message_id: 消息ID（用于调用推荐接口）
+        
+        Returns:
+            文件内容字符串，失败返回None
+        """
+        try:
+            # 检查 file_key 是否为 file_v3 格式
+            is_file_v3 = file_key.startswith("file_v3_")
+            
+            # ======================
+            # 方法 1：官方标准接口（唯一支持 file_v3）
+            # ======================
+            if message_id:
+                try:
+                    from lark_oapi.api.im.v1 import GetMessageResourceRequest, GetMessageResourceResponse
+                    
+                    req = GetMessageResourceRequest.builder() \
+                        .message_id(message_id) \
+                        .file_key(file_key) \
+                        .type("file") \
+                        .build()
+                    
+                    response: GetMessageResourceResponse = api_client.im.v1.message_resource.get(req)
+                    
+                    if response.success() and response.raw.content:
+                        logger.info(f"📥 使用 message resource 接口下载文件成功: {file_key}")
+                        logger.info(f"📦 文件内容长度: {len(response.raw.content)} bytes")
+                        
+                        # 尝试从响应头获取文件名
+                        file_name = ""
+                        if hasattr(response.raw, 'headers'):
+                            import re
+                            content_disposition = response.raw.headers.get('Content-Disposition', '')
+                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+                            if match:
+                                file_name = match.group(1).strip('"')
+                        logger.info(f"📝 提取文件名: '{file_name}'")
+                        
+                        # 解析文件内容
+                        logger.info(f"🔍 开始解析文件内容...")
+                        parsed_content = self._parse_file_content(response.raw.content, file_name)
+                        logger.info(f"✅ 文件解析完成，内容长度: {len(parsed_content) if parsed_content else 0}")
+                        return parsed_content
+                    
+                    logger.debug(f"message resource 接口未返回内容: code={response.code}, msg={response.msg}")
+                except Exception as e:
+                    logger.error(f"方法1(message resource)失败: {str(e)}")
+            elif is_file_v3:
+                # file_v3 格式必须有 message_id
+                logger.error(f"file_v3 格式文件需要有效的 message_id，当前 message_id 为空")
+                return None
+            
+            # ======================
+            # 方法 2：云文档 API（兼容旧版，不支持 file_v3）
+            # ======================
+            if not is_file_v3:
+                try:
+                    from lark_oapi.api.drive.v1 import DownloadFileRequest
+                    
+                    req = DownloadFileRequest.builder().file_token(file_key).build()
+                    response = api_client.drive.v1.file.download(req)
+                    
+                    if response.success() and response.raw.content:
+                        logger.info(f"使用 drive API 下载文件成功: {file_key}")
+                        
+                        # 尝试从响应头获取文件名
+                        file_name = ""
+                        if hasattr(response.raw, 'headers'):
+                            import re
+                            content_disposition = response.raw.headers.get('Content-Disposition', '')
+                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+                            if match:
+                                file_name = match.group(1).strip('"')
+                        
+                        # 解析文件内容
+                        return self._parse_file_content(response.raw.content, file_name)
+                    
+                    logger.debug(f"drive API 未返回内容: code={response.code}, msg={response.msg}")
+                except Exception as e:
+                    logger.error(f"方法2(drive API)失败: {str(e)}")
+            
+            # 构建详细错误信息
+            error_msg = f"飞书文件下载失败"
+            if is_file_v3:
+                error_msg += f"（file_v3格式需要有效的message_id）"
+            else:
+                error_msg += f"（请确认file_key正确）"
+            
+            raise Exception(error_msg)
+            
+        except Exception as e:
+            logger.error(f"下载飞书文件失败：file_key={file_key}, message_id={message_id}, 错误详情: {str(e)}", exc_info=True)
+            return None
     
     def _download_feishu_file(self, adapter, file_key: str, message_id: str = None) -> Optional[str]:
         """
-        修复版：飞书新版 file_v3 专用下载方法
+        修复版：飞书新版 file_v3 专用下载方法（通过适配器）
         支持：单聊、群聊、私聊、所有飞书文件格式
         
         Args:
@@ -464,6 +689,9 @@ class FeishuFileReadTool:
             if adapter._api_client is None:
                 logger.error(f"文件下载失败：无法初始化飞书API客户端，请检查.env文件中的FEISHU_APP_ID和FEISHU_APP_SECRET配置")
                 return None
+            
+            # 检查 file_key 是否为 file_v3 格式
+            is_file_v3 = file_key.startswith("file_v3_")
             
             # ======================
             # 方法 1：官方标准接口（唯一支持 file_v3）
@@ -495,42 +723,54 @@ class FeishuFileReadTool:
                         # 解析文件内容
                         return self._parse_file_content(response.raw.content, file_name)
                     
-                    logger.debug(f"message resource 接口未返回内容: {response.code}, {response.msg}")
+                    logger.debug(f"message resource 接口未返回内容: code={response.code}, msg={response.msg}")
                 except Exception as e:
                     logger.error(f"方法1(message resource)失败: {str(e)}")
+            elif is_file_v3:
+                # file_v3 格式必须有 message_id
+                logger.error(f"file_v3 格式文件需要有效的 message_id，当前 message_id 为空")
+                return None
             
             # ======================
-            # 方法 2：云文档 API（兼容旧版）
+            # 方法 2：云文档 API（兼容旧版，不支持 file_v3）
             # ======================
-            try:
-                from lark_oapi.api.drive.v1 import DownloadFileRequest
-                
-                req = DownloadFileRequest.builder().file_id(file_key).build()
-                response = adapter._api_client.drive.v1.file.download(req)
-                
-                if response.success() and response.raw.content:
-                    logger.info(f"使用 drive API 下载文件成功: {file_key}")
+            if not is_file_v3:
+                try:
+                    from lark_oapi.api.drive.v1 import DownloadFileRequest
                     
-                    # 尝试从响应头获取文件名
-                    file_name = ""
-                    if hasattr(response.raw, 'headers'):
-                        import re
-                        content_disposition = response.raw.headers.get('Content-Disposition', '')
-                        match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                        if match:
-                            file_name = match.group(1).strip('"')
+                    req = DownloadFileRequest.builder().file_token(file_key).build()
+                    response = adapter._api_client.drive.v1.file.download(req)
                     
-                    # 解析文件内容
-                    return self._parse_file_content(response.raw.content, file_name)
-                
-                logger.debug(f"drive API 未返回内容: {response.code}, {response.msg}")
-            except Exception as e:
-                logger.error(f"方法2(drive API)失败: {str(e)}")
+                    if response.success() and response.raw.content:
+                        logger.info(f"使用 drive API 下载文件成功: {file_key}")
+                        
+                        # 尝试从响应头获取文件名
+                        file_name = ""
+                        if hasattr(response.raw, 'headers'):
+                            import re
+                            content_disposition = response.raw.headers.get('Content-Disposition', '')
+                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+                            if match:
+                                file_name = match.group(1).strip('"')
+                        
+                        # 解析文件内容
+                        return self._parse_file_content(response.raw.content, file_name)
+                    
+                    logger.debug(f"drive API 未返回内容: code={response.code}, msg={response.msg}")
+                except Exception as e:
+                    logger.error(f"方法2(drive API)失败: {str(e)}")
             
-            raise Exception("飞书文件下载失败：请确认 message_id 和 file_key 正确")
+            # 构建详细错误信息
+            error_msg = f"飞书文件下载失败"
+            if is_file_v3:
+                error_msg += f"（file_v3格式需要有效的message_id）"
+            else:
+                error_msg += f"（请确认file_key正确）"
+            
+            raise Exception(error_msg)
             
         except Exception as e:
-            logger.error(f"下载飞书文件失败：file_key={file_key}, 错误详情: {str(e)}", exc_info=True)
+            logger.error(f"下载飞书文件失败：file_key={file_key}, message_id={message_id}, 错误详情: {str(e)}", exc_info=True)
             return None
     
     def _parse_file_content(self, content: bytes, file_name: str) -> str:
@@ -689,15 +929,26 @@ class FeishuFileReadTool:
             import pdfplumber
             from io import BytesIO
             
+            logger.info(f"📄 开始解析PDF文件：file_name={file_name}, content_length={len(content)}")
+            
             with pdfplumber.open(BytesIO(content)) as pdf:
                 full_text = []
-                for page in pdf.pages:
+                page_count = len(pdf.pages)
+                logger.info(f"📄 PDF页数: {page_count}")
+                
+                for i, page in enumerate(pdf.pages):
                     text = page.extract_text()
                     if text:
                         full_text.append(text)
+                        logger.debug(f"📄 第 {i+1} 页提取文本长度: {len(text)}")
             
             parsed_content = '\n\n'.join(full_text)
-            logger.debug(f"PDF解析完成：file_name={file_name}, pages={len(pdf.pages)}, parsed_length={len(parsed_content)}")
+            logger.info(f"✅ PDF解析完成：file_name={file_name}, pages={page_count}, parsed_length={len(parsed_content)}")
+            
+            if not parsed_content:
+                logger.warning(f"⚠️ PDF解析结果为空，可能是扫描件或加密PDF")
+                return f"PDF文件内容为空或无法提取文本（可能是扫描件或加密PDF）\n\n文件名: {file_name}\n文件大小: {len(content)} bytes"
+            
             return parsed_content
             
         except Exception as e:
@@ -746,14 +997,20 @@ class FeishuFileReadTool:
     def _store_to_vector_db(self, user_id: str, content: str, file_key: str):
         """将文件内容存储到向量数据库"""
         try:
-            from src.engine.memory_manager import memory_manager
+            from src.data.database import db
+            from src.types import MemoryEntry
+            from src.utils import generate_id, get_timestamp
             
             # 存储到长期记忆
-            memory_manager.add_long_term_memory(
+            memory_entry = MemoryEntry(
+                id=generate_id(),
                 user_id=user_id,
+                type="long",
                 content=content,
-                tags=f"feishu_file,{file_key}"
+                timestamp=get_timestamp(),
+                tags=["feishu_file", file_key]
             )
+            db.save_memory(memory_entry)
             
             logger.info(f"文件内容已存储到向量数据库: {file_key}")
         except Exception as e:

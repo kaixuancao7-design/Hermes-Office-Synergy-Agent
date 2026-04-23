@@ -156,13 +156,14 @@ class ReActEngine:
 
             ## 工具使用指南
             ### 处理飞书上传的文件
-            当用户上传文件时，消息中会包含 file_key 和 file_name。
+            当用户上传文件时，消息中会包含 file_key、file_name 和 message_id。
             如果需要读取文件内容，请使用 tool_executor 调用 feishu_file_read 工具，参数为：
             {{
                 "tool_name": "feishu_file_read",
                 "parameters": {{
                     "file_key": "文件的file_key",
-                    "user_id": "用户ID"
+                    "user_id": "用户ID",
+                    "message_id": "消息ID（用于file_v3格式文件下载）"
                 }}
             }}
 
@@ -194,8 +195,9 @@ class ReActEngine:
                 "parameters": {{
                     "tool_name": "feishu_file_read",
                     "parameters": {{
-                        "file_key": "file_v3_xxx",
-                        "user_id": "user123"
+                        "file_key": "<从元数据获取的file_key>",
+                        "user_id": "<从元数据获取的user_id>",
+                        "message_id": "<从元数据获取的message_id>"
                     }}
                 }}
             }}
@@ -341,6 +343,27 @@ class ReActEngine:
                 }
                 if tool_id in tool_id_mapping:
                     tool_id = tool_id_mapping[tool_id]
+                
+                # 关键修复：当调用 feishu_file_read 工具时，强制使用元数据中的真实参数
+                # LLM 可能会生成示例中的占位符（如 om_xxx），需要用真实值覆盖
+                if tool_id == "feishu_file_read":
+                    # 记录当前元数据状态
+                    logger.debug(f"当前元数据: {self.current_metadata}")
+                    
+                    if self.current_metadata:
+                        # 覆盖 file_key
+                        if self.current_metadata.get("file_key"):
+                            tool_params["file_key"] = self.current_metadata["file_key"]
+                        # 覆盖 message_id（最重要：防止 LLM 使用占位符）
+                        if self.current_metadata.get("message_id"):
+                            tool_params["message_id"] = self.current_metadata["message_id"]
+                        # 覆盖 user_id
+                        if self.current_metadata.get("user_id"):
+                            tool_params["user_id"] = self.current_metadata["user_id"]
+                    else:
+                        logger.warning("当前元数据为空，无法覆盖工具参数")
+                    
+                    logger.debug(f"覆盖后的工具参数: {tool_params}")
                 
                 # 使用插件系统的工具执行器
                 executor = get_tool_executor()
@@ -771,13 +794,28 @@ class ReActEngine:
                 )
             )
         
-        # 检查是否需要读取文件
-        if any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件"]):
+        # 检查是否需要读取文件（优先检查元数据中是否有 file_key）
+        has_file_upload = self.current_metadata and self.current_metadata.get("file_key")
+        file_keyword_detected = any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件"])
+        
+        if has_file_upload or file_keyword_detected:
+            # 从元数据中获取文件信息
+            tool_params = {"tool_name": "feishu_file_read"}
+            if self.current_metadata:
+                file_key = self.current_metadata.get("file_key")
+                message_id = self.current_metadata.get("message_id")
+                user_id = self.current_metadata.get("user_id")
+                if file_key:
+                    tool_params["parameters"] = {"file_key": file_key}
+                    if message_id:
+                        tool_params["parameters"]["message_id"] = message_id
+                    if user_id:
+                        tool_params["parameters"]["user_id"] = user_id
             return ReActOutput(
                 thought="用户上传了文件，需要读取文件内容",
                 action=Action(
                     type="tool_executor",
-                    parameters={"tool_name": "feishu_file_read"}
+                    parameters=tool_params
                 )
             )
         
@@ -861,12 +899,15 @@ class ReActEngine:
         thoughts_text = "\n".join([t.content for t in state.thoughts])
         return f"基于分析，我的回答是：{thoughts_text}"
     
-    def run(self, user_id: str, user_query: str, max_steps: int = 5) -> str:
+    def run(self, user_id: str, user_query: str, max_steps: int = 5, metadata: Optional[Dict[str, Any]] = None) -> str:
         """运行 ReAct 推理循环"""
         logger.info(f"Starting ReAct loop for user {user_id}: {user_query}")
         
         # 设置当前用户ID（供 _execute_action 使用）
         self.current_user_id = user_id
+        
+        # 存储消息元数据
+        self.current_metadata = metadata or {}
         
         # 初始化状态
         state = ReActState(
@@ -880,13 +921,29 @@ class ReActEngine:
             try:
                 # 构建提示词
                 history = self._format_history(state)
+                
+                # 从元数据中提取文件相关信息
+                file_context = ""
+                if self.current_metadata:
+                    file_key = self.current_metadata.get("file_key")
+                    file_name = self.current_metadata.get("file_name")
+                    msg_id = self.current_metadata.get("message_id")
+                    if file_key or file_name:
+                        file_context = f"\n\n## 文件信息"
+                        if file_name:
+                            file_context += f"\n文件名: {file_name}"
+                        if file_key:
+                            file_context += f"\n文件标识: {file_key}"
+                        if msg_id:
+                            file_context += f"\n消息ID: {msg_id}"
+                
                 prompt = f"""{self.system_prompt}
 
 ## 当前问题
 {user_query}
 
 ## 历史记录
-{history}
+{history}{file_context}
 
 ## 下一步思考和动作
 """

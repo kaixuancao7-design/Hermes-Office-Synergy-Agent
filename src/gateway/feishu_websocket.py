@@ -132,6 +132,25 @@ class FeishuEventHandler:
             
             logger.info(f"开始处理消息: user_id={user_id}, message_id={message_id}, content={text[:50]}")
             
+            # 构建元数据（包含关键的文件下载参数）
+            metadata = {
+                "source": "feishu",
+                "group": chat_type == "group",
+                "message_id": message_id,
+                "user_id": user_id
+            }
+            
+            # 如果是文件消息，提取 file_key 和 file_name
+            if isinstance(content_json, dict):
+                if content_json.get('file_key'):
+                    metadata['file_key'] = content_json['file_key']
+                if content_json.get('file_name'):
+                    metadata['file_name'] = content_json['file_name']
+                if content_json.get('file_url'):
+                    metadata['file_url'] = content_json['file_url']
+            
+            logger.debug(f"构建的元数据: {metadata}")
+            
             # 创建消息对象
             msg = Message(
                 id=str(message_id),
@@ -139,10 +158,7 @@ class FeishuEventHandler:
                 content=text,
                 role="user",
                 timestamp=get_timestamp(),
-                metadata={
-                    "source": "feishu",
-                    "group": chat_type == "group"
-                }
+                metadata=metadata
             )
             
             # 使用消息路由处理

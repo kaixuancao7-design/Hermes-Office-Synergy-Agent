@@ -264,30 +264,34 @@ def check_feishu_file_exists(file_key: str, user_id: str) -> Dict[str, Any]:
         }
 
 
-def _download_feishu_file(adapter, file_key: str) -> Optional[str]:
+def _download_feishu_file(adapter, file_key: str, message_id: str = None) -> Optional[str]:
     """
-    从飞书下载文件内容
+    从飞书下载文件内容（支持新版 file_v3）
     
     Args:
         adapter: 飞书适配器实例
         file_key: 文件key
+        message_id: 消息ID（用于新版 file_v3 下载）
         
     Returns:
         文件内容字符串，如果下载失败返回None
     """
     try:
-        # 这里需要实现飞书文件下载逻辑
-        # 实际实现需要调用飞书API获取文件下载链接并下载
-        # 由于需要完整的飞书API配置，这里返回模拟数据
+        # 调用适配器的真实文件读取方法
+        logger.info(f"开始下载文件: {file_key}")
         
-        # 模拟下载（实际项目中需要实现真实的文件下载）
-        logger.info(f"模拟下载文件: {file_key}")
+        # 使用 adapter 的 _read_feishu_file 方法进行真实下载
+        file_content = adapter._read_feishu_file(file_key, message_id)
         
-        # 返回模拟文件内容（实际应返回真实内容）
-        return f"文件内容示例 - file_key: {file_key}"
-        
+        if file_content:
+            logger.info(f"文件下载成功: {file_key}")
+            return file_content
+        else:
+            logger.error(f"文件下载失败，返回内容为空: {file_key}")
+            return None
+            
     except Exception as e:
-        logger.error(f"下载飞书文件失败: {str(e)}")
+        logger.error(f"下载飞书文件失败: {str(e)}", exc_info=True)
         return None
 
 

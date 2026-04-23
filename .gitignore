@@ -16,6 +16,7 @@ logs/
 
 # 数据文件（数据库文件不应上传）
 data/
+!/src/data/
 *.db
 *.sqlite
 *.sqlite3
