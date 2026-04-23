@@ -70,8 +70,21 @@ class MessageRouter:
             if not self._is_mentioned(message):
                 return ""
         
-        intent = intent_recognizer.recognize(message.content)
-        logger.info(f"Recognized intent: {intent.type} (confidence: {intent.confidence})")
+        # 检查是否是文件上传
+        metadata = message.metadata or {}
+        is_file_upload = metadata.get("file_key") is not None or metadata.get("file_name") is not None
+        
+        # 如果是文件上传，强制使用文档分析意图
+        if is_file_upload:
+            logger.info("检测到文件上传，强制使用文档分析意图")
+            intent = Intent(
+                type="document_analysis",
+                confidence=0.95,
+                entities={"file_name": metadata.get("file_name", "")}
+            )
+        else:
+            intent = intent_recognizer.recognize(message.content)
+            logger.info(f"Recognized intent: {intent.type} (confidence: {intent.confidence})")
         
         # 判断是否使用 ReAct 模式
         if self.use_react_mode and self._should_use_react(intent):

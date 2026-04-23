@@ -284,7 +284,7 @@ class FeishuAdapter(IMAdapterBase):
             
             # 如果是文件消息，尝试读取文件内容并存储到向量数据库
             if file_key:
-                file_content = await self._read_feishu_file(file_key)
+                file_content = await self._read_feishu_file(file_key, message_id)
                 if file_content:
                     # 将文件内容存储到向量数据库
                     try:
@@ -303,6 +303,13 @@ class FeishuAdapter(IMAdapterBase):
                         text = f"文件：{file_name}\n\n{file_content[:2000]}..."
                     except Exception as e:
                         logger.error(f"存储文件内容失败: {str(e)}")
+                else:
+                    # 文件读取失败，向用户返回错误消息
+                    error_message = f"文件读取失败，请检查飞书配置或联系管理员。\n\n文件名: {file_name}\n错误原因: 飞书API客户端未初始化或配置不正确"
+                    await self.send_message(user_id, error_message)
+                    logger.error(f"文件读取失败，已向用户发送错误消息: user_id={user_id}, file_name={file_name}")
+                    self.processing_message_ids.discard(message_id)
+                    return
             
             bot_name = settings.FEISHU_BOT_NAME
             if bot_name and f"@{bot_name}" in text:
@@ -329,90 +336,201 @@ class FeishuAdapter(IMAdapterBase):
         finally:
             self.processing_message_ids.discard(message_id)
     
-    async def _read_feishu_file(self, file_key: str) -> Optional[str]:
-        """读取飞书文件内容"""
+    async def _read_feishu_file(self, file_key: str, message_id: str = None) -> Optional[str]:
+        """读取飞书文件内容（支持 file_v3 新版API）
+        
+        Args:
+            file_key: 文件的唯一标识（支持 file_v3_xxx 格式）
+            message_id: 消息ID（可选），有message_id时优先使用推荐的消息资源接口
+        
+        Returns:
+            文件内容字符串，失败返回None
+        """
         try:
             if self._api_client is None:
-                logger.error("飞书API客户端未初始化")
+                logger.error(f"读取飞书文件失败：file_key={file_key}, 飞书API客户端未初始化，请检查.env文件配置")
                 return None
             
-            # 调用飞书API获取文件下载链接
-            download_response = self._api_client.drive.v1.file.get_download_url(file_key)
+            # ======================
+            # 方法 1：官方标准接口（唯一支持 file_v3）
+            # ======================
+            if message_id:
+                try:
+                    from lark_oapi.api.im.v1 import GetMessageResourceRequest, GetMessageResourceResponse
+                    
+                    req = GetMessageResourceRequest.builder() \
+                        .message_id(message_id) \
+                        .file_key(file_key) \
+                        .type("file") \
+                        .build()
+                    
+                    response: GetMessageResourceResponse = self._api_client.im.v1.message_resource.get(req)
+                    
+                    if response.success() and response.raw.content:
+                        logger.info(f"使用 message resource 接口下载文件成功: {file_key}")
+                        
+                        # 尝试从响应头获取文件名
+                        file_name = ""
+                        if hasattr(response.raw, 'headers'):
+                            import re
+                            content_disposition = response.raw.headers.get('Content-Disposition', '')
+                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+                            if match:
+                                file_name = match.group(1).strip('"')
+                        
+                        # 解析文件内容
+                        return self._parse_file_content(response.raw.content, file_name)
+                    
+                    logger.debug(f"message resource 接口未返回内容: {response.code}, {response.msg}")
+                except Exception as e:
+                    logger.error(f"方法1(message resource)失败: {str(e)}")
             
-            if not download_response.success():
-                logger.error(f"获取下载链接失败: {download_response.code}, {download_response.msg}")
-                return None
+            # ======================
+            # 方法 2：云文档 API（兼容旧版）
+            # ======================
+            try:
+                from lark_oapi.api.drive.v1 import DownloadFileRequest
+                
+                req = DownloadFileRequest.builder().file_id(file_key).build()
+                response = self._api_client.drive.v1.file.download(req)
+                
+                if response.success() and response.raw.content:
+                    logger.info(f"使用 drive API 下载文件成功: {file_key}")
+                    
+                    # 尝试从响应头获取文件名
+                    file_name = ""
+                    if hasattr(response.raw, 'headers'):
+                        import re
+                        content_disposition = response.raw.headers.get('Content-Disposition', '')
+                        match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+                        if match:
+                            file_name = match.group(1).strip('"')
+                    
+                    # 解析文件内容
+                    return self._parse_file_content(response.raw.content, file_name)
+                
+                logger.debug(f"drive API 未返回内容: {response.code}, {response.msg}")
+            except Exception as e:
+                logger.error(f"方法2(drive API)失败: {str(e)}")
             
-            download_url = download_response.data.download_url
-            
-            # 获取文件名以确定文件类型
-            file_info = self._api_client.drive.v1.file.get(file_key)
-            file_name = ""
-            if file_info.success():
-                file_name = file_info.data.name or ""
-            
-            # 下载文件内容（保留原始二进制）
-            import requests
-            response = requests.get(download_url)
-            
-            # 根据文件类型解析内容
-            return self._parse_file_content(response.content, file_name)
+            raise Exception("飞书文件下载失败：请确认 message_id 和 file_key 正确")
             
         except Exception as e:
-            logger.error(f"读取飞书文件失败: {str(e)}")
-            # 返回模拟数据供测试
-            return f"模拟文件内容 - file_key: {file_key}\n\n这是一份关于AI Agent智能协同助手的核心功能清单文档...\n\n核心功能包括：\n1. 文档搜索与用户记忆检索\n2. 工具执行（办公自动化）\n3. PPT演示稿生成\n4. 智能问答与咨询\n\n协同流程：\n- IM消息接收\n- 文件解析与存储\n- 智能分析与总结\n- 演示稿自动生成\n- 多格式输出"
-    
+            logger.error(f"读取飞书文件失败：file_key={file_key}, 错误详情: {str(e)}", exc_info=True)
+            return None
+
+    def _download_via_message_resource(self, message_id: str, file_key: str) -> tuple:
+        """
+        使用飞书官方推荐的 message resource 接口下载文件（备用方法）
+        
+        接口: GET /open-apis/im/v1/messages/{message_id}/resource
+        参数: message_id, file_key, type=file
+        
+        Returns:
+            (文件内容bytes, 文件名)，失败返回(None, "")
+        """
+        try:
+            from lark_oapi.api.im.v1 import GetMessageResourceRequest
+            
+            req = GetMessageResourceRequest.builder()\
+                .message_id(message_id)\
+                .file_key(file_key)\
+                .type("file")\
+                .build()
+            
+            resp = self._api_client.im.v1.message_resource.get(req)
+            
+            if resp.success():
+                logger.info(f"使用 message resource 接口下载文件成功: {file_key}")
+                # 尝试从响应头获取文件名
+                file_name = ""
+                if hasattr(resp.raw, 'headers'):
+                    import re
+                    content_disposition = resp.raw.headers.get('Content-Disposition', '')
+                    match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+                    if match:
+                        file_name = match.group(1).strip('"')
+                
+                return (resp.raw.content, file_name)
+            else:
+                logger.error(f"message resource 接口调用失败: message_id={message_id}, file_key={file_key}, 错误码={resp.code}, 错误信息={resp.msg}")
+                return (None, "")
+                
+        except Exception as e:
+            logger.error(f"使用 message resource 接口下载失败: message_id={message_id}, file_key={file_key}, 错误详情: {str(e)}", exc_info=True)
+            return (None, "")
+
     def _parse_file_content(self, content: bytes, file_name: str) -> str:
         """根据文件类型解析内容"""
         try:
             import os
             _, ext = os.path.splitext(file_name.lower())
+            content_length = len(content)
+            
+            logger.debug(f"开始解析文件：file_name={file_name}, extension={ext}, content_length={content_length}")
             
             # 文本文件直接解码
             if ext in ['.txt', '.md', '.json', '.xml', '.html', '.csv', '.tsv']:
+                logger.debug(f"解析文本文件：file_name={file_name}, encoding=utf-8")
                 return content.decode('utf-8', errors='ignore')
             
             # docx 文件需要专门解析
             elif ext == '.docx':
+                logger.debug(f"解析docx文件：file_name={file_name}")
                 from docx import Document
                 from io import BytesIO
                 doc = Document(BytesIO(content))
                 full_text = []
                 for para in doc.paragraphs:
                     full_text.append(para.text)
-                return '\n'.join(full_text)
+                parsed_content = '\n'.join(full_text)
+                logger.debug(f"docx解析完成：file_name={file_name}, parsed_length={len(parsed_content)}")
+                return parsed_content
             
             # xlsx 文件解析
             elif ext == '.xlsx':
+                logger.debug(f"解析xlsx文件：file_name={file_name}")
                 import pandas as pd
                 from io import BytesIO
                 df = pd.read_excel(BytesIO(content))
-                return df.to_string()
+                parsed_content = df.to_string()
+                logger.debug(f"xlsx解析完成：file_name={file_name}, parsed_length={len(parsed_content)}")
+                return parsed_content
             
             # pdf 文件解析
             elif ext == '.pdf':
+                logger.debug(f"解析PDF文件：file_name={file_name}")
                 from PyPDF2 import PdfReader
                 from io import BytesIO
                 reader = PdfReader(BytesIO(content))
                 full_text = []
                 for page in reader.pages:
-                    full_text.append(page.extract_text())
-                return '\n'.join(full_text)
+                    text = page.extract_text()
+                    if text:
+                        full_text.append(text)
+                parsed_content = '\n'.join(full_text)
+                logger.debug(f"PDF解析完成：file_name={file_name}, pages={len(reader.pages)}, parsed_length={len(parsed_content)}")
+                return parsed_content
             
             # 其他未知类型，尝试作为文本处理
             else:
+                logger.warning(f"未知文件格式：file_name={file_name}, extension={ext}")
                 try:
                     text = content.decode('utf-8')
                     if self._is_binary(text):
-                        return f"无法解析文件格式: {ext}\n\n文件大小: {len(content)} bytes"
+                        error_msg = f"无法解析文件格式: {ext}\n\n文件大小: {content_length} bytes\n\n支持的文件类型: .txt, .md, .json, .xml, .html, .csv, .tsv, .docx, .xlsx, .pdf"
+                        logger.warning(f"文件为二进制格式：file_name={file_name}, extension={ext}")
+                        return error_msg
                     return text
-                except:
-                    return f"无法解析文件格式: {ext}\n\n文件大小: {len(content)} bytes"
+                except Exception as decode_e:
+                    error_msg = f"无法解析文件格式: {ext}\n\n文件大小: {content_length} bytes\n\n支持的文件类型: .txt, .md, .json, .xml, .html, .csv, .tsv, .docx, .xlsx, .pdf"
+                    logger.error(f"文件解码失败：file_name={file_name}, extension={ext}, 错误: {str(decode_e)}")
+                    return error_msg
                     
         except Exception as e:
-            logger.error(f"解析文件内容失败: {str(e)}")
-            return f"文件解析失败: {str(e)}"
+            error_msg = f"文件解析失败：{str(e)}\n\n文件名: {file_name}\n文件大小: {len(content)} bytes"
+            logger.error(f"解析文件内容失败：file_name={file_name}, 错误详情: {str(e)}", exc_info=True)
+            return error_msg
     
     def _is_binary(self, text: str) -> bool:
         """简单检测是否为二进制数据"""

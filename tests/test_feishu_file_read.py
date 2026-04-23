@@ -8,14 +8,18 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import json
 from src.plugins.tool_executors import FeishuFileReadTool, BasicToolExecutor
+from src.config import settings
 
 
 class TestFeishuFileRead:
     """飞书文件读取工具测试类"""
     
-    def __init__(self):
-        self.tool = FeishuFileReadTool()
-        self.executor = BasicToolExecutor()
+    tool = FeishuFileReadTool()
+    executor = BasicToolExecutor()
+    
+    def has_feishu_config(self):
+        """检查是否有飞书配置"""
+        return settings.FEISHU_APP_ID and settings.FEISHU_APP_SECRET
     
     def test_read_file_with_file_key(self):
         """测试通过file_key读取文件"""
@@ -30,16 +34,25 @@ class TestFeishuFileRead:
             
             result = self.tool.execute(parameters)
             
-            assert result["success"] == True, "文件读取失败"
-            assert "result" in result, "缺少result字段"
-            assert "file_key" in result["result"], "缺少file_key"
-            assert "content" in result["result"], "缺少content"
-            assert "content_length" in result["result"], "缺少content_length"
-            
-            print(f"  - file_key: {result['result']['file_key']}")
-            print(f"  - content_length: {result['result']['content_length']}")
-            print(f"  - 内容预览: {result['result']['content'][:50]}...")
-            print("[OK] 通过file_key读取文件测试通过")
+            if self.has_feishu_config():
+                # 如果有配置，期望成功
+                assert result["success"] == True, "文件读取失败"
+                assert "result" in result, "缺少result字段"
+                assert "file_key" in result["result"], "缺少file_key"
+                assert "content" in result["result"], "缺少content"
+                assert "content_length" in result["result"], "缺少content_length"
+                
+                print(f"  - file_key: {result['result']['file_key']}")
+                print(f"  - content_length: {result['result']['content_length']}")
+                print(f"  - 内容预览: {result['result']['content'][:50]}...")
+                print("[OK] 通过file_key读取文件测试通过")
+            else:
+                # 如果没有配置，期望失败并返回明确的错误信息
+                assert result["success"] == False, "应该失败（未配置飞书API）"
+                assert "error" in result, "缺少error字段"
+                print(f"  - 预期失败（未配置飞书API）")
+                print(f"  - 错误信息: {result['error']}")
+                print("[OK] 通过file_key读取文件测试通过（预期失败）")
             
         except Exception as e:
             print(f"[FAIL] 测试失败: {e}")
@@ -52,22 +65,31 @@ class TestFeishuFileRead:
         try:
             # 测试参数（包含message_id）
             parameters = {
-                "file_key": "file_v3_00110_d49a79d6-b484-41a7-85dc-3f292d4bdb3g",
+                "file_key": "file_v3_00111_64032db0-8bc3-4aa6-972d-1b4d844e4e7g",
                 "message_id": "om_abc123456",
                 "user_id": "test_user_123"
             }
             
             result = self.tool.execute(parameters)
             
-            assert result["success"] == True, "文件读取失败"
-            assert "result" in result, "缺少result字段"
-            assert "file_key" in result["result"], "缺少file_key"
-            assert "content" in result["result"], "缺少content"
-            
-            print(f"  - file_key: {result['result']['file_key']}")
-            print(f"  - content_length: {result['result']['content_length']}")
-            print(f"  - 内容预览: {result['result']['content'][:50]}...")
-            print("[OK] 使用message_id参数读取文件测试通过")
+            if self.has_feishu_config():
+                # 如果有配置，期望成功
+                assert result["success"] == True, "文件读取失败"
+                assert "result" in result, "缺少result字段"
+                assert "file_key" in result["result"], "缺少file_key"
+                assert "content" in result["result"], "缺少content"
+                
+                print(f"  - file_key: {result['result']['file_key']}")
+                print(f"  - content_length: {result['result']['content_length']}")
+                print(f"  - 内容预览: {result['result']['content'][:50]}...")
+                print("[OK] 使用message_id参数读取文件测试通过")
+            else:
+                # 如果没有配置，期望失败并返回明确的错误信息
+                assert result["success"] == False, "应该失败（未配置飞书API）"
+                assert "error" in result, "缺少error字段"
+                print(f"  - 预期失败（未配置飞书API）")
+                print(f"  - 错误信息: {result['error']}")
+                print("[OK] 使用message_id参数读取文件测试通过（预期失败）")
             
         except Exception as e:
             print(f"[FAIL] 测试失败: {e}")
@@ -128,12 +150,21 @@ class TestFeishuFileRead:
                 "user_id": "test_user_456"
             })
             
-            assert result["success"] == True, "工具执行失败"
-            assert "result" in result, "缺少result字段"
-            
-            print(f"  - 工具执行成功")
-            print(f"  - file_key: {result['result']['file_key']}")
-            print("[OK] 工具执行器集成测试通过")
+            if self.has_feishu_config():
+                # 如果有配置，期望成功
+                assert result["success"] == True, "工具执行失败"
+                assert "result" in result, "缺少result字段"
+                
+                print(f"  - 工具执行成功")
+                print(f"  - file_key: {result['result']['file_key']}")
+                print("[OK] 工具执行器集成测试通过")
+            else:
+                # 如果没有配置，期望失败并返回明确的错误信息
+                assert result["success"] == False, "应该失败（未配置飞书API）"
+                assert "error" in result, "缺少error字段"
+                print(f"  - 预期失败（未配置飞书API）")
+                print(f"  - 错误信息: {result['error']}")
+                print("[OK] 工具执行器集成测试通过（预期失败）")
             
         except Exception as e:
             print(f"[FAIL] 测试失败: {e}")
@@ -164,20 +195,39 @@ if __name__ == "__main__":
     print("飞书文件读取工具测试")
     print("=" * 60)
     
+    # 检查飞书配置状态
+    has_config = settings.FEISHU_APP_ID and settings.FEISHU_APP_SECRET
+    if has_config:
+        print(f"  - 飞书API配置: 已配置")
+    else:
+        print(f"  - 飞书API配置: 未配置（部分测试将预期失败）")
+    print("-" * 60)
+    
     test = TestFeishuFileRead()
     
-    try:
-        test.test_read_file_with_file_key()
-        test.test_read_file_with_message_id()
-        test.test_read_file_without_file_key()
-        test.test_read_file_empty_file_key()
-        test.test_tool_executor_integration()
-        test.test_all_tools_registered()
-        
-        print("\n" + "=" * 60)
-        print("所有测试通过！")
-        print("=" * 60)
-        
-    except Exception as e:
-        print(f"\n[ERROR] 测试失败: {e}")
+    passed = 0
+    failed = 0
+    
+    tests = [
+        ("test_read_file_with_file_key", test.test_read_file_with_file_key),
+        ("test_read_file_with_message_id", test.test_read_file_with_message_id),
+        ("test_read_file_without_file_key", test.test_read_file_without_file_key),
+        ("test_read_file_empty_file_key", test.test_read_file_empty_file_key),
+        ("test_tool_executor_integration", test.test_tool_executor_integration),
+        ("test_all_tools_registered", test.test_all_tools_registered),
+    ]
+    
+    for test_name, test_func in tests:
+        try:
+            test_func()
+            passed += 1
+        except Exception as e:
+            failed += 1
+            print(f"\n[ERROR] {test_name} 测试失败: {e}")
+    
+    print("\n" + "=" * 60)
+    print(f"测试结果: {passed} 通过, {failed} 失败")
+    print("=" * 60)
+    
+    if failed > 0:
         sys.exit(1)

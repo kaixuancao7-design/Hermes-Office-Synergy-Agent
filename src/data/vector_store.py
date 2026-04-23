@@ -127,6 +127,34 @@ class VectorStore:
         except Exception as e:
             logger.error(f"Failed to add documents: {e}")
             raise
+
+    def add_large_document(self, content: str, metadata: Optional[Dict[str, Any]] = None):
+        """添加大文档到向量数据库"""
+        try:
+            # 使用文本分割器处理大文档
+            text_splitter = RecursiveCharacterTextSplitter(
+                chunk_size=1000,
+                chunk_overlap=200,
+                length_function=len
+            )
+            
+            chunks = text_splitter.split_text(content)
+            logger.info(f"Split large document into {len(chunks)} chunks")
+            
+            # 批量添加到向量数据库
+            documents = []
+            for i, chunk in enumerate(chunks):
+                doc_metadata = {**(metadata or {}), "chunk_index": i, "total_chunks": len(chunks)}
+                documents.append({
+                    "content": chunk,
+                    "metadata": doc_metadata
+                })
+            
+            self.add_documents(documents)
+            logger.info("Large document added to vector store successfully")
+        except Exception as e:
+            logger.error(f"Failed to add large document: {e}")
+            raise
     
     def search(self, query: str, k: int = 5, filter: Optional[Dict[str, Any]] = None,
               use_advanced: bool = False) -> List[Dict[str, Any]]:
