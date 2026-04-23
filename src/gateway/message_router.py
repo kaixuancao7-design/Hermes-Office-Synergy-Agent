@@ -151,7 +151,33 @@ class MessageRouter:
     
     def _handle_summarization(self, user_id: str, intent: Intent, context: str) -> str:
         recent_messages = db.get_recent_messages(user_id, 20)
-        text_to_summarize = "\n".join(m.content for m in recent_messages)
+        
+        # 过滤掉文件上传的JSON消息，只保留有意义的文本内容
+        def is_valid_text(content):
+            if not content or not content.strip():
+                return False
+            # 检查是否是文件上传的JSON格式
+            content = content.strip()
+            if content.startswith('{') and content.endswith('}'):
+                # 可能是文件上传消息，检查是否包含file_key
+                try:
+                    import json
+                    data = json.loads(content)
+                    if 'file_key' in data or 'file_name' in data:
+                        return False
+                except:
+                    pass
+            return True
+        
+        valid_messages = [m for m in recent_messages if is_valid_text(m.content)]
+        text_to_summarize = "\n".join(m.content for m in valid_messages)
+        
+        # 如果没有可总结的内容，返回友好提示
+        if not text_to_summarize.strip():
+            logger.info("没有可总结的文本内容")
+            return "当前没有可总结的文本内容。您可以上传文件或发送文本消息，我会帮您总结。"
+        
+        logger.info(f"总结内容长度: {len(text_to_summarize)} 字符")
         
         # 使用插件系统的模型路由
         model_router = get_model_router()
@@ -159,15 +185,21 @@ class MessageRouter:
             model = model_router.select_model("summarization", "simple")
             if model:
                 prompt = f"总结以下内容：\n{text_to_summarize}"
-                return model_router.call_model(model, [{"role": "user", "content": prompt}])
-            else:
-                logger.warning("无法选择总结模型")
-        else:
-            logger.warning("模型路由不可用")
+                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+                if response and response.strip():
+                    return response
+                else:
+                    logger.warning("模型返回空响应，降级到ReAct模式")
         
-        # 如果插件不可用，尝试使用 ReAct 模式
+        # 如果插件不可用或返回空，尝试使用 ReAct 模式
         logger.info("总结功能降级到 ReAct 模式")
-        return react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
+        response = react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
+        
+        # 如果仍然为空，返回默认提示
+        if not response or not response.strip():
+            return "抱歉，暂时无法生成总结。请稍后重试或提供更多内容。"
+        
+        return response
     
     def _handle_question_answering(self, user_id: str, intent: Intent, context: str) -> str:
         # 使用插件系统的记忆存储进行检索
@@ -221,15 +253,70 @@ class MessageRouter:
         return "未找到相关记忆"
     
     def _handle_document_analysis(self, user_id: str, intent: Intent, context: str) -> str:
-        # 使用插件系统的模型路由
+        # 从数据库获取最近的文件内容进行总结
+        from src.data.database import db
+        
+        # 获取用户最近的消息
+        recent_messages = db.get_recent_messages(user_id, 20)
+        
+        # 过滤出文件上传后的助手回复（包含文件内容）
+        def has_content(content):
+            if not content or not content.strip():
+                return False
+            # 检查是否包含有效内容（不是纯JSON文件上传消息）
+            content = content.strip()
+            if content.startswith('{') and content.endswith('}'):
+                try:
+                    import json
+                    data = json.loads(content)
+                    # 如果只是文件上传的JSON，跳过
+                    if 'file_key' in data and 'file_name' in data and len(data) <= 3:
+                        return False
+                except:
+                    pass
+            return True
+        
+        valid_messages = [m for m in recent_messages if has_content(m.content)]
+        
+        # 优先获取助手回复（包含文件内容）
+        file_contents = [m.content for m in valid_messages if m.role == "assistant"]
+        
+        # 如果没有助手回复，使用所有有效消息
+        if not file_contents:
+            file_contents = [m.content for m in valid_messages]
+        
+        text_to_summarize = "\n".join(file_contents)
+        
+        # 如果没有可总结的内容
+        if not text_to_summarize.strip():
+            logger.info("文档分析：没有可总结的内容")
+            return "已收到您上传的文件，但暂时没有可分析的内容。您可以提出具体问题，我来帮您分析。"
+        
+        logger.info(f"文档分析：总结内容长度: {len(text_to_summarize)} 字符")
+        
+        # 使用插件系统的模型路由进行总结分析
         model_router = get_model_router()
         if model_router:
             model = model_router.select_model("document_analysis", "complex")
             if model:
-                prompt = f"分析以下内容：\n{context}"
-                return model_router.call_model(model, [{"role": "user", "content": prompt}])
+                prompt = f"""请分析并总结以下文档内容：
+
+{text_to_summarize}
+
+请提供：
+1. 核心内容总结
+2. 关键要点
+3. 主要结论或建议
+"""
+                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+                if response and response.strip():
+                    return response
+                else:
+                    logger.warning("模型返回空响应，降级到总结模式")
         
-        return "文档分析功能暂时不可用"
+        # 降级到简单总结
+        logger.info("文档分析降级到简单总结模式")
+        return self._handle_summarization(user_id, intent, text_to_summarize)
     
     def _handle_code_generation(self, user_id: str, intent: Intent, context: str) -> str:
         # 使用插件系统的模型路由

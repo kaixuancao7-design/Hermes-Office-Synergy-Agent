@@ -10,6 +10,7 @@ from src.config import settings
 from src.utils import generate_id, get_timestamp, safe_log_string
 from src.data.database import db
 from src.logging_config import get_logger
+from src.plugins.tool_executors import decode_filename
 
 logger = get_logger("im")
 
@@ -376,11 +377,8 @@ class FeishuAdapter(IMAdapterBase):
                         # 尝试从响应头获取文件名
                         file_name = ""
                         if hasattr(response.raw, 'headers'):
-                            import re
                             content_disposition = response.raw.headers.get('Content-Disposition', '')
-                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                            if match:
-                                file_name = match.group(1).strip('"')
+                            file_name = decode_filename(content_disposition)
                         
                         # 解析文件内容
                         return self._parse_file_content(response.raw.content, file_name)
@@ -409,11 +407,8 @@ class FeishuAdapter(IMAdapterBase):
                         # 尝试从响应头获取文件名
                         file_name = ""
                         if hasattr(response.raw, 'headers'):
-                            import re
                             content_disposition = response.raw.headers.get('Content-Disposition', '')
-                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                            if match:
-                                file_name = match.group(1).strip('"')
+                            file_name = decode_filename(content_disposition)
                         
                         # 解析文件内容
                         return self._parse_file_content(response.raw.content, file_name)
@@ -461,11 +456,8 @@ class FeishuAdapter(IMAdapterBase):
                 # 尝试从响应头获取文件名
                 file_name = ""
                 if hasattr(resp.raw, 'headers'):
-                    import re
                     content_disposition = resp.raw.headers.get('Content-Disposition', '')
-                    match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                    if match:
-                        file_name = match.group(1).strip('"')
+                    file_name = decode_filename(content_disposition)
                 
                 return (resp.raw.content, file_name)
             else:

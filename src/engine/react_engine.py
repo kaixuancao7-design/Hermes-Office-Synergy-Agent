@@ -378,6 +378,7 @@ class ReActEngine:
                 # 正确处理工具执行结果
                 # 如果工具返回成功，提取实际结果；如果失败，提取错误信息
                 action_success = False
+                file_content = ""
                 if isinstance(result, dict):
                     action_success = result.get("success", False)
                     if action_success:
@@ -387,17 +388,46 @@ class ReActEngine:
                         if isinstance(tool_result, dict):
                             # 如果是嵌套字典，提取关键信息或转为可读格式
                             content = tool_result.get("content", "")
+                            file_content = content  # 保存文件内容用于后续总结
                             if content:
                                 observation_result = f"文件读取成功，内容长度: {tool_result.get('content_length', 0)} 字符\n文件内容预览:\n{content[:500]}..."
                             else:
                                 observation_result = f"工具执行成功: {str(tool_result)[:500]}"
                         else:
                             observation_result = str(tool_result)
+                            file_content = observation_result  # 保存文件内容用于后续总结
                     else:
                         # 工具执行失败，提取错误信息
                         observation_result = f"工具执行失败: {result.get('error', 'Unknown error')}"
                 else:
                     observation_result = str(result)
+                    file_content = observation_result  # 保存文件内容用于后续总结
+                
+                # 如果是文件读取工具且成功，自动触发总结
+                if action_success and tool_id == "feishu_file_read" and file_content:
+                    logger.info(f"文件读取成功，自动触发总结，内容长度: {len(file_content)}")
+                    # 使用插件系统的模型路由进行总结
+                    model_router = get_model_router()
+                    if model_router:
+                        model = model_router.select_model("summarization", "simple")
+                        if model:
+                            prompt = f"""请分析并总结以下文档内容：
+
+{file_content}
+
+请提供：
+1. 核心内容总结
+2. 关键要点
+3. 主要结论或建议
+"""
+                            summary_result = model_router.call_model(model, [{"role": "user", "content": prompt}])
+                            if summary_result and summary_result.strip():
+                                # 直接返回总结结果作为观察结果
+                                return Observation(
+                                    action_id=action_id,
+                                    result=f"文件总结完成！\n\n{summary_result}",
+                                    success=True
+                                )
                 
                 return Observation(
                     action_id=action_id,

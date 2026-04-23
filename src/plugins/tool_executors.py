@@ -1,6 +1,8 @@
 """工具执行插件实现"""
 import os
+import re
 from typing import Dict, Any, List, Optional
+from urllib.parse import unquote
 
 from src.plugins.base import ToolExecutorBase
 from src.config import settings
@@ -8,6 +10,49 @@ from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
 
 logger = get_logger("tool")
+
+
+def decode_filename(content_disposition: str) -> str:
+    """
+    从 Content-Disposition 响应头中提取并解码文件名
+    支持 RFC 5987 编码（filename*=UTF-8''xxx）和普通格式
+    处理中文文件名编码问题
+    
+    Args:
+        content_disposition: HTTP响应头中的 Content-Disposition 值
+    
+    Returns:
+        解码后的文件名，如果无法提取则返回空字符串
+    """
+    if not content_disposition:
+        return ""
+    
+    # 优先尝试解析 filename*=UTF-8''xxx 格式（RFC 5987 编码）
+    utf8_match = re.search(r"filename\*=UTF-8''([^\s;]+)", content_disposition, re.IGNORECASE)
+    if utf8_match:
+        try:
+            return unquote(utf8_match.group(1), encoding='utf-8')
+        except:
+            pass
+    
+    # 尝试解析普通 filename=xxx 格式
+    match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+    if match:
+        file_name = match.group(1).strip('"')
+        # 处理可能的编码问题：ISO-8859-1 编码的中文
+        try:
+            # 先尝试直接使用（检查是否是有效的UTF-8）
+            file_name.encode('utf-8')
+        except UnicodeEncodeError:
+            # 如果不是有效的UTF-8，尝试ISO-8859-1解码
+            try:
+                file_name = file_name.encode('ISO-8859-1').decode('utf-8')
+            except:
+                # 解码失败，保持原样
+                pass
+        return file_name
+    
+    return ""
 
 
 class BasicToolExecutor(ToolExecutorBase):
@@ -604,11 +649,8 @@ class FeishuFileReadTool:
                         # 尝试从响应头获取文件名
                         file_name = ""
                         if hasattr(response.raw, 'headers'):
-                            import re
                             content_disposition = response.raw.headers.get('Content-Disposition', '')
-                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                            if match:
-                                file_name = match.group(1).strip('"')
+                            file_name = decode_filename(content_disposition)
                         logger.info(f"📝 提取文件名: '{file_name}'")
                         
                         # 解析文件内容
@@ -641,11 +683,8 @@ class FeishuFileReadTool:
                         # 尝试从响应头获取文件名
                         file_name = ""
                         if hasattr(response.raw, 'headers'):
-                            import re
                             content_disposition = response.raw.headers.get('Content-Disposition', '')
-                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                            if match:
-                                file_name = match.group(1).strip('"')
+                            file_name = decode_filename(content_disposition)
                         
                         # 解析文件内容
                         return self._parse_file_content(response.raw.content, file_name)
@@ -714,11 +753,8 @@ class FeishuFileReadTool:
                         # 尝试从响应头获取文件名
                         file_name = ""
                         if hasattr(response.raw, 'headers'):
-                            import re
                             content_disposition = response.raw.headers.get('Content-Disposition', '')
-                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                            if match:
-                                file_name = match.group(1).strip('"')
+                            file_name = decode_filename(content_disposition)
                         
                         # 解析文件内容
                         return self._parse_file_content(response.raw.content, file_name)
@@ -747,11 +783,8 @@ class FeishuFileReadTool:
                         # 尝试从响应头获取文件名
                         file_name = ""
                         if hasattr(response.raw, 'headers'):
-                            import re
                             content_disposition = response.raw.headers.get('Content-Disposition', '')
-                            match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
-                            if match:
-                                file_name = match.group(1).strip('"')
+                            file_name = decode_filename(content_disposition)
                         
                         # 解析文件内容
                         return self._parse_file_content(response.raw.content, file_name)
