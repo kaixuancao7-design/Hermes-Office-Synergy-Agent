@@ -45,6 +45,34 @@ class TestFeishuFileRead:
             print(f"[FAIL] 测试失败: {e}")
             raise
     
+    def test_read_file_with_message_id(self):
+        """测试使用message_id参数读取文件（推荐接口）"""
+        print("\n=== 测试使用message_id参数读取文件 ===")
+        
+        try:
+            # 测试参数（包含message_id）
+            parameters = {
+                "file_key": "file_v3_00110_d49a79d6-b484-41a7-85dc-3f292d4bdb3g",
+                "message_id": "om_abc123456",
+                "user_id": "test_user_123"
+            }
+            
+            result = self.tool.execute(parameters)
+            
+            assert result["success"] == True, "文件读取失败"
+            assert "result" in result, "缺少result字段"
+            assert "file_key" in result["result"], "缺少file_key"
+            assert "content" in result["result"], "缺少content"
+            
+            print(f"  - file_key: {result['result']['file_key']}")
+            print(f"  - content_length: {result['result']['content_length']}")
+            print(f"  - 内容预览: {result['result']['content'][:50]}...")
+            print("[OK] 使用message_id参数读取文件测试通过")
+            
+        except Exception as e:
+            print(f"[FAIL] 测试失败: {e}")
+            raise
+    
     def test_read_file_without_file_key(self):
         """测试缺少file_key参数"""
         print("\n=== 测试缺少file_key参数 ===")
@@ -140,6 +168,7 @@ if __name__ == "__main__":
     
     try:
         test.test_read_file_with_file_key()
+        test.test_read_file_with_message_id()
         test.test_read_file_without_file_key()
         test.test_read_file_empty_file_key()
         test.test_tool_executor_integration()

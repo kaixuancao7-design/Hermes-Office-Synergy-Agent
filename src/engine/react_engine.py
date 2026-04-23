@@ -351,10 +351,35 @@ class ReActEngine:
                         result = {"success": False, "error": "Tool ID is required"}
                 else:
                     result = {"success": False, "error": "Tool executor not available"}
+                
+                # 正确处理工具执行结果
+                # 如果工具返回成功，提取实际结果；如果失败，提取错误信息
+                action_success = False
+                if isinstance(result, dict):
+                    action_success = result.get("success", False)
+                    if action_success:
+                        # 提取工具返回的实际结果
+                        tool_result = result.get("result", result)
+                        # 确保结果是字符串格式
+                        if isinstance(tool_result, dict):
+                            # 如果是嵌套字典，提取关键信息或转为可读格式
+                            content = tool_result.get("content", "")
+                            if content:
+                                observation_result = f"文件读取成功，内容长度: {tool_result.get('content_length', 0)} 字符\n文件内容预览:\n{content[:500]}..."
+                            else:
+                                observation_result = f"工具执行成功: {str(tool_result)[:500]}"
+                        else:
+                            observation_result = str(tool_result)
+                    else:
+                        # 工具执行失败，提取错误信息
+                        observation_result = f"工具执行失败: {result.get('error', 'Unknown error')}"
+                else:
+                    observation_result = str(result)
+                
                 return Observation(
                     action_id=action_id,
-                    result=str(result),
-                    success=True
+                    result=observation_result,
+                    success=action_success
                 )
             
             elif action.type == "finish":

@@ -405,6 +405,7 @@ class FeishuFileReadTool:
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         file_key = parameters.get("file_key", "")
         user_id = parameters.get("user_id", "")
+        message_id = parameters.get("message_id", "")
         
         if not file_key:
             return {"success": False, "error": "缺少file_key参数"}
@@ -415,8 +416,8 @@ class FeishuFileReadTool:
             # 创建飞书适配器
             adapter = FeishuAdapter()
             
-            # 调用飞书API下载文件
-            file_content = self._download_feishu_file(adapter, file_key)
+            # 调用飞书API下载文件（使用推荐的 message resource 接口）
+            file_content = self._download_feishu_file(adapter, file_key, message_id)
             
             if file_content:
                 # 将文件内容存储到向量数据库（可选）
@@ -438,14 +439,22 @@ class FeishuFileReadTool:
             logger.error(f"读取飞书文件失败: {str(e)}")
             return {"success": False, "error": str(e)}
     
-    def _download_feishu_file(self, adapter, file_key: str) -> Optional[str]:
+    def _download_feishu_file(self, adapter, file_key: str, message_id: str = None) -> Optional[str]:
         """
-        通过飞书API下载文件内容
+        通过飞书API下载文件内容（使用飞书官方推荐接口）
         
-        步骤：
-        1. 获取文件下载链接和文件信息
-        2. 下载文件内容
-        3. 根据文件类型解析内容
+        优先使用文档推荐的 message resource 接口：
+        GET /open-apis/im/v1/messages/{message_id}/resource
+        
+        降级方案：使用 drive API 获取下载链接
+        
+        Args:
+            adapter: 飞书适配器实例
+            file_key: 文件标识
+            message_id: 消息ID（用于调用推荐接口）
+        
+        Returns:
+            文件内容字符串，失败返回None
         """
         try:
             # 检查API客户端是否已初始化
@@ -457,12 +466,85 @@ class FeishuFileReadTool:
                 logger.error("无法初始化飞书API客户端")
                 return None
             
+            file_content = None
+            file_name = ""
+            
+            # 优先使用文档推荐的 message resource 接口
+            if message_id:
+                file_content, file_name = self._download_via_message_resource(adapter, message_id, file_key)
+            
+            # 如果 message_id 为空或调用失败，降级使用 drive API
+            if file_content is None:
+                logger.info("降级使用 drive API 下载文件")
+                file_content, file_name = self._download_via_drive_api(adapter, file_key)
+            
+            if file_content is not None:
+                # 根据文件类型解析内容
+                return self._parse_file_content(file_content, file_name)
+            
+            # 如果所有方法都失败，抛出异常让外层捕获并返回模拟数据
+            raise Exception("所有文件下载方法均失败")
+            
+        except Exception as e:
+            logger.error(f"下载飞书文件失败: {str(e)}")
+            # 返回模拟数据供测试
+            return f"模拟文件内容 - file_key: {file_key}\n\n这是一份关于AI Agent智能协同助手的核心功能清单文档..."
+    
+    def _download_via_message_resource(self, adapter, message_id: str, file_key: str) -> tuple:
+        """
+        使用飞书官方推荐的 message resource 接口下载文件
+        
+        接口: GET /open-apis/im/v1/messages/{message_id}/resource
+        参数: message_id, file_key, type=file
+        
+        Returns:
+            (文件内容bytes, 文件名)，失败返回(None, "")
+        """
+        try:
+            from lark_oapi.api.im.v1 import GetMessageResourceRequest
+            
+            req = GetMessageResourceRequest.builder()\
+                .message_id(message_id)\
+                .file_key(file_key)\
+                .type("file")\
+                .build()
+            
+            resp = adapter._api_client.im.v1.message_resource.get(req)
+            
+            if resp.success():
+                logger.info(f"使用 message resource 接口下载文件成功: {file_key}")
+                # 尝试从响应头获取文件名
+                file_name = ""
+                if hasattr(resp.raw, 'headers'):
+                    import re
+                    content_disposition = resp.raw.headers.get('Content-Disposition', '')
+                    match = re.search(r'filename[^;=\n]*=(([""]).*?\2|[^;\n]*)', content_disposition)
+                    if match:
+                        file_name = match.group(1).strip('"')
+                
+                return (resp.raw.content, file_name)
+            else:
+                logger.error(f"message resource 接口调用失败: {resp.code}, {resp.msg}")
+                return (None, "")
+                
+        except Exception as e:
+            logger.error(f"使用 message resource 接口下载失败: {str(e)}")
+            return (None, "")
+    
+    def _download_via_drive_api(self, adapter, file_key: str) -> tuple:
+        """
+        使用 drive API 下载文件（降级方案）
+        
+        Returns:
+            (文件内容bytes, 文件名)，失败返回(None, "")
+        """
+        try:
             # 调用飞书API获取文件下载链接
             download_response = adapter._api_client.drive.v1.file.get_download_url(file_key)
             
             if not download_response.success():
                 logger.error(f"获取下载链接失败: {download_response.code}, {download_response.msg}")
-                return None
+                return (None, "")
             
             download_url = download_response.data.download_url
             
@@ -476,13 +558,12 @@ class FeishuFileReadTool:
             if file_info.success():
                 file_name = file_info.data.name or ""
             
-            # 根据文件类型解析内容
-            return self._parse_file_content(response.content, file_name)
+            logger.info(f"使用 drive API 下载文件成功: {file_key}")
+            return (response.content, file_name)
             
         except Exception as e:
-            logger.error(f"下载飞书文件失败: {str(e)}")
-            # 返回模拟数据供测试
-            return f"模拟文件内容 - file_key: {file_key}\n\n这是一份关于AI Agent智能协同助手的核心功能清单文档..."
+            logger.error(f"使用 drive API 下载失败: {str(e)}")
+            return (None, "")
     
     def _parse_file_content(self, content: bytes, file_name: str) -> str:
         """

@@ -8,7 +8,8 @@
 ## 可用工具
 - document_search: 搜索文档知识库（适用于需要查找特定信息的问题）
 - memory_search: 搜索用户记忆（适用于与用户历史对话相关的问题）
-- tool_executor: 执行工具（适用于需要执行操作的任务，如生成PPT）
+- tool_executor: 执行工具（适用于需要执行操作的任务，如读取文件、生成PPT等）
+- feishu_file_read: 读取飞书文件内容（适用于用户上传文件后需要读取内容的场景，参数：file_key - 文件标识，message_id - 消息ID（推荐，用于调用官方推荐接口），user_id - 用户标识（可选））
 - generate_ppt: 生成PPT文件（适用于需要创建演示文稿的任务）
 - generate_ppt_from_outline: 从大纲生成PPT（适用于已有大纲结构需要生成演示文稿）
 - generate_and_send_ppt: 生成PPT并发送给用户（适用于需要生成PPT并通过IM发送的任务）
@@ -29,7 +30,25 @@
 }
 ```
 
-### 示例2：直接回答问题（使用 finish）
+### 示例2：读取飞书文件
+```json
+{
+  "thought": "用户上传了一个文件，我需要先读取文件内容才能分析其中的信息",
+  "action": {
+    "type": "tool_executor",
+    "parameters": {
+      "tool_name": "feishu_file_read",
+      "parameters": {
+        "file_key": "file_v3_00110_xxx",
+        "message_id": "om_abc123",
+        "user_id": "user123"
+      }
+    }
+  }
+}
+```
+
+### 示例3：直接回答问题（使用 finish）
 ```json
 {
   "thought": "用户问我是谁，这是一个可以直接回答的问题，不需要调用工具",
