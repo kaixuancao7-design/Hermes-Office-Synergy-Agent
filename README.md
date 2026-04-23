@@ -22,6 +22,7 @@
 - **IM→演示稿全流程智能协同**：支持从IM消息触发PPT生成，自动发送到IM
 - **文件服务支持**：支持文件上传、读取和内容解析，可基于上传文件生成PPT
 - **任务执行反思**：工具调用失败时自动分析原因并尝试修复（切换备用工具、重新生成参数）
+- **细粒度意图识别**：支持PPT相关意图的精确区分（生成大纲、从大纲生成PPT、从内容生成PPT、自定义生成），实现意图到工具的精准映射
 
 ## 架构设计
 
@@ -470,7 +471,7 @@ POST /api/v1/ppt/generate
 │   │   ├── database.py               # SQLite数据库
 │   │   └── vector_store.py           # 向量库
 │   ├── engine/
-│   │   ├── intent_recognition.py     # 意图识别
+│   │   ├── intent_recognition.py     # 意图识别（细粒度分类、意图-工具映射）
 │   │   ├── learning_cycle.py         # 学习循环（三闸门验证）
 │   │   ├── memory_manager.py         # 记忆管理
 │   │   ├── react_engine.py           # ReAct推理引擎
