@@ -260,9 +260,11 @@ class ToolExecutor:
             "list_files": self._list_files,
             "web_search": self._web_search,
             "summarize": self._summarize,
+            "generate_outline": self._generate_outline,
             "generate_ppt": self._generate_ppt,
             "generate_ppt_from_outline": self._generate_ppt_from_outline,
-            "generate_and_send_ppt": self._generate_and_send_ppt
+            "generate_and_send_ppt": self._generate_and_send_ppt,
+            "generate_ppt_from_content": self._generate_ppt_from_content
         }
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> str:
@@ -409,6 +411,113 @@ class ToolExecutor:
         except Exception as e:
             logger.error(f"Generate and send PPT failed: {str(e)}")
             return f"Failed to generate and send PPT: {str(e)}"
+    
+    def _generate_outline(self, params: Dict[str, Any]) -> str:
+        """
+        根据内容生成PPT大纲
+        
+        Parameters:
+            content: 文件内容或文本
+            title: PPT标题（可选）
+        
+        Returns:
+            生成的大纲JSON字符串
+        """
+        content = params.get("content", "")
+        title = params.get("title", "文档总结")
+        
+        if not content:
+            return "Error: content is required"
+        
+        try:
+            from src.infrastructure.model_router import select_model, call_model
+            
+            model = select_model("summarization", "complex")
+            if not model:
+                model = select_model("document_analysis", "complex")
+            
+            if not model:
+                return "Error: No suitable model available for outline generation"
+            
+            prompt = f"""根据以下文档内容，生成一个结构化的PPT大纲：
+
+文档内容：
+{content}
+
+要求：
+1. 分析文档核心内容，提取关键章节
+2. 每个章节包含：章节标题 + 主要要点（3-5个）
+3. 大纲结构清晰，逻辑连贯
+4. 使用中文输出
+
+PPT标题：{title}
+
+请输出JSON格式，结构如下：
+[
+  {{"title": "章节1标题", "content": ["要点1", "要点2", "要点3"]}},
+  {{"title": "章节2标题", "content": ["要点1", "要点2"]}}
+]
+"""
+            result = call_model(model, [{"role": "user", "content": prompt}])
+            
+            import json
+            try:
+                outline = json.loads(result)
+                if isinstance(outline, list) and len(outline) > 0:
+                    logger.info(f"大纲生成成功，共 {len(outline)} 个章节")
+                    return json.dumps(outline, ensure_ascii=False, indent=2)
+                else:
+                    return f"Error: Invalid outline format: {result}"
+            except json.JSONDecodeError:
+                # 如果不是JSON格式，尝试解析为列表
+                return f"Error: Failed to parse outline: {result[:200]}..."
+                
+        except Exception as e:
+            logger.error(f"Outline generation failed: {str(e)}")
+            return f"大纲生成失败: {str(e)}"
+    
+    def _generate_ppt_from_content(self, params: Dict[str, Any]) -> str:
+        """
+        根据文件内容直接生成PPT（完整流程：内容→大纲→PPT）
+        
+        Parameters:
+            content: 文件内容
+            title: PPT标题（可选）
+        
+        Returns:
+            生成的PPT文件路径
+        """
+        content = params.get("content", "")
+        title = params.get("title", "文档总结")
+        
+        if not content:
+            return "Error: content is required"
+        
+        try:
+            logger.info(f"开始根据内容生成PPT，内容长度: {len(content)}")
+            
+            # 步骤1：根据内容生成大纲
+            outline_result = self._generate_outline({"content": content, "title": title})
+            
+            import json
+            try:
+                outline = json.loads(outline_result)
+                if not isinstance(outline, list) or len(outline) == 0:
+                    return f"Error: Failed to generate outline: {outline_result}"
+            except json.JSONDecodeError:
+                return f"Error: Invalid outline: {outline_result[:100]}..."
+            
+            logger.info(f"大纲生成成功，共 {len(outline)} 个章节")
+            
+            # 步骤2：根据大纲生成PPT
+            output_path = self.ppt_generator.generate_from_outline(title, outline)
+            
+            logger.info(f"PPT生成成功: {output_path}")
+            return f"PPT生成成功！\n\n大纲章节: {len(outline)} 个\n文件路径: {output_path}"
+            
+        except Exception as e:
+            logger.error(f"Generate PPT from content failed: {str(e)}")
+            return f"根据内容生成PPT失败: {str(e)}"
 
 
 tool_executor = ToolExecutor()
