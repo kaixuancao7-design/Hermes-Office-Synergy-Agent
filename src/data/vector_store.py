@@ -400,6 +400,27 @@ class RAGManager:
         """查询相关文档"""
         return self.vector_store.search(query, k, use_advanced=use_advanced)
     
+    def query_by_filename(self, filename: str, k: int = 5) -> List[Dict[str, Any]]:
+        """
+        根据文件名查询文档
+        
+        Args:
+            filename: 文件名（支持精确匹配和模糊匹配）
+            k: 返回结果数量
+        
+        Returns:
+            匹配的文档列表
+        """
+        # 使用 filter 参数按文件名精确匹配
+        filter_dict = {"file_name": filename}
+        results = self.vector_store.search(filename, k, filter=filter_dict, use_advanced=False)
+        
+        # 如果精确匹配没有结果，尝试模糊匹配（包含文件名的搜索）
+        if not results:
+            results = self.vector_store.search(filename, k, use_advanced=False)
+        
+        return results
+    
     def get_context(self, query: str, k: int = 5) -> str:
         """获取查询的上下文文本"""
         results = self.query(query, k)

@@ -289,7 +289,17 @@ class ReActEngine:
                         success=False,
                         error="RAG manager is not initialized"
                     )
-                results = rag_manager.query(query, k=3)
+                
+                # 判断查询是否看起来像文件名
+                import re
+                filename_pattern = r'[\u4e00-\u9fa5a-zA-Z0-9_.-]+\.(docx|doc|pdf|txt|md)'
+                if re.match(filename_pattern, query):
+                    # 如果是文件名，优先尝试按文件名精确搜索
+                    results = rag_manager.query_by_filename(query, k=3)
+                else:
+                    # 否则使用普通的相似性搜索
+                    results = rag_manager.query(query, k=3)
+                
                 # 检查 results 是否为 None
                 if results is None:
                     results = []
@@ -826,10 +836,10 @@ class ReActEngine:
         
         # 检查是否需要读取文件（优先检查元数据中是否有 file_key）
         has_file_upload = self.current_metadata and self.current_metadata.get("file_key")
-        file_keyword_detected = any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件"])
+        file_keyword_detected = any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件", "生成ppt", "制作ppt", "创建ppt", "生成演示稿", "制作演示稿"])
         
-        if has_file_upload or file_keyword_detected:
-            # 从元数据中获取文件信息
+        if has_file_upload:
+            # 只有在元数据中存在真实的 file_key 时才调用文件读取工具
             tool_params = {"tool_name": "feishu_file_read"}
             if self.current_metadata:
                 file_key = self.current_metadata.get("file_key")
@@ -848,6 +858,45 @@ class ReActEngine:
                     parameters=tool_params
                 )
             )
+        elif file_keyword_detected:
+            # 用户提到了文件相关关键词但没有上传文件，尝试从知识库中搜索
+            import re
+            
+            # 首先检查是否使用指代性词汇（如"这个文件"、"刚才的文件"等）
+            reference_keywords = ["这个文件", "刚才的文件", "刚刚的文件", "那份文件", "该文件", "此文件"]
+            is_reference = any(keyword in content for keyword in reference_keywords)
+            
+            if is_reference:
+                # 用户使用指代性词汇，尝试获取最近上传的文件
+                return ReActOutput(
+                    thought="用户提到了'这个文件'，尝试从知识库中获取最近上传的文件内容",
+                    action=Action(
+                        type="document_search",
+                        parameters={"query": "__recent_upload__"}
+                    )
+                )
+            
+            # 提取文件名（假设文件名包含在用户消息中）
+            filename_pattern = r'([\u4e00-\u9fa5a-zA-Z0-9_.-]+\.(docx|doc|pdf|txt|md))'
+            match = re.search(filename_pattern, content)
+            if match:
+                filename = match.group(1)
+                return ReActOutput(
+                    thought="用户提到了文件操作但未上传文件，尝试从知识库中搜索文件内容",
+                    action=Action(
+                        type="document_search",
+                        parameters={"query": filename}
+                    )
+                )
+            else:
+                # 用户提到了文件相关关键词但没有上传文件，提示用户上传
+                return ReActOutput(
+                    thought="用户提到了文件相关操作但未上传文件，需要提示用户上传文件",
+                    action=Action(
+                        type="finish",
+                        parameters={"answer": "请您先上传需要处理的文件，然后我可以帮您读取文件内容或生成PPT。"}
+                    )
+                )
         
         # 检查是否需要总结
         if any(keyword in content_lower for keyword in ["总结", "summarize", "摘要"]):
@@ -978,17 +1027,25 @@ class ReActEngine:
 ## 下一步思考和动作
 """
                 
-                # 调用 LLM 获取思考和动作
-                messages = [
-                    SystemMessage(content=self.system_prompt),
-                    HumanMessage(content=f"问题: {user_query}\n\n历史: {history}\n\n请输出下一步的思考和动作")
-                ]
+                # 首先尝试使用简单规则匹配（基于用户查询）
+                rule_based_output = self._parse_with_simple_rules(user_query)
                 
-                response = self.llm.invoke(messages)
-                logger.debug(f"LLM response content: {response.content[:500]}")
-                
-                # 尝试解析输出，处理可能的 JSON 解析失败
-                output = self._parse_output_with_fallback(response.content)
+                # 如果规则匹配成功（不是默认的finish动作），使用规则匹配结果
+                if rule_based_output and rule_based_output.action and rule_based_output.action.type != "finish":
+                    logger.debug(f"Using rule-based output: {rule_based_output.action.type}")
+                    output = rule_based_output
+                else:
+                    # 否则调用 LLM 获取思考和动作
+                    messages = [
+                        SystemMessage(content=self.system_prompt),
+                        HumanMessage(content=f"问题: {user_query}\n\n历史: {history}\n\n请输出下一步的思考和动作")
+                    ]
+                    
+                    response = self.llm.invoke(messages)
+                    logger.debug(f"LLM response content: {response.content[:500]}")
+                    
+                    # 尝试解析输出，处理可能的 JSON 解析失败
+                    output = self._parse_output_with_fallback(response.content)
                 
                 # 记录思考
                 thought = Thought(

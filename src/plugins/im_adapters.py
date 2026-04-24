@@ -116,9 +116,12 @@ class FeishuAdapter(IMAdapterBase):
     
     async def send_file(self, user_id: str, file_path: str, file_name: str = None) -> bool:
         """发送文件到飞书"""
+        # 自动初始化 API 客户端（如果尚未初始化）
         if self._api_client is None:
-            logger.error("飞书API客户端未初始化")
-            return False
+            logger.info("飞书API客户端未初始化，尝试自动初始化")
+            if not self._initialize_client():
+                logger.error("飞书API客户端初始化失败")
+                return False
         
         try:
             import os
@@ -132,23 +135,23 @@ class FeishuAdapter(IMAdapterBase):
                 logger.error(f"文件不存在: {file_path}")
                 return False
             
-            # 步骤1：上传文件获取file_key
-            from lark_oapi.api.drive.v1 import UploadFileRequest
-            
             # 读取文件内容
             with open(file_path, 'rb') as f:
                 file_content = f.read()
             
+            # 步骤1：上传文件获取file_key（使用新版本API）
+            from lark_oapi.api.drive.v1 import UploadAllFileRequest, UploadAllFileRequestBody
+            
             # 构建上传请求
-            upload_request = UploadFileRequest.builder() \
-                .request_body({
-                    "file_name": file_name,
-                    "parent_type": "tmp"  # 临时空间
-                }) \
+            upload_request = UploadAllFileRequest.builder() \
+                .request_body(UploadAllFileRequestBody.builder() \
+                    .file_name(file_name) \
+                    .parent_type("tmp") \
+                    .build()) \
                 .file_content(file_content) \
                 .build()
             
-            upload_response = self._api_client.drive.v1.file.upload(upload_request)
+            upload_response = self._api_client.drive.v1.file.upload_all(upload_request)
             
             if not upload_response.success():
                 logger.error(f"文件上传失败: {upload_response.code}, {upload_response.msg}")
