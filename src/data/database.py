@@ -310,6 +310,38 @@ class Database:
                 ))
             return entries
     
+    def get_memories_by_tag(self, tag: str) -> List[MemoryEntry]:
+        """
+        根据标签查询记忆记录
+        
+        Args:
+            tag: 标签名称（如 file_key）
+        
+        Returns:
+            包含该标签的记忆记录列表
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM memory WHERE tags LIKE ?
+                ORDER BY timestamp DESC
+            """, (f"%{tag}%",))
+            
+            entries = []
+            for row in cursor.fetchall():
+                tags = eval(row[6]) if row[6] else []
+                if tag in tags:
+                    entries.append(MemoryEntry(
+                        id=row[0],
+                        user_id=row[1],
+                        type=row[2],
+                        content=row[3],
+                        embedding=eval(row[4]) if row[4] else None,
+                        timestamp=row[5],
+                        tags=tags
+                    ))
+            return entries
+    
     def is_message_processed(self, message_id: str) -> bool:
         """检查消息是否已处理过"""
         with sqlite3.connect(self.db_path) as conn:

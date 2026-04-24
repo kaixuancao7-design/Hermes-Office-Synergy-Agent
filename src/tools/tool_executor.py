@@ -476,13 +476,41 @@ PPT标题：{title}
             logger.error(f"Outline generation failed: {str(e)}")
             return f"大纲生成失败: {str(e)}"
     
+    def _get_content_from_vector_db(self, file_key: str) -> Optional[str]:
+        """
+        从向量数据库中获取文件内容
+        
+        Args:
+            file_key: 文件标识
+        
+        Returns:
+            文件内容字符串，如果未找到返回None
+        """
+        try:
+            from src.data.database import db
+            
+            # 从记忆存储中查询包含该file_key的记录
+            memories = db.get_memories_by_tag(file_key)
+            
+            if memories:
+                # 返回最新的内容
+                memories.sort(key=lambda m: m.timestamp, reverse=True)
+                return memories[0].content
+            
+            logger.info(f"未在向量数据库中找到文件: {file_key}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"从向量数据库获取文件内容失败: {str(e)}")
+            return None
+    
     def _generate_ppt_from_content(self, params: Dict[str, Any]) -> str:
         """
         根据文件内容直接生成PPT（完整流程：内容→大纲→PPT）
         
         Parameters:
             content: 文件内容（直接提供内容）
-            file_key: 飞书文件key（通过file_key读取内容）
+            file_key: 飞书文件key（通过file_key从本地存储获取内容）
             title: PPT标题（可选）
         
         Returns:
@@ -492,20 +520,28 @@ PPT标题：{title}
         title = params.get("title", "文档总结")
         file_key = params.get("file_key", "")
         
-        # 如果没有直接提供content，但提供了file_key，则先读取文件内容
+        # 如果没有直接提供content，但提供了file_key，则先从本地存储获取文件内容
         if not content and file_key:
-            logger.info(f"通过file_key读取文件内容: {file_key}")
-            from src.plugins.im_adapters import FeishuAdapter
-            feishu_adapter = FeishuAdapter()
-            try:
-                # 调用飞书文件读取
-                content = feishu_adapter.read_file(file_key)
-                if not content:
-                    return "Error: Failed to read file content"
-                logger.info(f"文件读取成功，内容长度: {len(content)}")
-            except Exception as e:
-                logger.error(f"读取文件失败: {str(e)}")
-                return f"Error: Failed to read file: {str(e)}"
+            logger.info(f"通过file_key从本地存储获取文件内容: {file_key}")
+            
+            # 首先尝试从向量数据库中获取（文件上传时已存储）
+            content = self._get_content_from_vector_db(file_key)
+            
+            # 如果本地没有，再尝试从飞书下载
+            if not content:
+                logger.info(f"本地存储未找到，尝试从飞书下载: {file_key}")
+                from src.plugins.im_adapters import FeishuAdapter
+                feishu_adapter = FeishuAdapter()
+                try:
+                    content = feishu_adapter.read_file(file_key)
+                    if not content:
+                        return "Error: Failed to read file content"
+                    logger.info(f"从飞书下载文件成功，内容长度: {len(content)}")
+                except Exception as e:
+                    logger.error(f"从飞书读取文件失败: {str(e)}")
+                    return f"Error: Failed to read file: {str(e)}"
+            else:
+                logger.info(f"从本地存储获取文件内容成功，内容长度: {len(content)}")
         
         if not content:
             return "Error: content is required"

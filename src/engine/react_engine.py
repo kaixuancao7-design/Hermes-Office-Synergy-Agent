@@ -44,7 +44,7 @@ class ReActState(BaseModel):
     thoughts: List[Thought] = []
     actions: List[Action] = []
     observations: List[Observation] = []
-    max_steps: int = 5
+    max_steps: int = 3
     current_step: int = 0
     is_completed: bool = False
     final_response: Optional[str] = None
@@ -70,7 +70,7 @@ class ReActEngine:
     """ReAct 推理引擎"""
     
     def __init__(self):
-        self.max_steps = 5  # 最大推理步骤
+        self.max_steps = 3  # 最大推理步骤
         self.llm = self._init_llm()
         self.output_parser = PydanticOutputParser(pydantic_object=ReActOutput)
         self.system_prompt = self._get_system_prompt()
@@ -840,12 +840,8 @@ class ReActEngine:
         file_read_keyword_detected = any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件"])
         ppt_keyword_detected = any(keyword in content_lower for keyword in ["生成ppt", "制作ppt", "创建ppt", "生成演示稿", "制作演示稿"])
         
-        # 检查是否已经读取过文件（避免重复读取）
-        has_read_file = any(
-            action.type == "tool_executor" and 
-            action.parameters.get("tool_name") == "feishu_file_read"
-            for action in self._recent_actions
-        )
+        # 检查是否已经读取过文件（避免重复读取）- 使用元数据标记
+        has_read_file = self.current_metadata and self.current_metadata.get("file_read", False)
         
         if has_file_upload and ppt_keyword_detected:
             # 用户上传了文件并要求生成PPT，直接调用生成PPT工具

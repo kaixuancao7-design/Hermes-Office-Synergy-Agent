@@ -583,20 +583,27 @@ class FeishuFileReadTool:
             return {"success": False, "error": "参数错误：file_v3格式文件需要message_id参数"}
         
         try:
-            # 优先使用executor的飞书客户端，如果没有则创建新的适配器
-            api_client = None
-            if self.executor and hasattr(self.executor, '_feishu_client'):
-                api_client = self.executor._feishu_client
+            # 首先尝试从本地向量数据库获取文件内容（文件上传时已存储）
+            file_content = self._get_content_from_vector_db(file_key)
             
-            if api_client:
-                # 使用executor的客户端下载文件
-                file_content = self._download_feishu_file_direct(api_client, file_key, message_id)
-            else:
-                from src.plugins.im_adapters import FeishuAdapter
-                # 创建飞书适配器
-                adapter = FeishuAdapter()
-                # 调用飞书API下载文件（使用推荐的 message resource 接口）
-                file_content = self._download_feishu_file(adapter, file_key, message_id)
+            # 如果本地没有找到，再从飞书下载
+            if not file_content:
+                logger.info(f"本地存储未找到，尝试从飞书下载: {file_key}")
+                
+                # 优先使用executor的飞书客户端，如果没有则创建新的适配器
+                api_client = None
+                if self.executor and hasattr(self.executor, '_feishu_client'):
+                    api_client = self.executor._feishu_client
+                
+                if api_client:
+                    # 使用executor的客户端下载文件
+                    file_content = self._download_feishu_file_direct(api_client, file_key, message_id)
+                else:
+                    from src.plugins.im_adapters import FeishuAdapter
+                    # 创建飞书适配器
+                    adapter = FeishuAdapter()
+                    # 调用飞书API下载文件（使用推荐的 message resource 接口）
+                    file_content = self._download_feishu_file(adapter, file_key, message_id)
             
             if file_content:
                 # 将文件内容存储到向量数据库（可选）
@@ -1058,6 +1065,35 @@ class FeishuFileReadTool:
             logger.info(f"文件内容已存储到向量数据库: {file_key}")
         except Exception as e:
             logger.warning(f"存储到向量数据库失败: {str(e)}")
+    
+    def _get_content_from_vector_db(self, file_key: str) -> Optional[str]:
+        """
+        从向量数据库中获取文件内容
+        
+        Args:
+            file_key: 文件标识
+        
+        Returns:
+            文件内容字符串，如果未找到返回None
+        """
+        try:
+            from src.data.database import db
+            
+            # 从记忆存储中查询包含该file_key的记录
+            memories = db.get_memories_by_tag(file_key)
+            
+            if memories:
+                # 返回最新的内容
+                memories.sort(key=lambda m: m.timestamp, reverse=True)
+                logger.info(f"从本地存储获取文件内容成功: {file_key}")
+                return memories[0].content
+            
+            logger.info(f"未在向量数据库中找到文件: {file_key}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"从向量数据库获取文件内容失败: {str(e)}")
+            return None
 
 
 # PPT生成工具类
