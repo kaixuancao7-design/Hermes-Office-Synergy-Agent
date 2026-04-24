@@ -836,9 +836,32 @@ class ReActEngine:
         
         # 检查是否需要读取文件（优先检查元数据中是否有 file_key）
         has_file_upload = self.current_metadata and self.current_metadata.get("file_key")
-        file_keyword_detected = any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件", "生成ppt", "制作ppt", "创建ppt", "生成演示稿", "制作演示稿"])
+        file_read_keyword_detected = any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件"])
+        ppt_keyword_detected = any(keyword in content_lower for keyword in ["生成ppt", "制作ppt", "创建ppt", "生成演示稿", "制作演示稿"])
         
-        if has_file_upload:
+        if has_file_upload and ppt_keyword_detected:
+            # 用户上传了文件并要求生成PPT，直接调用生成PPT工具
+            tool_params = {"tool_name": "generate_ppt_from_content"}
+            if self.current_metadata:
+                file_key = self.current_metadata.get("file_key")
+                message_id = self.current_metadata.get("message_id")
+                user_id = self.current_metadata.get("user_id")
+                file_name = self.current_metadata.get("file_name", "")
+                if file_key:
+                    tool_params["parameters"] = {
+                        "file_key": file_key,
+                        "user_id": user_id,
+                        "message_id": message_id,
+                        "title": file_name.replace(".docx", "").replace(".doc", "").replace(".pdf", "") + " - PPT"
+                    }
+            return ReActOutput(
+                thought="用户上传了文件并要求生成PPT，直接调用生成PPT工具",
+                action=Action(
+                    type="tool_executor",
+                    parameters=tool_params
+                )
+            )
+        elif has_file_upload:
             # 只有在元数据中存在真实的 file_key 时才调用文件读取工具
             tool_params = {"tool_name": "feishu_file_read"}
             if self.current_metadata:
@@ -858,7 +881,7 @@ class ReActEngine:
                     parameters=tool_params
                 )
             )
-        elif file_keyword_detected:
+        elif file_read_keyword_detected or ppt_keyword_detected:
             # 用户提到了文件相关关键词但没有上传文件，尝试从知识库中搜索
             import re
             

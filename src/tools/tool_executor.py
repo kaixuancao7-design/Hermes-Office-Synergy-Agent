@@ -481,7 +481,8 @@ PPT标题：{title}
         根据文件内容直接生成PPT（完整流程：内容→大纲→PPT）
         
         Parameters:
-            content: 文件内容
+            content: 文件内容（直接提供内容）
+            file_key: 飞书文件key（通过file_key读取内容）
             title: PPT标题（可选）
         
         Returns:
@@ -489,6 +490,22 @@ PPT标题：{title}
         """
         content = params.get("content", "")
         title = params.get("title", "文档总结")
+        file_key = params.get("file_key", "")
+        
+        # 如果没有直接提供content，但提供了file_key，则先读取文件内容
+        if not content and file_key:
+            logger.info(f"通过file_key读取文件内容: {file_key}")
+            from src.plugins.im_adapters import FeishuAdapter
+            feishu_adapter = FeishuAdapter()
+            try:
+                # 调用飞书文件读取
+                content = feishu_adapter.read_file(file_key)
+                if not content:
+                    return "Error: Failed to read file content"
+                logger.info(f"文件读取成功，内容长度: {len(content)}")
+            except Exception as e:
+                logger.error(f"读取文件失败: {str(e)}")
+                return f"Error: Failed to read file: {str(e)}"
         
         if not content:
             return "Error: content is required"
