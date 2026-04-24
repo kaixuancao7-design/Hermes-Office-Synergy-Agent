@@ -75,6 +75,7 @@ class ReActEngine:
         self.output_parser = PydanticOutputParser(pydantic_object=ReActOutput)
         self.system_prompt = self._get_system_prompt()
         self.current_user_id = None  # 当前用户ID
+        self._recent_actions = []  # 最近执行的动作列表（用于避免重复调用）
         
         # 备用工具映射（当主工具失败时使用）
         self.backup_tools = {
@@ -839,6 +840,13 @@ class ReActEngine:
         file_read_keyword_detected = any(keyword in content_lower for keyword in ["读取文件", "file_read", "feishu_file_read", "上传文件"])
         ppt_keyword_detected = any(keyword in content_lower for keyword in ["生成ppt", "制作ppt", "创建ppt", "生成演示稿", "制作演示稿"])
         
+        # 检查是否已经读取过文件（避免重复读取）
+        has_read_file = any(
+            action.type == "tool_executor" and 
+            action.parameters.get("tool_name") == "feishu_file_read"
+            for action in self._recent_actions
+        )
+        
         if has_file_upload and ppt_keyword_detected:
             # 用户上传了文件并要求生成PPT，直接调用生成PPT工具
             tool_params = {"tool_name": "generate_ppt_from_content"}
@@ -861,8 +869,8 @@ class ReActEngine:
                     parameters=tool_params
                 )
             )
-        elif has_file_upload:
-            # 只有在元数据中存在真实的 file_key 时才调用文件读取工具
+        elif has_file_upload and not has_read_file:
+            # 只有在元数据中存在真实的 file_key 且尚未读取过文件时才调用文件读取工具
             tool_params = {"tool_name": "feishu_file_read"}
             if self.current_metadata:
                 file_key = self.current_metadata.get("file_key")
@@ -879,6 +887,15 @@ class ReActEngine:
                 action=Action(
                     type="tool_executor",
                     parameters=tool_params
+                )
+            )
+        elif has_file_upload and has_read_file:
+            # 用户上传了文件且已经读取过，直接总结内容
+            return ReActOutput(
+                thought="文件已读取完成，现在总结文件内容并给出回复",
+                action=Action(
+                    type="finish",
+                    parameters={"answer": "根据您上传的文件，我已完成内容分析。如需生成PPT、创建大纲或其他操作，请告诉我！"}
                 )
             )
         elif file_read_keyword_detected or ppt_keyword_detected:
@@ -1011,6 +1028,9 @@ class ReActEngine:
         # 存储消息元数据
         self.current_metadata = metadata or {}
         
+        # 清空最近动作列表（开始新对话）
+        self._recent_actions = []
+        
         # 初始化状态
         state = ReActState(
             user_id=user_id,
@@ -1092,6 +1112,10 @@ class ReActEngine:
                 observation = self._execute_action(output.action)
                 logger.debug(f"Observation result: success={observation.success}, error={observation.error}")
                 state.observations.append(observation)
+                
+                # 更新最近动作列表（用于避免重复调用）
+                if output.action is not None:
+                    self._recent_actions.append(output.action)
                 
                 # 反思环节：如果动作失败，尝试恢复
                 if not observation.success and output.action is not None:
