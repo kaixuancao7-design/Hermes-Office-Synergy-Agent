@@ -361,12 +361,12 @@ class Database:
         Args:
             days_to_keep: 保留天数，默认30天
         """
-        try:
-            from src.utils import get_timestamp
-            
-            cutoff_time = get_timestamp() - (days_to_keep * 24 * 60 * 60)
-            
-            with sqlite3.connect(self.db_path) as conn:
+        from src.utils import get_timestamp
+        
+        cutoff_time = get_timestamp() - (days_to_keep * 24 * 60 * 60)
+        
+        with sqlite3.connect(self.db_path) as conn:
+            try:
                 cursor = conn.cursor()
                 
                 # 获取删除前的记录数
@@ -380,8 +380,9 @@ class Database:
                 else:
                     logger.info("没有需要清理的过期记忆记录")
                     
-        except Exception as e:
-            logger.error(f"清理过期记忆失败: {str(e)}")
+            except Exception as e:
+                conn.rollback()
+                logger.error(f"清理过期记忆失败: {str(e)}")
     
     def is_message_processed(self, message_id: str) -> bool:
         """检查消息是否已处理过"""
