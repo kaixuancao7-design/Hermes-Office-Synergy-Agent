@@ -583,8 +583,8 @@ class FeishuFileReadTool:
             return {"success": False, "error": "参数错误：file_v3格式文件需要message_id参数"}
         
         try:
-            # 首先尝试从本地向量数据库获取文件内容（文件上传时已存储）
-            file_content = self._get_content_from_vector_db(file_key)
+            # 首先尝试从本地向量数据库获取文件内容（文件上传时已存储，支持用户隔离）
+            file_content = self._get_content_from_vector_db(file_key, user_id)
             
             # 如果本地没有找到，再从飞书下载
             if not file_content:
@@ -1066,12 +1066,13 @@ class FeishuFileReadTool:
         except Exception as e:
             logger.warning(f"存储到向量数据库失败: {str(e)}")
     
-    def _get_content_from_vector_db(self, file_key: str) -> Optional[str]:
+    def _get_content_from_vector_db(self, file_key: str, user_id: str = None) -> Optional[str]:
         """
-        从向量数据库中获取文件内容
+        从向量数据库中获取文件内容（支持用户隔离）
         
         Args:
             file_key: 文件标识
+            user_id: 用户ID（可选，提供时只查询该用户的记录）
         
         Returns:
             文件内容字符串，如果未找到返回None
@@ -1079,20 +1080,20 @@ class FeishuFileReadTool:
         try:
             from src.data.database import db
             
-            # 从记忆存储中查询包含该file_key的记录
-            memories = db.get_memories_by_tag(file_key)
+            # 从记忆存储中查询包含该file_key的记录（支持用户隔离）
+            memories = db.get_memories_by_tag(file_key, user_id)
             
             if memories:
                 # 返回最新的内容
                 memories.sort(key=lambda m: m.timestamp, reverse=True)
-                logger.info(f"从本地存储获取文件内容成功: {file_key}")
+                logger.info(f"✅ 从本地存储获取文件内容成功: file_key={file_key}, user_id={user_id}")
                 return memories[0].content
             
-            logger.info(f"未在向量数据库中找到文件: {file_key}")
+            logger.info(f"ℹ️ 未在向量数据库中找到文件: file_key={file_key}, user_id={user_id}")
             return None
             
         except Exception as e:
-            logger.error(f"从向量数据库获取文件内容失败: {str(e)}")
+            logger.error(f"❌ 从向量数据库获取文件内容失败: {str(e)}")
             return None
 
 

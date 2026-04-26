@@ -310,27 +310,39 @@ class Database:
                 ))
             return entries
     
-    def get_memories_by_tag(self, tag: str) -> List[MemoryEntry]:
+    def get_memories_by_tag(self, tag: str, user_id: str = None) -> List[MemoryEntry]:
         """
-        根据标签查询记忆记录
+        根据标签查询记忆记录（支持用户隔离）
         
         Args:
             tag: 标签名称（如 file_key）
+            user_id: 用户ID（可选，提供时只返回该用户的记录）
         
         Returns:
             包含该标签的记忆记录列表
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT * FROM memory WHERE tags LIKE ?
-                ORDER BY timestamp DESC
-            """, (f"%{tag}%",))
+            
+            if user_id:
+                # 按用户ID和标签查询（用户隔离）
+                cursor.execute("""
+                    SELECT * FROM memory 
+                    WHERE tags LIKE ? AND user_id = ?
+                    ORDER BY timestamp DESC
+                """, (f"%{tag}%", user_id))
+            else:
+                # 仅按标签查询
+                cursor.execute("""
+                    SELECT * FROM memory 
+                    WHERE tags LIKE ?
+                    ORDER BY timestamp DESC
+                """, (f"%{tag}%",))
             
             entries = []
             for row in cursor.fetchall():
                 tags = eval(row[6]) if row[6] else []
-                if tag in tags:
+                if tag in tags:  # 精确验证标签是否存在
                     entries.append(MemoryEntry(
                         id=row[0],
                         user_id=row[1],
@@ -341,6 +353,35 @@ class Database:
                         tags=tags
                     ))
             return entries
+    
+    def clean_old_memories(self, days_to_keep: int = 30):
+        """
+        清理指定天数前的记忆记录
+        
+        Args:
+            days_to_keep: 保留天数，默认30天
+        """
+        try:
+            from src.utils import get_timestamp
+            
+            cutoff_time = get_timestamp() - (days_to_keep * 24 * 60 * 60)
+            
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                # 获取删除前的记录数
+                cursor.execute("SELECT COUNT(*) FROM memory WHERE timestamp < ?", (cutoff_time,))
+                count = cursor.fetchone()[0]
+                
+                if count > 0:
+                    cursor.execute("DELETE FROM memory WHERE timestamp < ?", (cutoff_time,))
+                    conn.commit()
+                    logger.info(f"清理了 {count} 条过期记忆记录")
+                else:
+                    logger.info("没有需要清理的过期记忆记录")
+                    
+        except Exception as e:
+            logger.error(f"清理过期记忆失败: {str(e)}")
     
     def is_message_processed(self, message_id: str) -> bool:
         """检查消息是否已处理过"""

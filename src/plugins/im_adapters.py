@@ -115,7 +115,7 @@ class FeishuAdapter(IMAdapterBase):
             return False
     
     async def send_file(self, user_id: str, file_path: str, file_name: str = None) -> bool:
-        """发送文件到飞书"""
+        """发送文件到飞书（符合 im/v1/files API 规范）"""
         # 自动初始化 API 客户端（如果尚未初始化）
         if self._api_client is None:
             logger.info("飞书API客户端未初始化，尝试自动初始化")
@@ -134,6 +134,27 @@ class FeishuAdapter(IMAdapterBase):
             if not os.path.exists(file_path):
                 logger.error(f"文件不存在: {file_path}")
                 return False
+            
+            # 检查文件大小（文档限制：最大30MB）
+            file_size = os.path.getsize(file_path)
+            if file_size == 0:
+                logger.error(f"❌ 文件大小为0，不允许上传")
+                return False
+            if file_size > 30 * 1024 * 1024:
+                logger.error(f"❌ 文件大小超出限制: {file_size/1024/1024:.2f}MB > 30MB")
+                return False
+            
+            # 推断文件类型（根据文档要求）
+            file_ext = os.path.splitext(file_name)[1].lower()
+            file_type_map = {
+                '.docx': 'doc', '.doc': 'doc',
+                '.pdf': 'pdf',
+                '.xlsx': 'xls', '.xls': 'xls',
+                '.mp4': 'mp4',
+                '.opus': 'opus'
+            }
+            file_type = file_type_map.get(file_ext, 'file')
+            logger.info(f"📄 文件信息: name={file_name}, type={file_type}, size={file_size/1024/1024:.2f}MB")
             
             # 读取文件内容
             with open(file_path, 'rb') as f:
@@ -154,11 +175,12 @@ class FeishuAdapter(IMAdapterBase):
             upload_response = self._api_client.drive.v1.file.upload_all(upload_request)
             
             if not upload_response.success():
-                logger.error(f"文件上传失败: {upload_response.code}, {upload_response.msg}")
+                # 根据文档错误码提供更详细的错误信息
+                self._handle_upload_error(upload_response.code, upload_response.msg)
                 return False
             
             file_key = upload_response.data.file_key
-            logger.info(f"文件上传成功: file_key={file_key}")
+            logger.info(f"✅ 文件上传成功: file_key={file_key}")
             
             # 步骤2：发送文件消息
             from lark_oapi.api.im.v1 import CreateMessageRequest, CreateMessageRequestBody
@@ -179,15 +201,33 @@ class FeishuAdapter(IMAdapterBase):
             
             response = self._api_client.im.v1.message.create(request)
             if response.success():
-                logger.info(f"飞书文件消息发送成功: user_id={user_id}, file={file_name}")
+                logger.info(f"✅ 飞书文件消息发送成功: user_id={user_id}, file={file_name}")
                 return True
             else:
-                logger.error(f"飞书文件消息发送失败: {response.code}, {response.msg}")
+                logger.error(f"❌ 飞书文件消息发送失败: {response.code}, {response.msg}")
                 return False
                 
         except Exception as e:
-            logger.error(f"发送飞书文件异常: {str(e)}", exc_info=True)
+            logger.error(f"❌ 发送飞书文件异常: {str(e)}", exc_info=True)
             return False
+    
+    def _handle_upload_error(self, code: int, msg: str):
+        """处理文件上传错误（根据飞书API文档错误码）"""
+        error_messages = {
+            232096: "应用信息被停写，请稍后重试",
+            234001: "请求参数无效，请检查请求参数是否正确",
+            234002: "接口鉴权失败，请检查tenant_access_token是否有效",
+            234006: "文件大小超出限制（最大30MB）",
+            234007: "应用没有启用机器人能力，请在飞书开放平台开启",
+            234010: "文件大小为0，不允许上传",
+            234041: "租户加密密钥被删除，请联系租户管理员",
+            234042: "租户存储空间已满或存在存储错误，请联系租户管理员"
+        }
+        
+        if code in error_messages:
+            logger.error(f"❌ 文件上传失败 [{code}]: {error_messages[code]}")
+        else:
+            logger.error(f"❌ 文件上传失败 [{code}]: {msg}")
     
     def get_adapter_type(self) -> str:
         return "feishu"

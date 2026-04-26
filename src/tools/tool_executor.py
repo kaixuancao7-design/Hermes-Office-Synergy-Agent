@@ -512,6 +512,7 @@ PPT标题：{title}
             content: 文件内容（直接提供内容）
             file_key: 飞书文件key（通过file_key从本地存储获取内容）
             title: PPT标题（可选）
+            user_id: 用户ID（用于用户隔离）
         
         Returns:
             生成的PPT文件路径
@@ -519,13 +520,14 @@ PPT标题：{title}
         content = params.get("content", "")
         title = params.get("title", "文档总结")
         file_key = params.get("file_key", "")
+        user_id = params.get("user_id", "")
         
         # 如果没有直接提供content，但提供了file_key，则先从本地存储获取文件内容
         if not content and file_key:
             logger.info(f"通过file_key从本地存储获取文件内容: {file_key}")
             
-            # 首先尝试从向量数据库中获取（文件上传时已存储）
-            content = self._get_content_from_vector_db(file_key)
+            # 首先尝试从向量数据库中获取（文件上传时已存储，支持用户隔离）
+            content = self._get_content_from_vector_db(file_key, user_id)
             
             # 如果本地没有，再尝试从飞书下载
             if not content:
