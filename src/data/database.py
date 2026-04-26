@@ -360,9 +360,10 @@ class Database:
         
         Args:
             days_to_keep: 保留天数，默认30天
-        """
-        from src.utils import get_timestamp
         
+        Raises:
+            Exception: 清理失败时重新抛出异常，供调用方处理
+        """
         cutoff_time = get_timestamp() - (days_to_keep * 24 * 60 * 60)
         
         with sqlite3.connect(self.db_path) as conn:
@@ -383,6 +384,7 @@ class Database:
             except Exception as e:
                 conn.rollback()
                 logger.error(f"清理过期记忆失败: {str(e)}")
+                raise
     
     def is_message_processed(self, message_id: str) -> bool:
         """检查消息是否已处理过"""
