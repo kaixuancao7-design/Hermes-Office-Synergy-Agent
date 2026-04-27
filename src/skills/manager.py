@@ -22,22 +22,88 @@ class SkillManager:
     """技能管理器 - 统一管理所有类型的技能"""
 
     def __init__(self):
-        self._load_skills()
+        self._internal_skills_loaded = False
+        self._external_skills_registered = False
 
-    def _load_skills(self):
-        """初始化技能（确保预设技能存在）"""
+    def _ensure_internal_skills(self):
+        """确保内部预设技能已加载（延迟初始化）"""
+        if self._internal_skills_loaded:
+            return
+        
         skills = db.get_all_skills()
         if not skills:
             preset_skills_manager.initialize_preset_skills()
+        
+        self._internal_skills_loaded = True
+        logger.info("✅ 内部技能初始化完成")
+
+    def register_external_skills(self):
+        """
+        注册外部适配器技能（延迟注册，避免循环依赖）
+        
+        此方法由外部按需调用，不在 __init__ 中自动执行，
+        以避免初始化时的循环依赖风险。
+        """
+        if self._external_skills_registered:
+            logger.info("⚠️ 外部技能已注册，跳过重复注册")
+            return
+        
+        # 确保内部技能已加载
+        self._ensure_internal_skills()
+        
+        # 尝试注册 anthropics 技能（如果可用）
+        self._try_register_anthropics_skills()
+        
+        # 尝试注册 presentation-skill（如果可用）
+        self._try_register_presentation_skill()
+        
+        self._external_skills_registered = True
+        logger.info("✅ 外部技能注册完成")
+
+    def _try_register_anthropics_skills(self):
+        """尝试注册 anthropics/skills（如果安装了该模块）"""
+        try:
+            # 延迟导入以避免循环依赖
+            from src.skills.adapters.anthropics_adapter import anthropics_adapter
+            
+            if anthropics_adapter.is_available():
+                anthropics_adapter.register_skill(self, skill_type="pptx")
+                logger.info("✅ Anthropics 技能注册成功")
+            else:
+                logger.info("⚠️ anthropics_skills 未安装，跳过注册")
+                
+        except ImportError:
+            logger.info("⚠️ anthropics_adapter 模块未找到，跳过注册")
+        except Exception as e:
+            logger.error(f"❌ 注册 anthropics 技能失败: {str(e)}")
+
+    def _try_register_presentation_skill(self):
+        """尝试注册 presentation-skill（如果安装了该模块）"""
+        try:
+            # 延迟导入以避免循环依赖
+            from src.skills.adapters.presentation_skill_adapter import presentation_skill_adapter
+            
+            if presentation_skill_adapter.is_available():
+                presentation_skill_adapter.register_skill(self)
+                logger.info("✅ presentation-skill 注册成功")
+            else:
+                logger.info("⚠️ presentation-skill 未安装，跳过注册")
+                
+        except ImportError:
+            logger.info("⚠️ presentation_skill_adapter 模块未找到，跳过注册")
+        except Exception as e:
+            logger.error(f"❌ 注册 presentation-skill 失败: {str(e)}")
 
     # ==================== 基础CRUD ====================
 
     def get_skill(self, skill_id: str) -> Optional[Skill]:
         """获取单个技能"""
+        self._ensure_internal_skills()
         return db.get_skill(skill_id)
 
     def get_all_skills(self, user_id: Optional[str] = None) -> List[Skill]:
         """获取用户有权限访问的所有技能"""
+        self._ensure_internal_skills()
         all_skills = db.get_all_skills()
 
         if not user_id:
@@ -67,10 +133,12 @@ class SkillManager:
 
     def save_skill(self, skill: Skill) -> None:
         """保存技能到数据库"""
+        self._ensure_internal_skills()
         db.save_skill(skill)
 
     def delete_skill(self, user_id: str, skill_id: str) -> bool:
         """删除技能（需要检查权限）"""
+        self._ensure_internal_skills()
         skill = db.get_skill(skill_id)
         if not skill:
             return False

@@ -575,4 +575,82 @@ PPT标题：{title}
             return f"根据内容生成PPT失败: {str(e)}"
 
 
+    def _anthropics_pptx_generator(self, params: Dict[str, Any]) -> str:
+        """
+        使用 Anthropics 技能生成PPT（通过适配器调用）
+        
+        Parameters:
+            content: 文件内容
+            title: PPT标题（可选）
+            output_path: 输出路径（可选）
+        
+        Returns:
+            生成的PPT文件路径或错误信息
+        """
+        try:
+            from src.skills.adapters.anthropics_adapter import anthropics_adapter
+            
+            content = params.get("content", "")
+            title = params.get("title", "文档总结")
+            
+            if not content:
+                return "Error: content is required"
+            
+            # 调用适配器执行 anthropics PPTX 技能
+            output_path = anthropics_adapter.execute_pptx_skill({
+                "content": content,
+                "title": title,
+                "output_path": params.get("output_path", "")
+            })
+            
+            if output_path:
+                logger.info(f"✅ Anthropics PPT生成成功: {output_path}")
+                return f"PPT生成成功！\n\n文件路径: {output_path}"
+            else:
+                return "Error: Failed to generate PPT"
+                
+        except Exception as e:
+            logger.error(f"❌ Anthropics PPT生成失败: {str(e)}")
+            return f"PPT生成失败: {str(e)}"
+
+    def _presentation_skill_generator(self, params: Dict[str, Any]) -> str:
+        """
+        使用 presentation-skill 生成PPT（通过适配器调用）
+        
+        Parameters:
+            content: 文件内容
+            title: PPT标题（可选）
+            style_preset: 样式预设（可选，如 executive-clinical）
+        
+        Returns:
+            生成的PPT文件路径或错误信息
+        """
+        try:
+            from src.skills.adapters.presentation_skill_adapter import presentation_skill_adapter
+            
+            content = params.get("content", "")
+            title = params.get("title", "文档总结")
+            style_preset = params.get("style_preset", "executive-clinical")
+            
+            if not content:
+                return "Error: content is required"
+            
+            # 调用适配器执行 presentation-skill
+            output_path = presentation_skill_adapter.generate_from_outline(
+                content=content,
+                title=title,
+                style_preset=style_preset
+            )
+            
+            if output_path:
+                logger.info(f"✅ presentation-skill PPT生成成功: {output_path}")
+                return f"PPT生成成功！\n\n文件路径: {output_path}"
+            else:
+                return "Error: Failed to generate PPT"
+                
+        except Exception as e:
+            logger.error(f"❌ presentation-skill PPT生成失败: {str(e)}")
+            return f"PPT生成失败: {str(e)}"
+
+
 tool_executor = ToolExecutor()
