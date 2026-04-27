@@ -23,6 +23,7 @@
 - **文件服务支持**：支持文件上传、读取和内容解析，可基于上传文件生成PPT
 - **任务执行反思**：工具调用失败时自动分析原因并尝试修复（切换备用工具、重新生成参数）
 - **细粒度意图识别**：支持PPT相关意图的精确区分（生成大纲、从大纲生成PPT、从内容生成PPT、自定义生成），实现意图到工具的精准映射
+- **上下文感知意图分析**：支持指代性词汇解析（如"这个文件"、"那个文档"），结合上下文理解用户真实需求
 
 ## 架构设计
 
@@ -38,7 +39,7 @@
 ├─────────────────────────────────────────────────────────────────────────┤
 │  核心引擎层 (Engine)                                                     │
 │  IntentRecognition / TaskPlanner / MemoryManager / LearningCycle         │
-│  ReActEngine / 自我进化闭环 / 需求解析器 / IM触发器                        │
+│  ReActEngine / 自我进化闭环 / 需求解析器 / IM触发器 / ContextualAnalyzer  │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  数据与记忆层 (Data & Memory)                                            │
 │  SQLite数据库 / MemoryBase (Chroma/Milvus/FAISS) / 程序性记忆             │
@@ -144,6 +145,7 @@ python start.py
 | @机器人 | 直接@机器人触发 | `@Hermes-Office-Synergy-Agent 帮我生成一份产品介绍PPT` |
 | 关键词触发 | 包含关键词自动触发 | `生成周报PPT` |
 | 附件触发 | 上传文件自动分析 | 上传需求文档 |
+| 上下文触发 | 基于历史对话理解 | `读取这个文件`、`根据刚才的内容生成PPT` |
 
 ### PPT生成工具
 
@@ -152,6 +154,7 @@ python start.py
 - `generate_ppt`：直接生成PPT（不发送）
 - `generate_ppt_from_outline`：从大纲生成PPT
 - `generate_and_send_ppt`：生成PPT并通过IM发送给用户
+- `feishu_file_read`：读取飞书文件内容
 
 ### 支持的幻灯片类型
 
@@ -294,6 +297,13 @@ PUT /api/v1/user/{user_id}
 }
 ```
 
+### 文档搜索
+
+```bash
+# 搜索文档知识库
+GET /api/v1/document/search?query=关键词&limit=5&user_id=user123
+```
+
 ### 学习与反馈
 
 ```bash
@@ -403,6 +413,19 @@ POST /api/v1/ppt/generate
 3. **最大恢复尝试**：可配置最大重试次数，避免无限循环
 4. **错误日志记录**：详细记录失败原因、恢复尝试次数和最终结果，便于问题排查
 
+## 上下文感知意图分析
+
+系统具备上下文感知能力，能够理解用户的指代性表达：
+
+**支持的指代性词汇：**
+- "这个文件"、"那个文件"、"刚才的文件"、"上传的文件"
+- "这份文档"、"那个文档"、"刚刚的文档"
+
+**工作流程：**
+1. 检测用户输入中的指代性词汇
+2. 从上下文中提取相关信息（如最近上传的文件）
+3. 根据上下文和意图给出下一步操作建议
+
 ## 角色与权限体系
 
 ### 角色定义
@@ -469,9 +492,9 @@ POST /api/v1/ppt/generate
 │   ├── config.py                     # 配置管理
 │   ├── data/
 │   │   ├── database.py               # SQLite数据库
-│   │   └── vector_store.py           # 向量库
+│   │   └── vector_store.py           # 向量库（文档搜索核心）
 │   ├── engine/
-│   │   ├── intent_recognition.py     # 意图识别（细粒度分类、意图-工具映射）
+│   │   ├── intent_recognition.py     # 意图识别（细粒度分类、上下文感知分析）
 │   │   ├── learning_cycle.py         # 学习循环（三闸门验证）
 │   │   ├── memory_manager.py         # 记忆管理
 │   │   ├── react_engine.py           # ReAct推理引擎
@@ -490,8 +513,9 @@ POST /api/v1/ppt/generate
 │   │   ├── base.py                   # 抽象基类定义 + 插件安全管理器
 │   │   ├── skill_managers.py         # 技能管理插件
 │   │   ├── memory_stores.py          # 记忆存储插件
-│   │   ├── model_routers.py          # 模型路由插件
-│   │   └── im_adapters.py            # IM适配器插件
+│   │   ├── model_routers.py          # 模型路由插件（统一入口）
+│   │   ├── im_adapters.py            # IM适配器插件
+│   │   └── tool_executors.py         # 工具执行器插件（统一入口）
 │   ├── services/
 │   │   ├── skill_verification.py     # 技能验证服务
 │   │   ├── skill_management.py       # 技能版本管理
@@ -499,10 +523,16 @@ POST /api/v1/ppt/generate
 │   │   ├── audit_log_service.py      # 审计日志服务（SHA-256防篡改）
 │   │   └── ppt_service.py            # PPT服务（生成与发送）
 │   ├── skills/
-│   │   └── skill_manager.py          # 技能管理（复杂度检查、变更验证）
+│   │   ├── manager.py                # 技能管理器（延迟初始化、循环依赖解决）
+│   │   ├── workflow.py               # 工作流引擎
+│   │   ├── triggers.py               # 触发匹配器
+│   │   └── adapters/                 # 外部技能适配器
 │   ├── tools/
-│   │   ├── office_tools.py           # 办公工具
-│   │   └── tool_executor.py          # 工具执行器
+│   │   ├── base.py                   # 工具基类和接口
+│   │   ├── registry.py               # 工具注册器
+│   │   ├── ppt_generator.py          # PPT生成工具
+│   │   ├── file_reader.py            # 文件读取工具
+│   │   └── content_tools.py          # 内容处理工具
 │   ├── types.py                      # 类型定义（含AssumptionChecklist）
 │   └── utils.py                      # 工具函数
 ├── prompts/
@@ -595,13 +625,37 @@ await im_adapter_manager.send_message(
 - `finish`: 完成任务
 - `summarize`: 总结内容
 - `memory_search`: 搜索记忆
-- `document_search`: 搜索文档
+- `document_search`: 搜索文档（基于向量数据库）
 - `tool_executor`: 执行工具
 - `generate_ppt`: 生成PPT
 - `generate_ppt_from_outline`: 从大纲生成PPT
 - `generate_and_send_ppt`: 生成并发送PPT
 
-#### 2.2 需求解析器 (`src/engine/demand_parser.py`)
+#### 2.2 意图识别 (`src/engine/intent_recognition.py`)
+
+实现细粒度意图识别和上下文感知分析：
+
+**核心功能：**
+- 细粒度意图分类：区分PPT生成、文件读取、总结等多种意图
+- 上下文感知分析：解析指代性词汇，理解用户真实需求
+- 意图-工具映射：将意图映射到相应的工具调用
+- 下一步行动建议：根据分析结果和上下文给出操作建议
+
+**支持的意图类型：**
+| 意图 | 说明 | 示例 |
+|------|------|------|
+| `ppt_generate_outline` | 生成PPT大纲 | "帮我生成产品介绍大纲" |
+| `ppt_generate` | 生成完整PPT | "生成产品介绍PPT" |
+| `ppt_from_outline` | 从大纲生成PPT | "根据这个大纲生成PPT" |
+| `ppt_from_content` | 从内容生成PPT | "根据文档内容生成PPT" |
+| `summarization` | 文档总结 | "总结这份文档" |
+| `read_file` | 文件读取 | "读取这个文件" |
+| `document_search` | 文档搜索 | "搜索相关文档" |
+| `memory_query` | 记忆查询 | "我之前说了什么" |
+| `question_answering` | 问答 | "什么是人工智能" |
+| `code_generation` | 代码生成 | "写一段Python代码" |
+
+#### 2.3 需求解析器 (`src/engine/demand_parser.py`)
 
 解析用户PPT生成需求：
 
@@ -621,7 +675,7 @@ await im_adapter_manager.send_message(
 - 简洁/极简
 - 创意/活泼
 
-#### 2.3 IM触发器 (`src/engine/im_trigger.py`)
+#### 2.4 IM触发器 (`src/engine/im_trigger.py`)
 
 处理IM多模态触发：
 
@@ -629,6 +683,7 @@ await im_adapter_manager.send_message(
 - **主动触发**：@机器人
 - **被动触发**：关键词匹配
 - **附件触发**：文件上传
+- **上下文触发**：指代性词汇理解
 
 ---
 
@@ -651,10 +706,76 @@ await im_adapter_manager.send_message(
 
 提供插件获取函数：
 - `get_im_adapter(im_type=None)`: 获取IM适配器
-- `get_model_router()`: 获取模型路由
+- `get_model_router()`: 获取模型路由（统一入口）
 - `get_memory_store()`: 获取记忆存储
 - `get_skill_manager()`: 获取技能管理器
-- `get_tool_executor()`: 获取工具执行器
+- `get_tool_executor()`: 获取工具执行器（统一入口）
+
+#### 4.2 模型路由 (`src/plugins/model_routers.py`)
+
+统一模型路由入口，支持多模型切换：
+
+**支持的模型类型：**
+- Ollama（本地部署）
+- OpenAI
+- Anthropic
+- 智谱
+- Moonshot
+- 多模型路由（自动选择）
+
+#### 4.3 工具执行器 (`src/plugins/tool_executors.py`)
+
+统一工具执行入口，支持沙箱模式：
+
+**核心功能：**
+- 工具注册与管理
+- 安全沙箱执行环境
+- 支持的工具：文件读取、PPT生成、文档搜索、记忆搜索等
+
+---
+
+### 5. 技能系统 (`src/skills/`)
+
+#### 5.1 技能管理器 (`src/skills/manager.py`)
+
+管理技能的注册、执行和权限控制：
+
+**核心特性：**
+- 延迟初始化：避免循环依赖
+- 外部技能注册：按需注册外部适配器
+- 技能版本管理：支持版本回滚和变更记录
+- 权限控制：基于角色的访问控制
+
+---
+
+### 6. 工具系统 (`src/tools/`)
+
+#### 6.1 工具基类 (`src/tools/base.py`)
+
+定义工具接口规范：
+- `ToolBase`: 工具基类
+- `ToolRegistry`: 工具注册器
+
+#### 6.2 PPT生成工具 (`src/tools/ppt_generator.py`)
+
+PPT生成核心功能：
+- `PPTGeneratorBase`: PPT生成基类
+- `GeneratePPT`: 生成PPT
+- `GeneratePPTFromOutline`: 从大纲生成PPT
+- `GeneratePPTFromContent`: 从内容生成PPT
+
+#### 6.3 文件读取工具 (`src/tools/file_reader.py`)
+
+文件读取功能：
+- `FeishuFileRead`: 飞书文件读取
+- 支持多种文件格式：docx、xlsx、pptx、pdf等
+
+#### 6.4 文档搜索工具 (`src/plugins/tool_executors.py`)
+
+基于向量数据库的文档搜索：
+- `DocumentSearchTool`: 文档搜索工具
+- 支持语义相似度搜索
+- 支持用户隔离搜索
 
 ---
 
@@ -732,6 +853,13 @@ POST /api/v1/users/{user_id}/role?role=user&admin_id=admin
 A: 调用审计接口验证日志哈希链：
 ```bash
 POST /api/v1/audit/verify
+```
+
+### Q: 文档搜索功能如何使用
+
+A: 文档搜索功能已实现，基于向量数据库进行语义搜索：
+```bash
+GET /api/v1/document/search?query=关键词&limit=5&user_id=user123
 ```
 
 ## 许可证
