@@ -280,24 +280,80 @@ class SandboxedToolExecutor(ToolExecutorBase):
 
 # 工具类定义
 class DocumentSearchTool:
-    """文档搜索工具"""
+    """文档搜索工具
+    
+    基于向量数据库实现的文档语义搜索工具，支持：
+    1. 语义相似度搜索（基于向量匹配）
+    2. 返回相关文档片段和匹配度评分
+    3. 支持结果数量限制
+    4. 支持用户隔离搜索
+    """
     
     def __init__(self, executor=None):
         self.executor = executor
     
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        执行文档搜索
+        
+        Args:
+            parameters: 搜索参数
+                - query: 搜索关键词（必填）
+                - limit: 返回结果数量（默认5）
+                - user_id: 用户ID（可选，用于用户隔离）
+        
+        Returns:
+            搜索结果字典
+        """
         query = parameters.get("query", "")
         limit = parameters.get("limit", 5)
+        user_id = parameters.get("user_id", None)
+        
+        # 验证必要参数
+        if not query:
+            return {
+                "success": False,
+                "result": [],
+                "message": "缺少必要参数: query",
+                "status": "error"
+            }
         
         try:
-            # 文档搜索功能暂未实现，返回空结果
-            logger.warning("Document search not implemented, returning empty results")
+            # 使用向量数据库进行语义搜索
+            from src.data.vector_store import vector_store
+            
+            # 构建过滤条件（如果提供了用户ID）
+            filter_dict = None
+            if user_id:
+                filter_dict = {"user_id": user_id}
+            
+            # 执行搜索
+            results = vector_store.search(
+                query=query,
+                k=limit,
+                filter=filter_dict,
+                use_advanced=True
+            )
+            
+            logger.info(f"文档搜索完成: query='{query}', 找到 {len(results)} 条结果")
+            
             return {
                 "success": True,
-                "result": []
+                "result": results,
+                "message": f"搜索完成，找到 {len(results)} 条相关文档",
+                "status": "success",
+                "query": query,
+                "limit": limit
             }
+            
         except Exception as e:
-            return {"success": False, "error": str(e)}
+            logger.error(f"文档搜索失败: {str(e)}")
+            return {
+                "success": False,
+                "result": [],
+                "message": f"搜索失败: {str(e)}",
+                "status": "error"
+            }
 
 
 class MemorySearchTool:

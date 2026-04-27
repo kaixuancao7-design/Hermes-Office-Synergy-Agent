@@ -357,7 +357,7 @@ class ContextualIntentAnalyzer:
             context: 上下文信息
             
         Returns:
-            建议的下一步操作
+            建议的下一步操作，如果没有特别建议则返回 None
         """
         intent = analysis["intent"]
         
@@ -373,6 +373,24 @@ class ContextualIntentAnalyzer:
         if intent == "summarization" and not context.get("file_content"):
             return "读取文件内容"
         
+        # 如果意图是文档分析但没有文件内容，建议读取文件
+        if intent == "document_analysis" and not context.get("file_content"):
+            return "读取文件内容"
+        
+        # 如果意图是记忆查询，建议执行记忆搜索
+        if intent == "memory_query":
+            return "执行记忆搜索"
+        
+        # 如果意图是问答且有历史对话，建议先搜索记忆
+        if intent == "question_answering" and context.get("chat_history"):
+            return "先搜索历史对话记忆"
+        
+        # 如果意图是代码生成，检查是否有必要的上下文信息
+        if intent == "code_generation":
+            if not analysis.get("entities") or not analysis["entities"].get("language"):
+                return "询问用户目标编程语言"
+        
+        # 默认返回 None，表示没有特别建议的下一步操作
         return None
 
 
