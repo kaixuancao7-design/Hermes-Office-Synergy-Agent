@@ -4,7 +4,7 @@ from src.data.database import db
 from src.engine.intent_recognition import intent_recognizer
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
-from src.infrastructure.model_router import select_model, call_model
+from src.plugins.model_routers import select_model, call_model
 
 logger = get_logger("engine")
 
@@ -149,8 +149,11 @@ class TaskPlanner:
         return task
     
     def _execute_tool(self, tool_call: ToolCall) -> str:
-        from src.tools.tool_executor import tool_executor
-        return tool_executor.execute(tool_call.tool_id, tool_call.parameters)
+        from src.plugins import get_tool_executor
+        executor = get_tool_executor()
+        if executor:
+            return executor.execute(tool_call.tool_id, tool_call.parameters)
+        return f"工具执行器未初始化"
     
     def revise_plan(self, task: Task, feedback: str) -> Task:
         prompt = f"""

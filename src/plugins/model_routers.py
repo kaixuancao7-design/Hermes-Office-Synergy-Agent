@@ -302,3 +302,25 @@ MODEL_ROUTER_REGISTRY = {
     "moonshot": MoonshotRouter,
     "multi": MultiModelRouter
 }
+
+
+# 兼容旧接口的函数（从 infrastructure/model_router.py 迁移）
+def select_model(task_type: str, complexity: str = "medium") -> Any:
+    """根据任务类型选择合适的模型（兼容旧接口）"""
+    try:
+        router = MultiModelRouter()
+        return router.select_model(task_type, complexity)
+    except Exception as e:
+        logger.error(f"模型选择失败: {str(e)}")
+        logger.warning(f"任务类型: {task_type}, 复杂度: {complexity}")
+        return None
+
+
+def call_model(model: Any, messages: List[Dict[str, str]]) -> str:
+    """调用模型（兼容旧接口）"""
+    try:
+        router = MultiModelRouter()
+        return router.call_model(model, messages)
+    except Exception as e:
+        logger.error(f"模型调用失败: {str(e)}")
+        return ""

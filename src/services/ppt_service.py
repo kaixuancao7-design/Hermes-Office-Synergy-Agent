@@ -1,7 +1,7 @@
 """PPT服务 - 整合PPT生成和IM发送功能"""
 
 from typing import Dict, Any, List, Optional
-from src.tools.tool_executor import PPTGenerator
+from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
 from src.plugins import get_im_adapter
 from src.utils import generate_id
 from src.logging_config import get_logger

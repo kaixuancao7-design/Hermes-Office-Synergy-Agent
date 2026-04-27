@@ -37,7 +37,7 @@ class GenerateOutline(BaseTool):
             return "Error: content is required"
         
         try:
-            from src.infrastructure.model_router import select_model, call_model
+            from src.plugins.model_routers import select_model, call_model
             
             model = select_model("summarization", "complex")
             if not model:

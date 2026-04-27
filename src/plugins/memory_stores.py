@@ -1031,7 +1031,7 @@ class RedisHybridMemory(MemoryBase):
     
     def _extract_key_information(self, messages: list) -> dict:
         """从消息列表中提炼关键信息"""
-        from src.infrastructure.model_router import select_model, call_model
+        from src.plugins.model_routers import select_model, call_model
         
         if not messages:
             return {"summary": "", "entities": [], "conclusions": [], "todos": []}

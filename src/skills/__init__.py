@@ -4,7 +4,9 @@
 from src.skills.manager import SkillManager, skill_manager
 from src.skills.triggers import SkillTriggerMatcher, trigger_matcher
 from src.skills.workflow import SkillWorkflowEngine, SkillWorkflowStep, create_ppt_workflow
-from src.skills.intent import IntentModel, ContextualIntentAnalyzer, intent_model, contextual_analyzer
+
+# 意图识别从 engine 模块导入（已合并）
+from src.engine.intent_recognition import IntentRecognizer, ContextualIntentAnalyzer, intent_recognizer, contextual_analyzer
 
 # 导入技能类型
 from src.skills.preset_skills import PresetSkillsManager, preset_skills_manager
@@ -22,13 +24,13 @@ __all__ = [
     "SkillTriggerMatcher",
     "SkillWorkflowEngine",
     "SkillWorkflowStep",
-    "IntentModel",
+    "IntentRecognizer",
     "ContextualIntentAnalyzer",
     
     # 全局实例
     "skill_manager",
     "trigger_matcher",
-    "intent_model",
+    "intent_recognizer",
     "contextual_analyzer",
     
     # 技能管理器

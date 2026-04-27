@@ -116,7 +116,7 @@ class DatabaseSkillManager(SkillManagerBase):
             
             # 根据动作类型执行不同操作
             if step.action == "execute":
-                from src.infrastructure.model_router import select_model, call_model
+                from src.plugins.model_routers import select_model, call_model
                 
                 instruction = step_params.get("instruction", "")
                 if instruction:

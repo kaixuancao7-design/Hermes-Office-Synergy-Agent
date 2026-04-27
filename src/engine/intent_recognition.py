@@ -1,6 +1,6 @@
 from typing import List, Dict, Any, Optional
 from src.types import Intent
-from src.infrastructure.model_router import select_model, call_model
+from src.plugins.model_routers import select_model, call_model
 from src.logging_config import get_logger
 
 logger = get_logger("engine")
@@ -284,4 +284,98 @@ class IntentRecognizer:
         return list(dict.fromkeys(suggested_tools))
 
 
+class ContextualIntentAnalyzer:
+    """上下文感知意图分析器 - 扩展基础意图识别，支持上下文理解"""
+    
+    def __init__(self):
+        self.intent_recognizer = IntentRecognizer()
+        
+        # 指代性词汇（从 skills/intent.py 合并）
+        self.referential_phrases = [
+            "这个文件", "那个文件", "刚才的文件", "上传的文件",
+            "这份文档", "那个文档", "刚刚的文档"
+        ]
+    
+    def analyze_with_context(self, 
+                            user_input: str, 
+                            context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """
+        结合上下文分析用户意图
+        
+        Args:
+            user_input: 用户输入文本
+            context: 上下文信息
+            
+        Returns:
+            分析结果字典
+        """
+        # 使用基础意图识别
+        intent_result = self.intent_recognizer.recognize(user_input)
+        
+        result = {
+            "intent": intent_result.type,
+            "confidence": intent_result.confidence,
+            "entities": intent_result.entities,
+            "has_referential": False,
+            "referential_phrase": None
+        }
+        
+        # 检测指代性词汇
+        input_lower = user_input.lower()
+        for phrase in self.referential_phrases:
+            if phrase.lower() in input_lower:
+                result["has_referential"] = True
+                result["referential_phrase"] = phrase
+                break
+        
+        # 如果检测到指代性词汇，尝试从上下文中获取相关信息
+        if result["has_referential"] and context:
+            # 获取最近上传的文件
+            recent_files = context.get("recent_files", [])
+            if recent_files:
+                result["referenced_file"] = recent_files[-1]
+                logger.info(f"解析指代性词汇，关联文件: {result['referenced_file']}")
+        
+        # 添加上下文信息
+        if context:
+            result["context_info"] = {
+                "has_recent_upload": len(context.get("recent_files", [])) > 0,
+                "last_upload_time": context.get("last_upload_time"),
+                "session_id": context.get("session_id")
+            }
+        
+        return result
+    
+    def suggest_next_action(self, 
+                           analysis: Dict[str, Any], 
+                           context: Dict[str, Any]) -> Optional[str]:
+        """
+        根据分析结果和上下文建议下一步操作
+        
+        Args:
+            analysis: 意图分析结果
+            context: 上下文信息
+            
+        Returns:
+            建议的下一步操作
+        """
+        intent = analysis["intent"]
+        
+        # 如果用户提到"这个文件"但没有明确意图，建议询问具体需求
+        if analysis["has_referential"] and intent == "unknown":
+            return "询问用户对文件的具体操作需求"
+        
+        # 如果意图是生成PPT但没有文件内容，建议读取文件
+        if intent.startswith("ppt_") and not context.get("file_content"):
+            return "读取文件内容"
+        
+        # 如果意图是总结但没有文件内容，建议读取文件
+        if intent == "summarization" and not context.get("file_content"):
+            return "读取文件内容"
+        
+        return None
+
+
+# 全局实例
 intent_recognizer = IntentRecognizer()
+contextual_analyzer = ContextualIntentAnalyzer()

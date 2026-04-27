@@ -193,7 +193,7 @@ class PresentationSkillAdapter:
             生成的PPT文件路径
         """
         try:
-            from src.tools.tool_executor import PPTGenerator
+            from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
             
             # 读取 outline.json
             outline_path = os.path.join(workspace_dir, 'outline.json')
@@ -233,7 +233,7 @@ class PresentationSkillAdapter:
         Returns:
             生成的PPT文件路径
         """
-        from src.tools.tool_executor import PPTGenerator
+        from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
         
         # 简单生成演示文稿
         slides = []

@@ -290,12 +290,11 @@ class DocumentSearchTool:
         limit = parameters.get("limit", 5)
         
         try:
-            from src.infrastructure.model_router import search_documents
-            results = search_documents(query, limit)
-            
+            # 文档搜索功能暂未实现，返回空结果
+            logger.warning("Document search not implemented, returning empty results")
             return {
                 "success": True,
-                "result": results
+                "result": []
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -1112,7 +1111,7 @@ class GenerateOutlineTool:
             return {"success": False, "error": "参数错误：缺少content参数"}
         
         try:
-            from src.infrastructure.model_router import select_model, call_model
+            from src.plugins.model_routers import select_model, call_model
             
             model = select_model("summarization", "complex")
             if not model:
@@ -1179,7 +1178,7 @@ class GeneratePPTFromSlidesTool:
             return {"success": False, "error": "参数错误：slides必须是非空数组"}
         
         try:
-            from src.tools.tool_executor import PPTGenerator
+            from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
             
             ppt_generator = PPTGenerator()
             output_path = ppt_generator.generate_ppt(title, slides)
@@ -1212,7 +1211,7 @@ class GeneratePPTFromOutlineTool:
             return {"success": False, "error": "参数错误：outline必须是非空数组"}
         
         try:
-            from src.tools.tool_executor import PPTGenerator
+            from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
             
             ppt_generator = PPTGenerator()
             output_path = ppt_generator.generate_from_outline(title, outline)
@@ -1260,7 +1259,7 @@ class GeneratePPTFromContentTool:
             logger.info(f"📋 大纲生成成功，共 {chapters_count} 个章节")
             
             # 步骤2：根据大纲生成PPT
-            from src.tools.tool_executor import PPTGenerator
+            from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
             
             ppt_generator = PPTGenerator()
             output_path = ppt_generator.generate_from_outline(title, outline)

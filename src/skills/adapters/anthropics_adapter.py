@@ -145,7 +145,7 @@ class AnthropicsSkillAdapter:
         Returns:
             生成的PPT文件路径
         """
-        from src.tools.tool_executor import PPTGenerator
+        from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
         
         try:
             # 使用本地实现生成PPT
