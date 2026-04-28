@@ -7,7 +7,7 @@ from src.engine.react_engine import react_engine
 from src.data.database import db
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
-from src.plugins import get_memory_store, get_skill_manager, get_model_router
+from src.plugins import get_memory_store, get_skill_manager, get_model_router, get_tool_executor
 
 logger = get_logger("gateway")
 
@@ -58,18 +58,25 @@ class MessageRouter:
         # 使用插件系统的记忆存储
         memory_store = get_memory_store()
         if memory_store:
-            from src.types import MemoryEntry
-            memory_entry = MemoryEntry(
-                id=generate_id(),
-                user_id=user_id,
-                type="short",
-                content=message.content,
-                timestamp=message.timestamp,
-                tags=["short_term", "message", group_id],
-                group_id=group_id,
-                group_name=group_name
-            )
-            memory_store.add_memory(user_id, memory_entry)
+            logger.debug(f"[PLUGIN_CHECK] 记忆存储插件可用: memory_store={type(memory_store).__name__}")
+            try:
+                from src.types import MemoryEntry
+                memory_entry = MemoryEntry(
+                    id=generate_id(),
+                    user_id=user_id,
+                    type="short",
+                    content=message.content,
+                    timestamp=message.timestamp,
+                    tags=["short_term", "message", group_id],
+                    group_id=group_id,
+                    group_name=group_name
+                )
+                memory_store.add_memory(user_id, memory_entry)
+                logger.debug(f"[MEMORY_STORE] 消息已存储到记忆: user_id={user_id}, message_id={message.id}")
+            except Exception as e:
+                logger.error(f"[MEMORY_STORE] 记忆存储失败: {str(e)}")
+        else:
+            logger.warning("[PLUGIN_CHECK] 记忆存储插件不可用，消息仅保存到数据库")
         
         if self._is_group_message(message):
             if not self._is_mentioned(message):
@@ -151,10 +158,6 @@ class MessageRouter:
             "document_analysis": self._handle_document_analysis,
             "code_generation": self._handle_code_generation,
             "creative_writing": self._handle_creative_writing,
-            "ppt_generate_outline": self._handle_ppt_generation,
-            "ppt_generate_from_outline": self._handle_ppt_generation,
-            "ppt_generate_from_content": self._handle_ppt_generation,
-            "ppt_custom_generate": self._handle_ppt_generation,
         }
         
         handler = handlers.get(intent.type)
@@ -195,25 +198,23 @@ class MessageRouter:
         
         # 使用插件系统的模型路由
         model_router = get_model_router()
-        if model_router:
-            model = model_router.select_model("summarization", "simple")
-            if model:
-                prompt = f"总结以下内容：\n{text_to_summarize}"
-                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
-                if response and response.strip():
-                    return response
-                else:
-                    logger.warning("模型返回空响应，降级到ReAct模式")
+        if not model_router:
+            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
+            return react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
         
-        # 如果插件不可用或返回空，尝试使用 ReAct 模式
-        logger.info("总结功能降级到 ReAct 模式")
-        response = react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
+        model = model_router.select_model("summarization", "simple")
+        if not model:
+            logger.warning("[MODEL_ROUTER] 无法为 summarization 任务选择模型，降级到ReAct模式")
+            return react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
         
-        # 如果仍然为空，返回默认提示
-        if not response or not response.strip():
-            return "抱歉，暂时无法生成总结。请稍后重试或提供更多内容。"
+        prompt = f"总结以下内容：\n{text_to_summarize}"
+        response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+        if response and response.strip():
+            return response
         
-        return response
+        # 模型返回空响应，降级到 ReAct 模式
+        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
+        return react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
     
     def _get_recent_file_content(self, user_id: str) -> str:
         """获取最近上传的文件内容"""
@@ -295,20 +296,31 @@ class MessageRouter:
             results = memory_store.search_memory(user_id, context, limit=3)
             context_text = "\n".join(r.content for r in results)
             logger.info(f"[QA_HANDLER] 记忆搜索完成:找到 {len(results)} 条相关记忆")
+        else:
+            logger.warning("[PLUGIN_CHECK] 记忆存储插件不可用，跳过记忆检索")
         
         # 使用插件系统的模型路由
         model_router = get_model_router()
-        if model_router:
-            model = model_router.select_model("question_answering", "medium")
-            if model:
-                logger.info(f"[QA_HANDLER] 调用问答模型")
-                prompt = f"基于以下上下文回答问题：\n\n上下文：{context_text}\n\n问题：{context}"
-                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
-                logger.info(f"[QA_HANDLER] 问答完成: response_length={len(response)}")
-                return response
+        if not model_router:
+            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
+            return react_engine.run(user_id, context)
         
-        logger.warning(f"[QA_HANDLER] 问答失败: 模型不可用")
-        return "问答功能暂时不可用"
+        model = model_router.select_model("question_answering", "medium")
+        if not model:
+            logger.warning("[MODEL_ROUTER] 无法为 question_answering 任务选择模型，降级到ReAct模式")
+            return react_engine.run(user_id, context)
+        
+        logger.info(f"[QA_HANDLER] 调用问答模型")
+        prompt = f"基于以下上下文回答问题：\n\n上下文：{context_text}\n\n问题：{context}"
+        response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+        
+        if response and response.strip():
+            logger.info(f"[QA_HANDLER] 问答完成: response_length={len(response)}")
+            return response
+        
+        # 模型返回空响应，降级到 ReAct 模式
+        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
+        return react_engine.run(user_id, context)
     
     def _handle_task_execution(self, user_id: str, intent: Intent, context: str) -> str:
         logger.info(f"[TASK_HANDLER] 开始任务执行: user_id={user_id}, intent={intent.type}")
@@ -337,8 +349,8 @@ class MessageRouter:
                 logger.info(f"[SKILL_HANDLER] 找到相关技能: skill_name={skill.name}")
                 return f"已找到相关技能：{skill.name}\n描述：{skill.description}"
         
-        logger.info(f"[SKILL_HANDLER] 未找到相关技能")
-        return "未找到相关技能，是否需要创建新技能？"
+        logger.warning("[SKILL_HANDLER] 未找到相关技能，降级到ReAct模式")
+        return react_engine.run(user_id, f"查找与以下内容相关的技能：{context}")
     
     def _handle_memory_query(self, user_id: str, intent: Intent, context: str) -> str:
         logger.info(f"[MEMORY_HANDLER] 开始记忆查询: user_id={user_id}, query={context[:50]}")
@@ -352,8 +364,8 @@ class MessageRouter:
                 logger.info(f"[MEMORY_HANDLER] 记忆查询完成: 找到 {len(results)} 条记忆")
                 return "\n\n".join(f"[{r.timestamp}] {r.content[:100]}..." for r in results)
         
-        logger.info(f"[MEMORY_HANDLER] 记忆查询完成: 未找到相关记忆")
-        return "未找到相关记忆"
+        logger.warning("[MEMORY_HANDLER] 记忆存储插件不可用或未找到相关记忆，降级到ReAct模式")
+        return react_engine.run(user_id, f"搜索与以下内容相关的记忆：{context}")
     
     def _handle_document_analysis(self, user_id: str, intent: Intent, context: str) -> str:
         logger.info(f"[DOC_HANDLER] 开始文档分析: user_id={user_id}")
@@ -401,11 +413,17 @@ class MessageRouter:
         
         # 使用插件系统的模型路由进行总结分析
         model_router = get_model_router()
-        if model_router:
-            model = model_router.select_model("document_analysis", "complex")
-            if model:
-                logger.info(f"[DOC_HANDLER] 调用文档分析模型")
-                prompt = f"""请分析并总结以下文档内容：
+        if not model_router:
+            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
+            return react_engine.run(user_id, f"分析以下文档内容：\n{text_to_summarize}")
+        
+        model = model_router.select_model("document_analysis", "complex")
+        if not model:
+            logger.warning("[MODEL_ROUTER] 无法为 document_analysis 任务选择模型，降级到ReAct模式")
+            return react_engine.run(user_id, f"分析以下文档内容：\n{text_to_summarize}")
+        
+        logger.info(f"[DOC_HANDLER] 调用文档分析模型")
+        prompt = f"""请分析并总结以下文档内容：
 
 {text_to_summarize}
 
@@ -414,75 +432,91 @@ class MessageRouter:
 2. 关键要点
 3. 主要结论或建议
 """
-                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
-                if response and response.strip():
-                    logger.info(f"[DOC_HANDLER] 文档分析完成: response_length={len(response)}")
-                    return response
-                else:
-                    logger.warning("[DOC_HANDLER] 模型返回空响应，降级到总结模式")
+        response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+        if response and response.strip():
+            logger.info(f"[DOC_HANDLER] 文档分析完成: response_length={len(response)}")
+            return response
         
-        # 降级到简单总结
-        logger.info("[DOC_HANDLER] 降级到简单总结模式")
-        return self._handle_summarization(user_id, intent, text_to_summarize)
+        # 模型返回空响应，降级到 ReAct 模式
+        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
+        return react_engine.run(user_id, f"分析以下文档内容：\n{text_to_summarize}")
     
     def _handle_code_generation(self, user_id: str, intent: Intent, context: str) -> str:
         logger.info(f"[CODE_HANDLER] 开始代码生成: user_id={user_id}")
         
         # 使用插件系统的模型路由
         model_router = get_model_router()
-        if model_router:
-            model = model_router.select_model("coding", "complex")
-            if model:
-                logger.info(f"[CODE_HANDLER] 调用代码生成模型")
-                prompt = f"生成代码：\n{context}"
-                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
-                logger.info(f"[CODE_HANDLER] 代码生成完成: response_length={len(response)}")
-                return response
+        if not model_router:
+            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
+            return react_engine.run(user_id, f"生成代码：\n{context}")
         
-        logger.warning(f"[CODE_HANDLER] 代码生成失败: 模型不可用")
-        return "代码生成功能暂时不可用"
-    
+        model = model_router.select_model("coding", "complex")
+        if not model:
+            logger.warning("[MODEL_ROUTER] 无法为 coding 任务选择模型，降级到ReAct模式")
+            return react_engine.run(user_id, f"生成代码：\n{context}")
+        
+        logger.info(f"[CODE_HANDLER] 调用代码生成模型")
+        prompt = f"生成代码：\n{context}"
+        response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+        
+        if response and response.strip():
+            logger.info(f"[CODE_HANDLER] 代码生成完成: response_length={len(response)}")
+            return response
+        
+        # 模型返回空响应，降级到 ReAct 模式
+        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
+        return react_engine.run(user_id, f"生成代码：\n{context}")
+
     def _handle_creative_writing(self, user_id: str, intent: Intent, context: str) -> str:
         logger.info(f"[CREATIVE_HANDLER] 开始创意写作: user_id={user_id}")
         
         # 使用插件系统的模型路由
         model_router = get_model_router()
-        if model_router:
-            model = model_router.select_model("creative_writing", "medium")
-            if model:
-                logger.info(f"[CREATIVE_HANDLER] 调用创意写作模型")
-                prompt = f"创作内容：\n{context}"
-                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
-                logger.info(f"[CREATIVE_HANDLER] 创意写作完成: response_length={len(response)}")
-                return response
-            else:
-                logger.warning("[CREATIVE_HANDLER] 无法选择创作模型")
-        else:
-            logger.warning("[CREATIVE_HANDLER] 模型路由不可用")
+        if not model_router:
+            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
+            return react_engine.run(user_id, f"根据以下内容创作：\n{context}")
         
-        # 如果插件不可用，尝试使用 ReAct 模式
-        logger.info("[CREATIVE_HANDLER] 降级到 ReAct 模式")
-        return react_engine.run(user_id, f"根据以下内容创作或生成PPT：\n{context}")
+        model = model_router.select_model("creative_writing", "medium")
+        if not model:
+            logger.warning("[MODEL_ROUTER] 无法为 creative_writing 任务选择模型，降级到ReAct模式")
+            return react_engine.run(user_id, f"根据以下内容创作：\n{context}")
+        
+        logger.info(f"[CREATIVE_HANDLER] 调用创意写作模型")
+        prompt = f"创作内容：\n{context}"
+        response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+        
+        if response and response.strip():
+            logger.info(f"[CREATIVE_HANDLER] 创意写作完成: response_length={len(response)}")
+            return response
+        
+        # 模型返回空响应，降级到 ReAct 模式
+        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
+        return react_engine.run(user_id, f"根据以下内容创作：\n{context}")
     
     def _handle_unknown(self, user_id: str, context: str) -> str:
         logger.info(f"[UNKNOWN_HANDLER] 开始处理未知意图: user_id={user_id}")
         
-        try:
-            # 使用插件系统的模型路由
-            model_router = get_model_router()
-            if model_router:
-                model = model_router.select_model("general", "simple")
-                if model:
-                    logger.info(f"[UNKNOWN_HANDLER] 调用通用模型")
-                    response = model_router.call_model(model, [{"role": "user", "content": context}])
-                    logger.info(f"[UNKNOWN_HANDLER] 通用处理完成: response_length={len(response)}")
-                    return response
-            
-            logger.warning("[UNKNOWN_HANDLER] 模型不可用")
-            return "抱歉，我无法理解您的请求"
-        except Exception as e:
-            logger.error(f"[UNKNOWN_HANDLER] Model call failed: {str(e)}")
-            return f"您好！我已收到您的消息：\"{context}\"\n\n由于语言模型服务暂不可用，我无法为您生成智能回复。请检查 Ollama 服务是否运行，或配置其他模型 API 密钥。"
+        # 使用插件系统的模型路由
+        model_router = get_model_router()
+        if not model_router:
+            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
+            return react_engine.run(user_id, context)
+        
+        model = model_router.select_model("general", "simple")
+        if not model:
+            logger.warning("[MODEL_ROUTER] 无法为 general 任务选择模型，降级到ReAct模式")
+            return react_engine.run(user_id, context)
+        
+        logger.info(f"[UNKNOWN_HANDLER] 调用通用模型")
+        response = model_router.call_model(model, [{"role": "user", "content": context}])
+        
+        if response and response.strip():
+            logger.info(f"[UNKNOWN_HANDLER] 通用处理完成: response_length={len(response)}")
+            return response
+        
+        # 模型返回空响应，降级到 ReAct 模式
+        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
+        return react_engine.run(user_id, context)
     
     def capture_correction(self, user_id: str, original: str, corrected: str, context: str) -> None:
         learning_cycle.capture_correction(user_id, original, corrected, context)
