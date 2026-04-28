@@ -25,10 +25,15 @@ logger = get_logger("api")
 
 @router.post("/message")
 async def send_message(message: Dict[str, Any]):
+    request_id = message.get("message_id", generate_id())
     user_id = message.get("user_id", "default_user")
     content = message.get("content", "")
     
+    logger.info(f"[API_MESSAGE] ========== API消息入口 ==========")
+    logger.info(f"[API_MESSAGE] request_id={request_id}, user_id={user_id}, content={content[:50]}...")
+    
     if not content:
+        logger.warning(f"[API_MESSAGE] 内容为空: request_id={request_id}")
         raise ValidationException(
             message="内容不能为空",
             detail="message.content 字段是必需的",
@@ -41,19 +46,25 @@ async def send_message(message: Dict[str, Any]):
         content=content,
         role="user",
         timestamp=get_timestamp(),
-        metadata=message.get("metadata")
+        metadata={**(message.get("metadata") or {}), "request_id": request_id}
     )
     
+    logger.info(f"[API_MESSAGE] 消息对象已创建，开始路由: request_id={request_id}")
     response = message_router.route(msg)
+    logger.info(f"[API_MESSAGE] 路由完成: request_id={request_id}, response_length={len(response)}")
+    
     return {"response": response}
 
 
 @router.post("/im/webhook/{adapter_type}")
 async def im_webhook(adapter_type: str, payload: Dict[str, Any]):
-    logger.info(f"Received webhook from {adapter_type}: {str(payload)[:500]}")
+    request_id = generate_id()
+    logger.info(f"[API_WEBHOOK] ========== Webhook入口 ==========")
+    logger.info(f"[API_WEBHOOK] request_id={request_id}, adapter_type={adapter_type}, payload={str(payload)[:200]}...")
     
     adapter = im_adapter_manager.get_adapter(adapter_type)
     if not adapter:
+        logger.warning(f"[API_WEBHOOK] 适配器不存在: request_id={request_id}, adapter_type={adapter_type}")
         raise NotFoundException(
             message=f"适配器 {adapter_type} 不存在",
             detail=f"未找到类型为 {adapter_type} 的IM适配器",
@@ -62,13 +73,13 @@ async def im_webhook(adapter_type: str, payload: Dict[str, Any]):
     
     message = adapter.receive_message(payload)
     if not message:
-        logger.info("Message ignored (adapter disabled or parsing failed)")
+        logger.info(f"[API_WEBHOOK] 消息被忽略: request_id={request_id}")
         return {"status": "ignored"}
     
-    logger.info(f"Parsed message: user_id={message.user_id}, content={message.content[:100]}")
+    logger.info(f"[API_WEBHOOK] 消息解析成功: request_id={request_id}, user_id={message.user_id}, content={message.content[:50]}")
     
     response = message_router.route(message)
-    logger.info(f"Generated response: {response[:100]}")
+    logger.info(f"[API_WEBHOOK] 响应生成完成: request_id={request_id}, response_length={len(response)}")
     
     try:
         adapter.send_message(Message(
@@ -78,14 +89,15 @@ async def im_webhook(adapter_type: str, payload: Dict[str, Any]):
             role="assistant",
             timestamp=get_timestamp()
         ))
+        logger.info(f"[API_WEBHOOK] 消息发送成功: request_id={request_id}, user_id={message.user_id}")
     except Exception as e:
+        logger.error(f"[API_WEBHOOK] 发送消息失败: request_id={request_id}, error={str(e)}")
         raise IMException(
             message="发送消息失败",
             detail=str(e),
             context={"user_id": message.user_id, "adapter_type": adapter_type}
         )
     
-    logger.info(f"Message sent successfully to user {message.user_id}")
     return {"status": "success", "response": response}
 
 

@@ -282,6 +282,8 @@ class ReActEngine:
             
             if action.type == "document_search":
                 query = params.get("query", "")
+                logger.info(f"[REACT_ENGINE] 执行document_search: query={query[:50]}...")
+                
                 # 检查 rag_manager 是否为 None
                 if rag_manager is None:
                     return Observation(
@@ -314,6 +316,8 @@ class ReActEngine:
             
             elif action.type == "memory_search":
                 query = params.get("query", "")
+                logger.info(f"[REACT_ENGINE] 执行memory_search: query={query[:50]}...")
+                
                 # 使用插件系统的记忆存储
                 from src.plugins import get_memory_store
                 memory_store = get_memory_store()
@@ -335,6 +339,7 @@ class ReActEngine:
             elif action.type == "tool_executor":
                 # 从 parameters 中获取工具名称（LLM可能把工具名放在不同位置）
                 tool_id = action.tool_id or params.get("tool_name") or params.get("tool_id")
+                logger.info(f"[REACT_ENGINE] 执行tool_executor: tool_id={tool_id}, params={tool_params}")
                 
                 # 获取工具参数
                 # 支持两种格式：
@@ -416,7 +421,7 @@ class ReActEngine:
                 
                 # 如果是文件读取工具且成功，自动触发总结
                 if action_success and tool_id == "feishu_file_read" and file_content:
-                    logger.info(f"文件读取成功，自动触发总结，内容长度: {len(file_content)}")
+                    logger.info(f"[REACT_ENGINE] 文件读取成功，自动触发总结，内容长度: {len(file_content)}")
                     # 使用插件系统的模型路由进行总结
                     model_router = get_model_router()
                     if model_router:
@@ -1016,7 +1021,10 @@ class ReActEngine:
     
     def run(self, user_id: str, user_query: str, max_steps: int = 5, metadata: Optional[Dict[str, Any]] = None) -> str:
         """运行 ReAct 推理循环"""
-        logger.info(f"Starting ReAct loop for user {user_id}: {user_query}")
+        trace_id = metadata.get("message_id", "unknown") if metadata else "unknown"
+        logger.info(f"[REACT_ENGINE] ========== ReAct引擎启动 ==========")
+        logger.info(f"[REACT_ENGINE] trace_id={trace_id}, user_id={user_id}, query={user_query[:80]}...")
+        logger.info(f"[REACT_ENGINE] max_steps={max_steps}, metadata_keys={list(metadata.keys()) if metadata else []}")
         
         # 设置当前用户ID（供 _execute_action 使用）
         self.current_user_id = user_id
@@ -1135,6 +1143,7 @@ class ReActEngine:
                 
                 # 更新步骤计数
                 state.current_step += 1
+                logger.info(f"[REACT_ENGINE] 步骤完成: step={state.current_step}, action={action_type}, success={observation.success}")
                 
                 # 检查是否完成
                 if self._is_completed(output.action, state):
@@ -1187,7 +1196,10 @@ class ReActEngine:
         if not state.final_response:
             state.final_response = self._generate_final_response(state)
         
-        logger.info(f"ReAct completed: {state.final_response[:50]}...")
+        logger.info(f"[REACT_ENGINE] ========== ReAct引擎完成 ==========")
+        logger.info(f"[REACT_ENGINE] 完成状态: completed={state.is_completed}, steps={state.current_step}, response_length={len(state.final_response)}")
+        logger.info(f"[REACT_ENGINE] 最终响应预览: {state.final_response[:100]}...")
+        
         return state.final_response
 
 

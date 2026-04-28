@@ -104,8 +104,12 @@ class FeishuEventHandler:
                 )
             )
             
-            logger.info(f"消息已接收并进入异步处理: message_id={message_id}, user_id={user_id}")
+            # 设置请求上下文（用于日志追踪）
+            from src.logging_config import set_request_context
+            set_request_context(request_id=message_id, user_id=user_id)
             
+            logger.info(f"[REQUEST_START] 消息已接收并进入异步处理: message_id={message_id}, user_id={user_id}")
+
         except Exception as e:
             # 清理处理中状态
             message_id = message.get('message_id')
@@ -176,6 +180,12 @@ class FeishuEventHandler:
         finally:
             # 清理处理中状态
             self.processing_message_ids.discard(message_id)
+            
+            # 清理请求上下文
+            from src.logging_config import clear_request_context
+            clear_request_context()
+            
+            logger.info(f"[REQUEST_END] 消息处理完成: message_id={message_id}")
             
             # 限制处理中消息ID的数量（内存保护）
             if len(self.processing_message_ids) > 100:

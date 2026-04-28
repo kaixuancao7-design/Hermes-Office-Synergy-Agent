@@ -18,6 +18,11 @@ class MessageRouter:
         self.use_react_mode = True  # 启用 ReAct 模式
     
     def route(self, message: Message) -> str:
+        # 生成请求追踪ID
+        trace_id = message.metadata.get("message_id", generate_id()) if message.metadata else generate_id()
+        
+        logger.info(f"[ROUTER_INPUT] 开始路由消息: trace_id={trace_id}, user_id={message.user_id}, content={message.content[:50] if len(message.content) > 50 else message.content}")
+        
         user_id = message.user_id
         
         # 从metadata获取分组信息
@@ -88,10 +93,13 @@ class MessageRouter:
         
         # 判断是否使用 ReAct 模式
         if self.use_react_mode and self._should_use_react(intent):
-            logger.info(f"Using ReAct mode for intent: {intent.type}")
+            logger.info(f"[INTENT_RECOGNIZED] 意图识别完成: intent={intent.type}, confidence={intent.confidence}, mode=ReAct")
             response = self._handle_with_react(user_id, message.content, message.metadata)
         else:
+            logger.info(f"[INTENT_RECOGNIZED] 意图识别完成: intent={intent.type}, confidence={intent.confidence}, mode=Direct")
             response = self._handle_intent(user_id, intent, message.content)
+        
+        logger.info(f"[ROUTER_OUTPUT] 路由响应生成完成: trace_id={trace_id}, response_length={len(response)}")
         
         response_message = Message(
             id=generate_id(),
@@ -132,6 +140,8 @@ class MessageRouter:
         return any(mention in content for mention in mentions)
     
     def _handle_intent(self, user_id: str, intent: Intent, context: str) -> str:
+        logger.info(f"[HANDLER_DISPATCH] 分发到意图处理器: intent={intent.type}, user_id={user_id}")
+        
         handlers = {
             "summarization": self._handle_summarization,
             "question_answering": self._handle_question_answering,
@@ -140,13 +150,21 @@ class MessageRouter:
             "memory_query": self._handle_memory_query,
             "document_analysis": self._handle_document_analysis,
             "code_generation": self._handle_code_generation,
-            "creative_writing": self._handle_creative_writing
+            "creative_writing": self._handle_creative_writing,
+            "ppt_generate_outline": self._handle_ppt_generation,
+            "ppt_generate_from_outline": self._handle_ppt_generation,
+            "ppt_generate_from_content": self._handle_ppt_generation,
+            "ppt_custom_generate": self._handle_ppt_generation,
         }
         
         handler = handlers.get(intent.type)
         if handler:
-            return handler(user_id, intent, context)
+            logger.info(f"[HANDLER_START] 执行处理器: {intent.type}")
+            result = handler(user_id, intent, context)
+            logger.info(f"[HANDLER_END] 处理器执行完成: {intent.type}, result_length={len(result)}")
+            return result
         
+        logger.warning(f"[HANDLER_NOT_FOUND] 未找到处理器，使用unknown处理器: {intent.type}")
         return self._handle_unknown(user_id, context)
     
     def _handle_summarization(self, user_id: str, intent: Intent, context: str) -> str:
@@ -267,6 +285,8 @@ class MessageRouter:
         return "\n".join(m.content for m in valid_messages)
     
     def _handle_question_answering(self, user_id: str, intent: Intent, context: str) -> str:
+        logger.info(f"[QA_HANDLER] 开始问答处理: user_id={user_id}")
+        
         # 使用插件系统的记忆存储进行检索
         memory_store = get_memory_store()
         context_text = ""
@@ -274,55 +294,76 @@ class MessageRouter:
         if memory_store:
             results = memory_store.search_memory(user_id, context, limit=3)
             context_text = "\n".join(r.content for r in results)
+            logger.info(f"[QA_HANDLER] 记忆搜索完成:找到 {len(results)} 条相关记忆")
         
         # 使用插件系统的模型路由
         model_router = get_model_router()
         if model_router:
             model = model_router.select_model("question_answering", "medium")
             if model:
+                logger.info(f"[QA_HANDLER] 调用问答模型")
                 prompt = f"基于以下上下文回答问题：\n\n上下文：{context_text}\n\n问题：{context}"
-                return model_router.call_model(model, [{"role": "user", "content": prompt}])
+                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+                logger.info(f"[QA_HANDLER] 问答完成: response_length={len(response)}")
+                return response
         
+        logger.warning(f"[QA_HANDLER] 问答失败: 模型不可用")
         return "问答功能暂时不可用"
     
     def _handle_task_execution(self, user_id: str, intent: Intent, context: str) -> str:
+        logger.info(f"[TASK_HANDLER] 开始任务执行: user_id={user_id}, intent={intent.type}")
+        
         task = task_planner.plan(user_id, intent, context)
+        logger.info(f"[TASK_HANDLER] 任务规划完成: task_id={task.id}, steps={len(task.steps)}")
         
         for i, step in enumerate(task.steps):
             task = task_planner.execute_step(task, i)
             if step.status == "failed":
+                logger.error(f"[TASK_HANDLER] 任务执行失败: step={i}, error={step.error}")
                 return f"任务执行失败：{step.error}"
         
+        logger.info(f"[TASK_HANDLER] 任务执行完成: task_id={task.id}")
         return f"任务完成！\n步骤：\n{chr(10).join(f'{i+1}. {s.description}: {s.result}' for i, s in enumerate(task.steps))}"
     
     def _handle_skill_request(self, user_id: str, intent: Intent, context: str) -> str:
+        logger.info(f"[SKILL_HANDLER] 开始技能请求处理: user_id={user_id}")
+        
         # 使用插件系统的技能管理器
         skill_manager = get_skill_manager()
         
         if skill_manager:
             skill = skill_manager.find_relevant_skill(context)
             if skill:
+                logger.info(f"[SKILL_HANDLER] 找到相关技能: skill_name={skill.name}")
                 return f"已找到相关技能：{skill.name}\n描述：{skill.description}"
         
+        logger.info(f"[SKILL_HANDLER] 未找到相关技能")
         return "未找到相关技能，是否需要创建新技能？"
     
     def _handle_memory_query(self, user_id: str, intent: Intent, context: str) -> str:
+        logger.info(f"[MEMORY_HANDLER] 开始记忆查询: user_id={user_id}, query={context[:50]}")
+        
         # 使用插件系统的记忆存储
         memory_store = get_memory_store()
         
         if memory_store:
             results = memory_store.search_memory(user_id, context, limit=5)
             if results:
+                logger.info(f"[MEMORY_HANDLER] 记忆查询完成: 找到 {len(results)} 条记忆")
                 return "\n\n".join(f"[{r.timestamp}] {r.content[:100]}..." for r in results)
         
+        logger.info(f"[MEMORY_HANDLER] 记忆查询完成: 未找到相关记忆")
         return "未找到相关记忆"
     
     def _handle_document_analysis(self, user_id: str, intent: Intent, context: str) -> str:
+        logger.info(f"[DOC_HANDLER] 开始文档分析: user_id={user_id}")
+        
         # 从数据库获取最近的文件内容进行总结
         from src.data.database import db
         
         # 获取用户最近的消息
         recent_messages = db.get_recent_messages(user_id, 20)
+        logger.info(f"[DOC_HANDLER] 获取最近消息: {len(recent_messages)} 条")
         
         # 过滤出文件上传后的助手回复（包含文件内容）
         def has_content(content):
@@ -351,19 +392,19 @@ class MessageRouter:
             file_contents = [m.content for m in valid_messages]
         
         text_to_summarize = "\n".join(file_contents)
+        logger.info(f"[DOC_HANDLER] 提取文档内容: length={len(text_to_summarize)}")
         
         # 如果没有可总结的内容
         if not text_to_summarize.strip():
-            logger.info("文档分析：没有可总结的内容")
+            logger.warning(f"[DOC_HANDLER] 文档内容为空")
             return "已收到您上传的文件，但暂时没有可分析的内容。您可以提出具体问题，我来帮您分析。"
-        
-        logger.info(f"文档分析：总结内容长度: {len(text_to_summarize)} 字符")
         
         # 使用插件系统的模型路由进行总结分析
         model_router = get_model_router()
         if model_router:
             model = model_router.select_model("document_analysis", "complex")
             if model:
+                logger.info(f"[DOC_HANDLER] 调用文档分析模型")
                 prompt = f"""请分析并总结以下文档内容：
 
 {text_to_summarize}
@@ -375,54 +416,72 @@ class MessageRouter:
 """
                 response = model_router.call_model(model, [{"role": "user", "content": prompt}])
                 if response and response.strip():
+                    logger.info(f"[DOC_HANDLER] 文档分析完成: response_length={len(response)}")
                     return response
                 else:
-                    logger.warning("模型返回空响应，降级到总结模式")
+                    logger.warning("[DOC_HANDLER] 模型返回空响应，降级到总结模式")
         
         # 降级到简单总结
-        logger.info("文档分析降级到简单总结模式")
+        logger.info("[DOC_HANDLER] 降级到简单总结模式")
         return self._handle_summarization(user_id, intent, text_to_summarize)
     
     def _handle_code_generation(self, user_id: str, intent: Intent, context: str) -> str:
+        logger.info(f"[CODE_HANDLER] 开始代码生成: user_id={user_id}")
+        
         # 使用插件系统的模型路由
         model_router = get_model_router()
         if model_router:
             model = model_router.select_model("coding", "complex")
             if model:
+                logger.info(f"[CODE_HANDLER] 调用代码生成模型")
                 prompt = f"生成代码：\n{context}"
-                return model_router.call_model(model, [{"role": "user", "content": prompt}])
+                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+                logger.info(f"[CODE_HANDLER] 代码生成完成: response_length={len(response)}")
+                return response
         
+        logger.warning(f"[CODE_HANDLER] 代码生成失败: 模型不可用")
         return "代码生成功能暂时不可用"
     
     def _handle_creative_writing(self, user_id: str, intent: Intent, context: str) -> str:
+        logger.info(f"[CREATIVE_HANDLER] 开始创意写作: user_id={user_id}")
+        
         # 使用插件系统的模型路由
         model_router = get_model_router()
         if model_router:
             model = model_router.select_model("creative_writing", "medium")
             if model:
+                logger.info(f"[CREATIVE_HANDLER] 调用创意写作模型")
                 prompt = f"创作内容：\n{context}"
-                return model_router.call_model(model, [{"role": "user", "content": prompt}])
+                response = model_router.call_model(model, [{"role": "user", "content": prompt}])
+                logger.info(f"[CREATIVE_HANDLER] 创意写作完成: response_length={len(response)}")
+                return response
             else:
-                logger.warning("无法选择创作模型")
+                logger.warning("[CREATIVE_HANDLER] 无法选择创作模型")
         else:
-            logger.warning("模型路由不可用")
+            logger.warning("[CREATIVE_HANDLER] 模型路由不可用")
         
         # 如果插件不可用，尝试使用 ReAct 模式
-        logger.info("创作功能降级到 ReAct 模式")
+        logger.info("[CREATIVE_HANDLER] 降级到 ReAct 模式")
         return react_engine.run(user_id, f"根据以下内容创作或生成PPT：\n{context}")
     
     def _handle_unknown(self, user_id: str, context: str) -> str:
+        logger.info(f"[UNKNOWN_HANDLER] 开始处理未知意图: user_id={user_id}")
+        
         try:
             # 使用插件系统的模型路由
             model_router = get_model_router()
             if model_router:
                 model = model_router.select_model("general", "simple")
                 if model:
-                    return model_router.call_model(model, [{"role": "user", "content": context}])
+                    logger.info(f"[UNKNOWN_HANDLER] 调用通用模型")
+                    response = model_router.call_model(model, [{"role": "user", "content": context}])
+                    logger.info(f"[UNKNOWN_HANDLER] 通用处理完成: response_length={len(response)}")
+                    return response
             
+            logger.warning("[UNKNOWN_HANDLER] 模型不可用")
             return "抱歉，我无法理解您的请求"
         except Exception as e:
-            logger.error(f"Model call failed: {str(e)}")
+            logger.error(f"[UNKNOWN_HANDLER] Model call failed: {str(e)}")
             return f"您好！我已收到您的消息：\"{context}\"\n\n由于语言模型服务暂不可用，我无法为您生成智能回复。请检查 Ollama 服务是否运行，或配置其他模型 API 密钥。"
     
     def capture_correction(self, user_id: str, original: str, corrected: str, context: str) -> None:
