@@ -104,7 +104,7 @@ class MessageRouter:
             response = self._handle_with_react(user_id, message.content, message.metadata)
         else:
             logger.info(f"[INTENT_RECOGNIZED] 意图识别完成: intent={intent.type}, confidence={intent.confidence}, mode=Direct")
-            response = self._handle_intent(user_id, intent, message.content)
+            response = self._handle_intent(user_id, intent, message.content, message.metadata)
         
         logger.info(f"[ROUTER_OUTPUT] 路由响应生成完成: trace_id={trace_id}, response_length={len(response)}")
         
@@ -146,7 +146,7 @@ class MessageRouter:
         mentions = ["@hermes-office-synergy-agent"]
         return any(mention in content for mention in mentions)
     
-    def _handle_intent(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_intent(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[HANDLER_DISPATCH] 分发到意图处理器: intent={intent.type}, user_id={user_id}")
         
         handlers = {
@@ -168,14 +168,14 @@ class MessageRouter:
         handler = handlers.get(intent.type)
         if handler:
             logger.info(f"[HANDLER_START] 执行处理器: {intent.type}")
-            result = handler(user_id, intent, context)
+            result = handler(user_id, intent, context, metadata)
             logger.info(f"[HANDLER_END] 处理器执行完成: {intent.type}, result_length={len(result)}")
             return result
         
         logger.warning(f"[HANDLER_NOT_FOUND] 未找到处理器，使用unknown处理器: {intent.type}")
         return self._handle_unknown(user_id, context)
     
-    def _handle_summarization(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_summarization(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         # 检查用户是否提到"文件"
         mentions_file = any(keyword in context.lower() for keyword in ["文件", "这个文件", "文档"])
         
@@ -290,7 +290,7 @@ class MessageRouter:
         valid_messages = [m for m in messages if is_valid_text(m.content)]
         return "\n".join(m.content for m in valid_messages)
     
-    def _handle_question_answering(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_question_answering(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[QA_HANDLER] 开始问答处理: user_id={user_id}")
         
         # 使用插件系统的记忆存储进行检索
@@ -327,7 +327,7 @@ class MessageRouter:
         logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
         return react_engine.run(user_id, context)
     
-    def _handle_task_execution(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_task_execution(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[TASK_HANDLER] 开始任务执行: user_id={user_id}, intent={intent.type}")
         
         task = task_planner.plan(user_id, intent, context)
@@ -342,7 +342,7 @@ class MessageRouter:
         logger.info(f"[TASK_HANDLER] 任务执行完成: task_id={task.id}")
         return f"任务完成！\n步骤：\n{chr(10).join(f'{i+1}. {s.description}: {s.result}' for i, s in enumerate(task.steps))}"
     
-    def _handle_skill_request(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_skill_request(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[SKILL_HANDLER] 开始技能请求处理: user_id={user_id}")
         
         # 使用插件系统的技能管理器
@@ -357,7 +357,7 @@ class MessageRouter:
         logger.warning("[SKILL_HANDLER] 未找到相关技能，降级到ReAct模式")
         return react_engine.run(user_id, f"查找与以下内容相关的技能：{context}")
     
-    def _handle_memory_query(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_memory_query(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[MEMORY_HANDLER] 开始记忆查询: user_id={user_id}, query={context[:50]}")
         
         # 使用插件系统的记忆存储
@@ -372,47 +372,81 @@ class MessageRouter:
         logger.warning("[MEMORY_HANDLER] 记忆存储插件不可用或未找到相关记忆，降级到ReAct模式")
         return react_engine.run(user_id, f"搜索与以下内容相关的记忆：{context}")
     
-    def _handle_document_analysis(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_document_analysis(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[DOC_HANDLER] 开始文档分析: user_id={user_id}")
         
-        # 从数据库获取最近的文件内容进行总结
+        # 获取当前消息的元数据（可能包含文件信息）
+        metadata = metadata or {}
         from src.data.database import db
         
-        # 获取用户最近的消息
-        recent_messages = db.get_recent_messages(user_id, 20)
-        logger.info(f"[DOC_HANDLER] 获取最近消息: {len(recent_messages)} 条")
+        # 首先检查当前消息的元数据中是否有文件信息
+        file_key = metadata.get("file_key")
+        file_name = metadata.get("file_name")
         
-        # 过滤出文件上传后的助手回复（包含文件内容）
-        def has_content(content):
-            if not content or not content.strip():
-                return False
-            # 检查是否包含有效内容（不是纯JSON文件上传消息）
-            content = content.strip()
-            if content.startswith('{') and content.endswith('}'):
+        # 如果当前消息没有文件信息，尝试从最近消息中查找
+        if not file_key:
+            logger.info("[DOC_HANDLER] 当前消息无文件信息，查找最近消息")
+            recent_messages = db.get_recent_messages(user_id, 5)
+            for msg in recent_messages:
+                if msg.metadata and msg.role == "user":
+                    file_key = msg.metadata.get("file_key")
+                    file_name = msg.metadata.get("file_name")
+                    if file_key:
+                        logger.info(f"[DOC_HANDLER] 发现文件上传: file_key={file_key}, file_name={file_name}")
+                        break
+        
+        # 如果有文件上传，尝试直接读取文件内容
+        document_content = ""
+        if file_key:
+            tool_executor = get_tool_executor()
+            if tool_executor:
+                logger.info(f"[DOC_HANDLER] 使用工具执行器读取文件: {file_key}")
                 try:
-                    import json
-                    data = json.loads(content)
-                    # 如果只是文件上传的JSON，跳过
-                    if 'file_key' in data and 'file_name' in data and len(data) <= 3:
-                        return False
-                except:
-                    pass
-            return True
+                    params = {
+                        "file_key": file_key,
+                        "message_id": metadata.get("message_id", ""),
+                        "user_id": user_id
+                    }
+                    result = tool_executor.execute("feishu_file_read", params)
+                    if result.get("success") and result.get("result", {}).get("content"):
+                        document_content = result["result"]["content"]
+                        logger.info(f"[DOC_HANDLER] 成功读取文件内容: length={len(document_content)}")
+                    else:
+                        logger.warning(f"[DOC_HANDLER] 文件读取失败: {result.get('error')}")
+                except Exception as e:
+                    logger.error(f"[DOC_HANDLER] 文件读取异常: {str(e)}")
         
-        valid_messages = [m for m in recent_messages if has_content(m.content)]
-        
-        # 优先获取助手回复（包含文件内容）
-        file_contents = [m.content for m in valid_messages if m.role == "assistant"]
-        
-        # 如果没有助手回复，使用所有有效消息
-        if not file_contents:
-            file_contents = [m.content for m in valid_messages]
-        
-        text_to_summarize = "\n".join(file_contents)
-        logger.info(f"[DOC_HANDLER] 提取文档内容: length={len(text_to_summarize)}")
+        # 如果文件读取失败或没有文件，使用历史消息内容作为备选
+        if not document_content:
+            logger.info("[DOC_HANDLER] 文件读取失败或无文件，使用历史消息内容")
+            recent_messages = db.get_recent_messages(user_id, 20)
+            
+            # 过滤出有效内容
+            def has_content(content):
+                if not content or not content.strip():
+                    return False
+                content = content.strip()
+                if content.startswith('{') and content.endswith('}'):
+                    try:
+                        import json
+                        data = json.loads(content)
+                        if 'file_key' in data and 'file_name' in data and len(data) <= 3:
+                            return False
+                    except:
+                        pass
+                return True
+            
+            valid_messages = [m for m in recent_messages if has_content(m.content)]
+            file_contents = [m.content for m in valid_messages if m.role == "assistant"]
+            
+            if not file_contents:
+                file_contents = [m.content for m in valid_messages]
+            
+            document_content = "\n".join(file_contents)
+            logger.info(f"[DOC_HANDLER] 提取文档内容: length={len(document_content)}")
         
         # 如果没有可总结的内容
-        if not text_to_summarize.strip():
+        if not document_content.strip():
             logger.warning(f"[DOC_HANDLER] 文档内容为空")
             return "已收到您上传的文件，但暂时没有可分析的内容。您可以提出具体问题，我来帮您分析。"
         
@@ -420,17 +454,17 @@ class MessageRouter:
         model_router = get_model_router()
         if not model_router:
             logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
-            return react_engine.run(user_id, f"分析以下文档内容：\n{text_to_summarize}")
+            return react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
         
         model = model_router.select_model("document_analysis", "complex")
         if not model:
             logger.warning("[MODEL_ROUTER] 无法为 document_analysis 任务选择模型，降级到ReAct模式")
-            return react_engine.run(user_id, f"分析以下文档内容：\n{text_to_summarize}")
+            return react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
         
         logger.info(f"[DOC_HANDLER] 调用文档分析模型")
         prompt = f"""请分析并总结以下文档内容：
 
-{text_to_summarize}
+{document_content}
 
 请提供：
 1. 核心内容总结
@@ -444,9 +478,9 @@ class MessageRouter:
         
         # 模型返回空响应，降级到 ReAct 模式
         logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
-        return react_engine.run(user_id, f"分析以下文档内容：\n{text_to_summarize}")
+        return react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
     
-    def _handle_code_generation(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_code_generation(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[CODE_HANDLER] 开始代码生成: user_id={user_id}")
         
         # 使用插件系统的模型路由
@@ -472,7 +506,7 @@ class MessageRouter:
         logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
         return react_engine.run(user_id, f"生成代码：\n{context}")
 
-    def _handle_creative_writing(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_creative_writing(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[CREATIVE_HANDLER] 开始创意写作: user_id={user_id}")
         
         # 使用插件系统的模型路由
@@ -498,22 +532,92 @@ class MessageRouter:
         logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
         return react_engine.run(user_id, f"根据以下内容创作：\n{context}")
     
-    def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str) -> str:
+    def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         """处理PPT生成相关意图 - 降级到ReAct模式以使用工具执行器"""
         logger.info(f"[PPT_HANDLER] 开始PPT生成: user_id={user_id}, intent={intent.type}")
         
-        # PPT生成功能已迁移到工具执行器，通过ReAct模式调用
-        logger.info("[PPT_HANDLER] PPT生成功能已迁移到工具执行器，降级到ReAct模式")
+        # 获取当前消息的元数据（可能包含文件信息）
+        metadata = metadata or {}
+        from src.data.database import db
+        
+        # 首先检查当前消息的元数据中是否有文件信息
+        file_key = metadata.get("file_key")
+        file_name = metadata.get("file_name")
+        
+        # 如果当前消息没有文件信息，尝试从最近消息中查找
+        if not file_key:
+            logger.info("[PPT_HANDLER] 当前消息无文件信息，查找最近消息")
+            recent_messages = db.get_recent_messages(user_id, 5)
+            for msg in recent_messages:
+                if msg.metadata and msg.role == "user":
+                    file_key = msg.metadata.get("file_key")
+                    file_name = msg.metadata.get("file_name")
+                    if file_key:
+                        logger.info(f"[PPT_HANDLER] 发现文件上传: file_key={file_key}, file_name={file_name}")
+                        break
+        
+        # 如果有文件上传，尝试直接读取文件内容
+        document_content = ""
+        if file_key:
+            tool_executor = get_tool_executor()
+            if tool_executor:
+                logger.info(f"[PPT_HANDLER] 使用工具执行器读取文件: {file_key}")
+                try:
+                    params = {
+                        "file_key": file_key,
+                        "message_id": metadata.get("message_id", ""),
+                        "user_id": user_id
+                    }
+                    result = tool_executor.execute("feishu_file_read", params)
+                    if result.get("success") and result.get("result", {}).get("content"):
+                        document_content = result["result"]["content"]
+                        logger.info(f"[PPT_HANDLER] 成功读取文件内容: length={len(document_content)}")
+                    else:
+                        logger.warning(f"[PPT_HANDLER] 文件读取失败: {result.get('error')}")
+                except Exception as e:
+                    logger.error(f"[PPT_HANDLER] 文件读取异常: {str(e)}")
+        
+        # 如果文件读取失败或没有文件，使用历史消息内容作为备选
+        if not document_content:
+            logger.info("[PPT_HANDLER] 文件读取失败或无文件，使用历史消息内容")
+            recent_messages = db.get_recent_messages(user_id, 20)
+            
+            # 过滤出有效内容
+            def has_content(content):
+                if not content or not content.strip():
+                    return False
+                content = content.strip()
+                if content.startswith('{') and content.endswith('}'):
+                    try:
+                        import json
+                        data = json.loads(content)
+                        if 'file_key' in data and 'file_name' in data and len(data) <= 3:
+                            return False
+                    except:
+                        pass
+                return True
+            
+            valid_messages = [m for m in recent_messages if has_content(m.content)]
+            file_contents = [m.content for m in valid_messages if m.role == "assistant"]
+            
+            if not file_contents:
+                file_contents = [m.content for m in valid_messages]
+            
+            document_content = "\n".join(file_contents)
+            logger.info(f"[PPT_HANDLER] 提取文档内容: length={len(document_content)}")
         
         # 根据不同的意图类型构建不同的提示词
         prompt_mapping = {
-            "ppt_generate_outline": f"帮我生成一个PPT大纲，主题：{context}",
-            "ppt_generate_from_outline": f"根据以下大纲生成PPT：{context}",
-            "ppt_generate_from_content": f"根据以下内容生成PPT：{context}",
-            "ppt_custom_generate": f"帮我创建一个PPT，需求：{context}"
+            "ppt_generate_outline": f"帮我根据以下内容生成一个PPT大纲：\n{document_content}",
+            "ppt_generate_from_outline": f"根据以下大纲生成PPT：\n{document_content}",
+            "ppt_generate_from_content": f"根据以下内容生成PPT：\n{document_content}",
+            "ppt_custom_generate": f"帮我创建一个PPT，需求：{context}\n\n参考内容：\n{document_content}"
         }
         
-        prompt = prompt_mapping.get(intent.type, f"帮我创建一个PPT，需求：{context}")
+        prompt = prompt_mapping.get(intent.type, f"帮我根据以下内容创建一个PPT：\n{document_content}")
+        
+        # PPT生成功能已迁移到工具执行器，通过ReAct模式调用
+        logger.info("[PPT_HANDLER] PPT生成功能已迁移到工具执行器，降级到ReAct模式")
         return react_engine.run(user_id, prompt)
     
     def _handle_unknown(self, user_id: str, context: str) -> str:

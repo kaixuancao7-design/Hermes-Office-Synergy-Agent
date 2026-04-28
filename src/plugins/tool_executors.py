@@ -9,6 +9,9 @@ from src.config import settings
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
 
+# 导入tools层定义的PPT工具，避免重复定义
+from src.tools.ppt_generator import GeneratePPT, GeneratePPTFromOutline
+
 logger = get_logger("tool")
 
 
@@ -113,10 +116,10 @@ class BasicToolExecutor(ToolExecutorBase):
         self.register_tool("code_execution", CodeExecutionTool)
         self.register_tool("file_operations", FileOperationsTool)
         self.register_tool("feishu_file_read", FeishuFileReadTool)
-        # PPT生成工具
+        # PPT生成工具 - 使用tools层定义的工具类，避免重复
         self.register_tool("generate_outline", GenerateOutlineTool)
-        self.register_tool("generate_ppt", GeneratePPTFromSlidesTool)
-        self.register_tool("generate_ppt_from_outline", GeneratePPTFromOutlineTool)
+        self.register_tool("generate_ppt", GeneratePPT)  # 使用tools层的GeneratePPT
+        self.register_tool("generate_ppt_from_outline", GeneratePPTFromOutline)  # 使用tools层的GeneratePPTFromOutline
         self.register_tool("generate_ppt_from_content", GeneratePPTFromContentTool)
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
@@ -211,10 +214,10 @@ class SandboxedToolExecutor(ToolExecutorBase):
         self.register_tool("code_execution", SandboxedCodeExecutionTool)
         self.register_tool("file_operations", SandboxedFileOperationsTool)
         self.register_tool("feishu_file_read", FeishuFileReadTool)
-        # PPT生成工具
+        # PPT生成工具 - 使用tools层定义的工具类，避免重复
         self.register_tool("generate_outline", GenerateOutlineTool)
-        self.register_tool("generate_ppt", GeneratePPTFromSlidesTool)
-        self.register_tool("generate_ppt_from_outline", GeneratePPTFromOutlineTool)
+        self.register_tool("generate_ppt", GeneratePPT)  # 使用tools层的GeneratePPT
+        self.register_tool("generate_ppt_from_outline", GeneratePPTFromOutline)  # 使用tools层的GeneratePPTFromOutline
         self.register_tool("generate_ppt_from_content", GeneratePPTFromContentTool)
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
@@ -1100,13 +1103,14 @@ class FeishuFileReadTool:
         return non_printable > len(text) * 0.1
     
     def _store_to_vector_db(self, user_id: str, content: str, file_key: str):
-        """将文件内容存储到向量数据库"""
+        """将文件内容存储到向量数据库（SQLite + ChromaDB）"""
         try:
             from src.data.database import db
+            from src.data.vector_store import vector_store
             from src.types import MemoryEntry
             from src.utils import generate_id, get_timestamp
             
-            # 存储到长期记忆
+            # 1. 存储到长期记忆（SQLite）
             memory_entry = MemoryEntry(
                 id=generate_id(),
                 user_id=user_id,
@@ -1117,13 +1121,140 @@ class FeishuFileReadTool:
             )
             db.save_memory(memory_entry)
             
-            logger.info(f"文件内容已存储到向量数据库: {file_key}")
+            # 2. 使用RAG最佳实践进行智能Chunk拆分和存储
+            try:
+                chunks = self._smart_rag_chunk_split(content, file_key)
+                
+                # 批量添加到向量数据库
+                for i, chunk in enumerate(chunks):
+                    vector_store.add_vector(
+                        content=chunk,
+                        metadata={
+                            "user_id": user_id,
+                            "file_key": file_key,
+                            "source": "feishu_file",
+                            "chunk_index": i,
+                            "total_chunks": len(chunks),
+                            "timestamp": get_timestamp()
+                        }
+                    )
+                
+                logger.info(f"文件内容已存储到向量数据库（ChromaDB）: {file_key}, 共 {len(chunks)} 个chunk")
+            except Exception as vector_error:
+                logger.warning(f"存储到向量数据库失败（ChromaDB）: {str(vector_error)}")
+            
+            logger.info(f"文件内容已存储到数据库: {file_key}")
         except Exception as e:
-            logger.warning(f"存储到向量数据库失败: {str(e)}")
+            logger.warning(f"存储到数据库失败: {str(e)}")
+    
+    def _smart_rag_chunk_split(self, content: str, file_key: str) -> list:
+        """
+        基于RAG最佳实践的智能Chunk拆分
+        
+        策略:
+        1. 按优先级使用分隔符拆分（尊重语义边界）
+        2. 使用Token级别拆分（适配LLM输入限制）
+        3. 合并过小的chunk，避免碎片化
+        4. 保持适当的重叠，维持上下文连续性
+        
+        Args:
+            content: 文档内容
+            file_key: 文件标识
+        
+        Returns:
+            拆分后的chunk列表
+        """
+        try:
+            from langchain_text_splitters import TokenTextSplitter
+            
+            # 策略1: 按优先级使用分隔符拆分（从高到低）
+            # 优先级：段落 > 换行 > 英文句号 > 英文感叹号 > 英文问号 > 中文句号 > 中文感叹号 > 中文问号 > 双空格 > 单空格
+            separators = ["\n\n", "\n", ". ", "! ", "?", "。", "！", "？", "  ", " "]
+            
+            chunks = [content]
+            
+            for separator in separators:
+                new_chunks = []
+                for chunk in chunks:
+                    if len(chunk) > 512 * 4:  # 超过512 token（约2048字符）才继续拆分
+                        parts = chunk.split(separator)
+                        # 保持分隔符在chunk末尾（除了最后一个）
+                        for i, part in enumerate(parts):
+                            if i < len(parts) - 1 and separator:
+                                new_chunks.append(part + separator)
+                            else:
+                                new_chunks.append(part)
+                    else:
+                        new_chunks.append(chunk)
+                chunks = new_chunks
+            
+            # 过滤空字符串
+            chunks = [c.strip() for c in chunks if c.strip()]
+            
+            # 策略2: 使用Token级别拆分（适配大多数LLM的上下文窗口）
+            token_splitter = TokenTextSplitter(
+                chunk_size=512,    # 每个chunk约512个token，适配大多数LLM
+                chunk_overlap=64,   # 保持64个token的重叠，维持上下文连续性
+                model_name="gpt-3.5-turbo"  # 使用GPT-3.5的token编码方式
+            )
+            
+            final_chunks = []
+            for chunk in chunks:
+                if len(chunk) > 512 * 4:  # 超过512 token需要进一步拆分
+                    paragraph_chunks = token_splitter.split_text(chunk)
+                    final_chunks.extend(paragraph_chunks)
+                else:
+                    final_chunks.append(chunk)
+            
+            # 策略3: 合并过小的chunk，避免碎片化（小于100token的chunk合并）
+            merged_chunks = []
+            current_chunk = ""
+            
+            for chunk in final_chunks:
+                # 检查当前chunk加上新chunk是否超过限制
+                temp_combined = ("" if current_chunk else "") + chunk
+                
+                # 估算token数（粗略估算：1 token ≈ 4 字符）
+                if len(temp_combined) // 4 <= 512:
+                    current_chunk = temp_combined
+                else:
+                    if current_chunk:
+                        merged_chunks.append(current_chunk)
+                    current_chunk = chunk
+            
+            if current_chunk:
+                merged_chunks.append(current_chunk)
+            
+            # 策略4: 确保每个chunk至少有一定长度（至少50字符）
+            result_chunks = []
+            for chunk in merged_chunks:
+                if len(chunk) >= 50:
+                    result_chunks.append(chunk)
+                elif result_chunks:
+                    # 将过小的chunk合并到前一个
+                    result_chunks[-1] += chunk
+            
+            logger.debug(f"RAG拆分完成: 原始内容 {len(content)} 字符, 生成 {len(result_chunks)} 个chunk")
+            
+            return result_chunks
+        
+        except Exception as e:
+            logger.error(f"RAG智能拆分失败，使用简单拆分: {str(e)}")
+            
+            # 降级到简单拆分
+            simple_splitter = TokenTextSplitter(
+                chunk_size=512,
+                chunk_overlap=64
+            )
+            return simple_splitter.split_text(content)
     
     def _get_content_from_vector_db(self, file_key: str, user_id: str = None) -> Optional[str]:
         """
         从向量数据库中获取文件内容（支持用户隔离）
+        
+        读取策略:
+        1. 先从SQLite读取完整内容（保持向后兼容）
+        2. 如果SQLite没有，从ChromaDB读取拆分的chunks并合并
         
         Args:
             file_key: 文件标识
@@ -1134,21 +1265,60 @@ class FeishuFileReadTool:
         """
         try:
             from src.data.database import db
+            from src.data.vector_store import vector_store
             
-            # 从记忆存储中查询包含该file_key的记录（支持用户隔离）
+            # 策略1: 先从SQLite读取（保持向后兼容）
             memories = db.get_memories_by_tag(file_key, user_id)
             
             if memories:
                 # 返回最新的内容
                 memories.sort(key=lambda m: m.timestamp, reverse=True)
-                logger.info(f"✅ 从本地存储获取文件内容成功: file_key={file_key}, user_id={user_id}")
+                logger.info(f"✅ 从SQLite获取文件内容成功: file_key={file_key}, user_id={user_id}")
                 return memories[0].content
             
-            logger.info(f"ℹ️ 未在向量数据库中找到文件: file_key={file_key}, user_id={user_id}")
+            # 策略2: 如果SQLite没有，从ChromaDB读取拆分的chunks
+            try:
+                results = vector_store.search(
+                    query="",  # 空查询，使用filter精确匹配
+                    k=100,  # 获取所有相关chunks
+                    filter={"file_key": file_key}
+                )
+                
+                if results:
+                    # 按chunk_index排序并合并
+                    chunks = sorted(
+                        [(r['metadata'].get('chunk_index', 0), r['content']) 
+                        for r in results 
+                        if 'chunk_index' in r.get('metadata', {})],
+                        key=lambda x: x[0]
+                    )
+                    
+                    # 合并所有chunks
+                    content = ''.join([chunk[1] for chunk in chunks])
+                    logger.info(f"✅ 从ChromaDB获取文件内容成功: file_key={file_key}, 合并了 {len(chunks)} 个chunks")
+                    return content
+                else:
+                    # 尝试不带chunk_index的旧格式
+                    results = vector_store.search(
+                        query="",
+                        k=10,
+                        filter={"file_key": file_key}
+                    )
+                    
+                    if results:
+                        # 返回第一个匹配的内容
+                        content = results[0].get('content', '')
+                        logger.info(f"✅ 从ChromaDB获取文件内容成功（旧格式）: file_key={file_key}")
+                        return content
+            
+            except Exception as chroma_error:
+                logger.warning(f"⚠️ 从ChromaDB读取失败: {str(chroma_error)}")
+            
+            logger.info(f"ℹ️ 未找到文件: file_key={file_key}, user_id={user_id}")
             return None
             
         except Exception as e:
-            logger.error(f"❌ 从向量数据库获取文件内容失败: {str(e)}")
+            logger.error(f"❌ 获取文件内容失败: {str(e)}")
             return None
 
 
@@ -1220,72 +1390,6 @@ PPT标题：{title}
             return {"success": False, "error": f"大纲生成失败: {str(e)}"}
 
 
-class GeneratePPTFromSlidesTool:
-    """根据幻灯片列表生成PPT工具"""
-    
-    def __init__(self, executor=None):
-        self.executor = executor
-    
-    def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        title = parameters.get("title", "Untitled Presentation")
-        slides = parameters.get("slides", [])
-        
-        if not slides or not isinstance(slides, list):
-            return {"success": False, "error": "参数错误：slides必须是非空数组"}
-        
-        try:
-            from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
-            
-            ppt_generator = PPTGenerator()
-            output_path = ppt_generator.generate_ppt(title, slides)
-            
-            logger.info(f"📊 PPT生成成功: {output_path}")
-            return {
-                "success": True,
-                "result": {
-                    "file_path": output_path,
-                    "title": title,
-                    "slides_count": len(slides)
-                }
-            }
-        except Exception as e:
-            logger.error(f"PPT生成失败: {str(e)}", exc_info=True)
-            return {"success": False, "error": f"PPT生成失败: {str(e)}"}
-
-
-class GeneratePPTFromOutlineTool:
-    """根据大纲生成PPT工具"""
-    
-    def __init__(self, executor=None):
-        self.executor = executor
-    
-    def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        title = parameters.get("title", "Untitled Presentation")
-        outline = parameters.get("outline", [])
-        
-        if not outline or not isinstance(outline, list):
-            return {"success": False, "error": "参数错误：outline必须是非空数组"}
-        
-        try:
-            from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
-            
-            ppt_generator = PPTGenerator()
-            output_path = ppt_generator.generate_from_outline(title, outline)
-            
-            logger.info(f"📊 PPT从大纲生成成功: {output_path}")
-            return {
-                "success": True,
-                "result": {
-                    "file_path": output_path,
-                    "title": title,
-                    "chapters_count": len(outline)
-                }
-            }
-        except Exception as e:
-            logger.error(f"PPT从大纲生成失败: {str(e)}", exc_info=True)
-            return {"success": False, "error": f"PPT从大纲生成失败: {str(e)}"}
-
-
 class GeneratePPTFromContentTool:
     """根据文件内容直接生成PPT工具（完整流程：内容→大纲→PPT）"""
     
@@ -1314,11 +1418,14 @@ class GeneratePPTFromContentTool:
             
             logger.info(f"📋 大纲生成成功，共 {chapters_count} 个章节")
             
-            # 步骤2：根据大纲生成PPT
-            from src.tools.ppt_generator import PPTGeneratorBase as PPTGenerator
+            # 步骤2：根据大纲生成PPT（使用tools层的工具类）
+            ppt_tool = GeneratePPTFromOutline()
+            ppt_result = ppt_tool.execute({"title": title, "outline": outline})
             
-            ppt_generator = PPTGenerator()
-            output_path = ppt_generator.generate_from_outline(title, outline)
+            if not ppt_result.get("success"):
+                return {"success": False, "error": f"PPT生成失败: {ppt_result.get('error', '未知错误')}"}
+            
+            output_path = ppt_result["result"]["file_path"]
             
             logger.info(f"📊 PPT生成成功: {output_path}")
             return {

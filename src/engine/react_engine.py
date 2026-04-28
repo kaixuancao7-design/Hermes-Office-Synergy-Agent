@@ -1111,6 +1111,9 @@ class ReActEngine:
                 
                 state.actions.append(output.action)
                 
+                # 安全地获取动作类型（提前定义以避免 UnboundLocalError）
+                action_type = output.action.type if (output.action is not None and output.action.type) else "unknown"
+                
                 # 执行动作
                 logger.debug(f"Calling _execute_action with action: {output.action}")
                 observation = self._execute_action(output.action)
@@ -1143,6 +1146,7 @@ class ReActEngine:
                 
                 # 更新步骤计数
                 state.current_step += 1
+                
                 logger.info(f"[REACT_ENGINE] 步骤完成: step={state.current_step}, action={action_type}, success={observation.success}")
                 
                 # 检查是否完成
@@ -1174,10 +1178,6 @@ class ReActEngine:
                             state.final_response = "已完成任务"
                     else:
                         state.final_response = self._generate_final_response(state)
-                
-                # 安全地记录动作类型
-                action_type = output.action.type if (output.action is not None and output.action.type) else "unknown"
-                logger.info(f"ReAct step {state.current_step}: {action_type}")
                 
             except Exception as e:
                 logger.error(f"ReAct loop error: {e}")

@@ -250,19 +250,31 @@ class GeneratePPT(BaseTool):
     description = "根据幻灯片列表生成PPT文件"
     schema = GeneratePPTSchema
     
-    def __init__(self):
+    def __init__(self, executor=None):
         self.generator = PPTGeneratorBase()
+        self.executor = executor
     
-    def execute(self, params: Dict[str, Any]) -> str:
+    def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         title = params.get("title", "Untitled Presentation")
         slides = params.get("slides", [])
         
+        if not slides or not isinstance(slides, list):
+            return {"success": False, "error": "参数错误：slides必须是非空数组"}
+        
         try:
             output_path = self.generator.generate_ppt(title, slides)
-            return f"PPT generated successfully! Path: {output_path}"
+            logger.info(f"PPT generated successfully: {output_path}")
+            return {
+                "success": True,
+                "result": {
+                    "file_path": output_path,
+                    "title": title,
+                    "slides_count": len(slides)
+                }
+            }
         except Exception as e:
-            logger.error(f"PPT generation failed: {str(e)}")
-            return f"PPT generation failed: {str(e)}"
+            logger.error(f"PPT generation failed: {str(e)}", exc_info=True)
+            return {"success": False, "error": f"PPT生成失败: {str(e)}"}
 
 
 @register_tool("generate_ppt_from_outline")
@@ -272,16 +284,28 @@ class GeneratePPTFromOutline(BaseTool):
     description = "根据大纲结构生成PPT文件"
     schema = GeneratePPTFromOutlineSchema
     
-    def __init__(self):
+    def __init__(self, executor=None):
         self.generator = PPTGeneratorBase()
+        self.executor = executor
     
-    def execute(self, params: Dict[str, Any]) -> str:
+    def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         title = params.get("title", "Untitled Presentation")
         outline = params.get("outline", [])
         
+        if not outline or not isinstance(outline, list):
+            return {"success": False, "error": "参数错误：outline必须是非空数组"}
+        
         try:
             output_path = self.generator.generate_from_outline(title, outline)
-            return f"PPT generated successfully from outline! Path: {output_path}"
+            logger.info(f"PPT generated from outline: {output_path}")
+            return {
+                "success": True,
+                "result": {
+                    "file_path": output_path,
+                    "title": title,
+                    "chapters_count": len(outline)
+                }
+            }
         except Exception as e:
-            logger.error(f"PPT generation from outline failed: {str(e)}")
-            return f"PPT generation failed: {str(e)}"
+            logger.error(f"PPT generation from outline failed: {str(e)}", exc_info=True)
+            return {"success": False, "error": f"PPT生成失败: {str(e)}"}
