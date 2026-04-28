@@ -161,25 +161,68 @@ class TestMessageRouter:
         
         assert result is not None
     
+    @patch('src.gateway.message_router.react_engine')
+    def test_ppt_generate_outline(self, mock_react_engine):
+        """测试PPT大纲生成意图"""
+        mock_react_engine.run.return_value = "PPT大纲生成成功"
+        
+        intent = Intent(type="ppt_generate_outline", confidence=0.9, entities={})
+        result = self.router._handle_ppt_generation(self.test_user_id, intent, "人工智能发展")
+        
+        assert result == "PPT大纲生成成功"
+        mock_react_engine.run.assert_called_once()
+    
+    @patch('src.gateway.message_router.react_engine')
+    def test_ppt_generate_from_outline(self, mock_react_engine):
+        """测试从大纲生成PPT意图"""
+        mock_react_engine.run.return_value = "PPT从大纲生成成功"
+        
+        intent = Intent(type="ppt_generate_from_outline", confidence=0.9, entities={})
+        result = self.router._handle_ppt_generation(self.test_user_id, intent, "大纲内容")
+        
+        assert result == "PPT从大纲生成成功"
+        mock_react_engine.run.assert_called_once()
+    
+    @patch('src.gateway.message_router.react_engine')
+    def test_ppt_generate_from_content(self, mock_react_engine):
+        """测试从内容生成PPT意图"""
+        mock_react_engine.run.return_value = "PPT从内容生成成功"
+        
+        intent = Intent(type="ppt_generate_from_content", confidence=0.9, entities={})
+        result = self.router._handle_ppt_generation(self.test_user_id, intent, "文档内容")
+        
+        assert result == "PPT从内容生成成功"
+        mock_react_engine.run.assert_called_once()
+    
+    @patch('src.gateway.message_router.react_engine')
+    def test_ppt_custom_generate(self, mock_react_engine):
+        """测试自定义PPT生成意图"""
+        mock_react_engine.run.return_value = "自定义PPT生成成功"
+        
+        intent = Intent(type="ppt_custom_generate", confidence=0.9, entities={})
+        result = self.router._handle_ppt_generation(self.test_user_id, intent, "自定义需求")
+        
+        assert result == "自定义PPT生成成功"
+        mock_react_engine.run.assert_called_once()
+    
     def test_should_use_react(self):
         """测试是否应该使用ReAct模式的判断"""
-        # document_analysis 总是使用 ReAct
-        intent = Intent(type="document_analysis", confidence=0.9, entities={})
-        assert self.router._should_use_react(intent) is True
+        # document_analysis 有独立handler，不在_react_intents列表中
+        # 通过_handle_document_analysis中的降级逻辑处理，而非_should_use_react
         
-        # question_answering, task_execution, code_generation 在置信度 < 0.8 时使用 ReAct
+        # question_answering, task_execution, code_generation, unknown 在置信度 < 0.8 时使用 ReAct
         react_intents_with_low_confidence = ["question_answering", "task_execution", "code_generation", "unknown"]
         for intent_type in react_intents_with_low_confidence:
             intent = Intent(type=intent_type, confidence=0.7, entities={})
             assert self.router._should_use_react(intent) is True
         
-        # question_answering, task_execution, code_generation 在置信度 >= 0.8 时不使用 ReAct
+        # question_answering, task_execution, code_generation, unknown 在置信度 >= 0.8 时不使用 ReAct
         for intent_type in react_intents_with_low_confidence:
             intent = Intent(type=intent_type, confidence=0.9, entities={})
             assert self.router._should_use_react(intent) is False
         
-        # 其他意图不使用 ReAct
-        non_react_intents = ["summarization", "creative_writing", "memory_query", "skill_request"]
+        # 其他意图不使用 ReAct（包括document_analysis，它有独立的handler）
+        non_react_intents = ["summarization", "creative_writing", "memory_query", "skill_request", "document_analysis"]
         for intent_type in non_react_intents:
             intent = Intent(type=intent_type, confidence=0.9, entities={})
             assert self.router._should_use_react(intent) is False

@@ -158,6 +158,11 @@ class MessageRouter:
             "document_analysis": self._handle_document_analysis,
             "code_generation": self._handle_code_generation,
             "creative_writing": self._handle_creative_writing,
+            # PPT相关意图 - 降级到ReAct模式（工具已注册在tool_executor中）
+            "ppt_generate_outline": self._handle_ppt_generation,
+            "ppt_generate_from_outline": self._handle_ppt_generation,
+            "ppt_generate_from_content": self._handle_ppt_generation,
+            "ppt_custom_generate": self._handle_ppt_generation,
         }
         
         handler = handlers.get(intent.type)
@@ -493,6 +498,24 @@ class MessageRouter:
         logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
         return react_engine.run(user_id, f"根据以下内容创作：\n{context}")
     
+    def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str) -> str:
+        """处理PPT生成相关意图 - 降级到ReAct模式以使用工具执行器"""
+        logger.info(f"[PPT_HANDLER] 开始PPT生成: user_id={user_id}, intent={intent.type}")
+        
+        # PPT生成功能已迁移到工具执行器，通过ReAct模式调用
+        logger.info("[PPT_HANDLER] PPT生成功能已迁移到工具执行器，降级到ReAct模式")
+        
+        # 根据不同的意图类型构建不同的提示词
+        prompt_mapping = {
+            "ppt_generate_outline": f"帮我生成一个PPT大纲，主题：{context}",
+            "ppt_generate_from_outline": f"根据以下大纲生成PPT：{context}",
+            "ppt_generate_from_content": f"根据以下内容生成PPT：{context}",
+            "ppt_custom_generate": f"帮我创建一个PPT，需求：{context}"
+        }
+        
+        prompt = prompt_mapping.get(intent.type, f"帮我创建一个PPT，需求：{context}")
+        return react_engine.run(user_id, prompt)
+    
     def _handle_unknown(self, user_id: str, context: str) -> str:
         logger.info(f"[UNKNOWN_HANDLER] 开始处理未知意图: user_id={user_id}")
         
@@ -524,16 +547,14 @@ class MessageRouter:
     def _should_use_react(self, intent: Intent) -> bool:
         """判断是否应该使用 ReAct 模式"""
         # 需要复杂推理的意图类型使用 ReAct
+        # document_analysis 有独立handler，不在此列表中
         react_intents = [
             "question_answering",
             "task_execution",
-            "document_analysis",
             "code_generation",
             "unknown"  # 未知意图使用 ReAct 进行探索
         ]
-        # document_analysis 总是使用 ReAct（需要调用工具读取文件），其他意图需要置信度低于0.8
-        if intent.type == "document_analysis":
-            return True
+        # 置信度低于0.8时使用ReAct进行深度推理
         return intent.type in react_intents and intent.confidence < 0.8
     
     def _handle_with_react(self, user_id: str, query: str, metadata: Optional[Dict[str, Any]] = None) -> str:
