@@ -124,6 +124,14 @@ class IntentRecognizer:
         matched_intent = "unknown"
         max_matches = 0
         
+        # PPT相关意图的特殊关键词匹配（支持更灵活的匹配）
+        ppt_intent_keywords = {
+            "ppt_generate_from_content": ["文件", "文档", "内容", "生成ppt"],
+            "ppt_generate_from_outline": ["大纲", "提纲", "结构", "生成ppt"],
+            "ppt_generate_outline": ["ppt大纲", "大纲", "提纲", "结构"],
+            "ppt_custom_generate": ["ppt", "演示", "汇报"]
+        }
+        
         # 按优先级顺序遍历意图
         for intent in intent_priority:
             if intent not in self.intent_patterns:
@@ -134,11 +142,20 @@ class IntentRecognizer:
             # 统计匹配的关键词数量
             matches = 0
             matched_patterns = []
+            
             for pattern in patterns:
                 # 确保模式和文本都转为小写进行比较
                 if pattern.lower() in text_lower:
                     matches += 1
                     matched_patterns.append(pattern)
+            
+            # 对于PPT相关意图，额外进行关键词匹配（提高匹配灵活性）
+            if intent in ppt_intent_keywords:
+                keywords = ppt_intent_keywords[intent]
+                keyword_matches = sum(1 for kw in keywords if kw in text_lower)
+                # 如果关键词匹配数大于等于2，增加匹配分数
+                if keyword_matches >= 2:
+                    matches += keyword_matches
             
             # 匹配规则：
             # 1. 如果当前意图匹配数大于之前的最大匹配数，更新

@@ -543,6 +543,7 @@ class MessageRouter:
         # 首先检查当前消息的元数据中是否有文件信息
         file_key = metadata.get("file_key")
         file_name = metadata.get("file_name")
+        file_message_id = metadata.get("message_id", "")
         
         # 如果当前消息没有文件信息，尝试从最近消息中查找
         if not file_key:
@@ -553,7 +554,9 @@ class MessageRouter:
                     file_key = msg.metadata.get("file_key")
                     file_name = msg.metadata.get("file_name")
                     if file_key:
-                        logger.info(f"[PPT_HANDLER] 发现文件上传: file_key={file_key}, file_name={file_name}")
+                        # 使用文件消息的message_id（关键修复）
+                        file_message_id = msg.metadata.get("message_id", "") or msg.id or ""
+                        logger.info(f"[PPT_HANDLER] 发现文件上传: file_key={file_key}, file_name={file_name}, message_id={file_message_id}")
                         break
         
         # 如果有文件上传，尝试直接读取文件内容
@@ -565,7 +568,7 @@ class MessageRouter:
                 try:
                     params = {
                         "file_key": file_key,
-                        "message_id": metadata.get("message_id", ""),
+                        "message_id": file_message_id,
                         "user_id": user_id
                     }
                     result = tool_executor.execute("feishu_file_read", params)
