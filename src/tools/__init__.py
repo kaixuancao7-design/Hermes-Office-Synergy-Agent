@@ -13,7 +13,6 @@ from src.tools.registry import (
 # 导入具体工具
 from src.tools.ppt_generator import (
     GeneratePPT,
-    GeneratePPTFromOutline,
     PPTGeneratorBase
 )
 from src.tools.file_reader import (
@@ -21,7 +20,6 @@ from src.tools.file_reader import (
     FeishuFileRead
 )
 from src.tools.content_tools import (
-    GenerateOutline,
     GeneratePPTFromContent
 )
 
@@ -30,20 +28,18 @@ __all__ = [
     # 基础类
     "BaseTool",
     "ToolSchema",
-    
+
     # 注册器
     "register_tool",
     "get_tool",
     "list_tools",
     "execute_tool",
     "clear_registry",
-    
+
     # 工具类
     "GeneratePPT",
-    "GeneratePPTFromOutline",
     "PPTGeneratorBase",
     "ReadFile",
     "FeishuFileRead",
-    "GenerateOutline",
     "GeneratePPTFromContent"
 ]

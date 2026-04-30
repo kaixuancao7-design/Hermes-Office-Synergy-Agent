@@ -107,26 +107,3 @@ class SkillWorkflowEngine:
             ))
         
         return SkillWorkflowEngine(steps)
-
-
-def create_ppt_workflow() -> SkillWorkflowEngine:
-    """创建PPT生成工作流"""
-    steps = [
-        SkillWorkflowStep(
-            tool_name="feishu_file_read",
-            params={"file_key": "{{file_key}}", "user_id": "{{user_id}}"},
-            output_key="file_content"
-        ),
-        SkillWorkflowStep(
-            tool_name="generate_outline",
-            params={"content": "{{file_content}}", "title": "{{title}}"},
-            output_key="outline"
-        ),
-        SkillWorkflowStep(
-            tool_name="generate_ppt_from_outline",
-            params={"title": "{{title}}", "outline": "{{outline}}"},
-            output_key="ppt_path"
-        )
-    ]
-    
-    return SkillWorkflowEngine(steps)

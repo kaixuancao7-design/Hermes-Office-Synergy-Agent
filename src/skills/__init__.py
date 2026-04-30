@@ -3,7 +3,7 @@
 # 导入核心组件
 from src.skills.manager import SkillManager, skill_manager
 from src.skills.triggers import SkillTriggerMatcher, trigger_matcher
-from src.skills.workflow import SkillWorkflowEngine, SkillWorkflowStep, create_ppt_workflow
+from src.skills.workflow import SkillWorkflowEngine, SkillWorkflowStep
 
 # 意图识别从 engine 模块导入（已合并）
 from src.engine.intent_recognition import IntentRecognizer, ContextualIntentAnalyzer, intent_recognizer, contextual_analyzer
@@ -43,8 +43,5 @@ __all__ = [
     
     # 适配器
     "anthropics_adapter",
-    "presentation_skill_adapter",
-    
-    # 工具函数
-    "create_ppt_workflow"
+    "presentation_skill_adapter"
 ]

@@ -17,12 +17,6 @@ class GeneratePPTSchema(ToolSchema):
     slides: List[Dict[str, Any]] = Field(description="幻灯片列表", default_factory=list)
 
 
-class GeneratePPTFromOutlineSchema(ToolSchema):
-    """从大纲生成PPT工具参数Schema"""
-    title: str = Field(description="PPT标题", default="Untitled Presentation")
-    outline: List[Dict[str, Any]] = Field(description="大纲结构", default_factory=list)
-
-
 class PPTGeneratorBase:
     """PPT生成器核心实现 - 基于python-pptx库"""
 
@@ -308,40 +302,6 @@ class GeneratePPT(BaseTool):
                     "file_path": output_path,
                     "title": title,
                     "slides_count": len(slides)
-                }
-            }
-        except Exception as e:
-            logger.error(f"PPT generation failed: {str(e)}", exc_info=True)
-            return {"success": False, "error": f"PPT生成失败: {str(e)}"}
-
-
-@register_tool("generate_ppt_from_outline")
-class GeneratePPTFromOutline(BaseTool):
-    """从大纲生成PPT工具"""
-    
-    description = "根据大纲结构生成PPT文件"
-    schema = GeneratePPTFromOutlineSchema
-    
-    def __init__(self, executor=None):
-        self.generator = PPTGeneratorBase()
-        self.executor = executor
-    
-    def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        title = params.get("title", "Untitled Presentation")
-        outline = params.get("outline", [])
-        
-        if not outline or not isinstance(outline, list):
-            return {"success": False, "error": "参数错误：outline必须是非空数组"}
-        
-        try:
-            output_path = self.generator.generate_from_outline(title, outline)
-            logger.info(f"PPT generated from outline: {output_path}")
-            return {
-                "success": True,
-                "result": {
-                    "file_path": output_path,
-                    "title": title,
-                    "chapters_count": len(outline)
                 }
             }
         except Exception as e:

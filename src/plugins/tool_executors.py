@@ -10,7 +10,7 @@ from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
 
 # 导入tools层定义的PPT工具，避免重复定义
-from src.tools.ppt_generator import GeneratePPT, GeneratePPTFromOutline
+from src.tools.ppt_generator import GeneratePPT
 
 logger = get_logger("tool")
 
