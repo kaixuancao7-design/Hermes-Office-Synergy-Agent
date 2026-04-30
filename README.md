@@ -40,7 +40,8 @@
 ├─────────────────────────────────────────────────────────────────────────┤
 │  核心引擎层 (Engine)                                                     │
 │  IntentRecognition / TaskPlanner / MemoryManager / LearningCycle         │
-│  ReActEngine / 自我进化闭环 / 需求解析器 / IM触发器 / ContextualAnalyzer  │
+│  ReActEngine / 自我进化闭环 / 需求解析器 / IM触发器 / ContextualAnalyzer│
+│  PPTWorkflow / TemplateMatcher / SpecLock / QualityGate / Strategist   │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  数据与记忆层 (Data & Memory)                                            │
 │  SQLite数据库 / MemoryBase (Chroma/Milvus/FAISS) / 程序性记忆             │
@@ -281,9 +282,53 @@ python start.py
 系统提供多种PPT生成工具：
 
 - `generate_ppt`：直接生成PPT（不发送）
-- `generate_ppt_from_outline`：从大纲生成PPT
 - `generate_and_send_ppt`：生成PPT并通过IM发送给用户
 - `feishu_file_read`：读取飞书文件内容
+
+### PPT Master工作流
+
+系统引入**PPT Master**设计理念，实现规划-执行分离的PPT生成流程：
+
+```
+用户请求 → 意图识别 → PPT工作流
+                         │
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+    ┌───────────┐ ┌───────────┐ ┌───────────┐
+    │ 模板匹配  │ │ 规格锁定  │ │ 策略规划  │
+    │(Template) │ │(SpecLock) │ │(Strategist)│
+    └───────────┘ └───────────┘ └───────────┘
+          │              │              │
+          └──────────────┼──────────────┘
+                         ▼
+                ┌───────────────┐
+                │  PPT生成器   │
+                │(PPTGenerator)│
+                └───────────────┘
+                         │
+                         ▼
+                ┌───────────────┐
+                │  质量门控    │
+                │(QualityGate) │
+                └───────────────┘
+```
+
+#### 核心组件
+
+| 组件 | 功能 | 说明 |
+|------|------|------|
+| **TemplateMatcher** | 模板匹配 | 根据内容分析推荐最优模板（麦肯锡、学术、创意、简约等） |
+| **SpecLock** | 规格锁定 | 锁定设计参数（颜色、字体、布局），防止上下文漂移 |
+| **StrategistPlanner** | 策略规划 | 八项确认机制，确保用户需求准确理解 |
+| **QualityGate** | 质量门控 | 自动检查PPT质量（结构、格式、字体安全） |
+
+#### 设计原则
+
+- **规划-执行分离**：需求分析输出design_spec，执行器严格按spec生成
+- **多阶段确认**：复杂任务前增加用户确认环节（八项确认模板）
+- **模板索引系统**：建立模板分类索引，支持内容匹配推荐
+- **规格锁定机制**：生成过程中锁定设计参数，防止不一致
+- **质量门控**：输出自动检查，错误必须修复才能继续
 
 ### 支持的幻灯片类型
 
