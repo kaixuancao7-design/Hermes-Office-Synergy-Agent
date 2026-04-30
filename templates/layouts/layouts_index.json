@@ -1,0 +1,86 @@
+{
+  "version": "1.0",
+  "description": "PPT布局模板索引",
+  "templates": [
+    {
+      "id": "mckinsey",
+      "name": "麦肯锡咨询风格",
+      "description": "专业商务风格，适合企业战略咨询汇报，数据可视化能力强",
+      "tags": ["商务", "咨询", "战略", "数据可视化", "麦肯锡"],
+      "canvas": "16:9",
+      "color_scheme": {
+        "primary": "#1A365D",
+        "secondary": "#2B6CB0",
+        "accent": "#ED8936",
+        "background": "#FFFFFF",
+        "text": "#2D3748"
+      },
+      "font_family": {
+        "heading": "Microsoft YaHei",
+        "body": "Arial"
+      },
+      "icon_style": "flat",
+      "path": "templates/layouts/mckinsey"
+    },
+    {
+      "id": "academic",
+      "name": "学术答辩样式",
+      "description": "学术研究风格，适合论文答辩、学术报告",
+      "tags": ["学术", "答辩", "研究", "论文", "教育"],
+      "canvas": "16:9",
+      "color_scheme": {
+        "primary": "#2C5282",
+        "secondary": "#3182CE",
+        "accent": "#38B2AC",
+        "background": "#F7FAFC",
+        "text": "#1A202C"
+      },
+      "font_family": {
+        "heading": "Microsoft YaHei",
+        "body": "SimSun"
+      },
+      "icon_style": "outline",
+      "path": "templates/layouts/academic"
+    },
+    {
+      "id": "creative",
+      "name": "创意演示风格",
+      "description": "创意设计风格，适合创意提案、品牌展示",
+      "tags": ["创意", "设计", "品牌", "提案", "时尚"],
+      "canvas": "16:9",
+      "color_scheme": {
+        "primary": "#553C9A",
+        "secondary": "#805AD5",
+        "accent": "#F56565",
+        "background": "#1A202C",
+        "text": "#F7FAFC"
+      },
+      "font_family": {
+        "heading": "Microsoft YaHei",
+        "body": "Microsoft YaHei"
+      },
+      "icon_style": "colorful",
+      "path": "templates/layouts/creative"
+    },
+    {
+      "id": "minimalist",
+      "name": "极简专业风格",
+      "description": "简洁大气风格，适合高管汇报、重要场合",
+      "tags": ["极简", "高管", "汇报", "简洁", "商务"],
+      "canvas": "16:9",
+      "color_scheme": {
+        "primary": "#000000",
+        "secondary": "#4A5568",
+        "accent": "#3182CE",
+        "background": "#FFFFFF",
+        "text": "#1A202C"
+      },
+      "font_family": {
+        "heading": "Microsoft YaHei",
+        "body": "Microsoft YaHei"
+      },
+      "icon_style": "line",
+      "path": "templates/layouts/minimalist"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "description": "PPT图标库索引",
+  "categories": [
+    {
+      "id": "business",
+      "name": "商务办公",
+      "icons": [
+        {"id": "chart", "name": "图表", "path": "templates/icons/business/chart.svg"},
+        {"id": "presentation", "name": "演示", "path": "templates/icons/business/presentation.svg"},
+        {"id": "meeting", "name": "会议", "path": "templates/icons/business/meeting.svg"},
+        {"id": "target", "name": "目标", "path": "templates/icons/business/target.svg"},
+        {"id": "strategy", "name": "战略", "path": "templates/icons/business/strategy.svg"}
+      ]
+    },
+    {
+      "id": "data",
+      "name": "数据图表",
+      "icons": [
+        {"id": "bar", "name": "柱状", "path": "templates/icons/data/bar.svg"},
+        {"id": "pie", "name": "饼图", "path": "templates/icons/data/pie.svg"},
+        {"id": "line", "name": "折线", "path": "templates/icons/data/line.svg"},
+        {"id": "growth", "name": "增长", "path": "templates/icons/data/growth.svg"},
+        {"id": "analytics", "name": "分析", "path": "templates/icons/data/analytics.svg"}
+      ]
+    },
+    {
+      "id": "people",
+      "name": "人物关系",
+      "icons": [
+        {"id": "team", "name": "团队", "path": "templates/icons/people/team.svg"},
+        {"id": "leader", "name": "领导", "path": "templates/icons/people/leader.svg"},
+        {"id": "customer", "name": "客户", "path": "templates/icons/people/customer.svg"},
+        {"id": "partner", "name": "合作伙伴", "path": "templates/icons/people/partner.svg"}
+      ]
+    }
+  ]
+}

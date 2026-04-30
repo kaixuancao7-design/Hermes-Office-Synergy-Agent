@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "canvas": "16:9",
+  "color_scheme": {
+    "primary": "#2C5282",
+    "secondary": "#3182CE",
+    "accent": "#38B2AC",
+    "background": "#F7FAFC",
+    "text": "#1A202C"
+  },
+  "font_family": {
+    "heading": "Microsoft YaHei",
+    "body": "SimSun"
+  },
+  "icon_style": "outline",
+  "page_style": "academic"
+}

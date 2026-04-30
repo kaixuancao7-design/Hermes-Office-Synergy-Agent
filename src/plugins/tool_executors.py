@@ -116,11 +116,8 @@ class BasicToolExecutor(ToolExecutorBase):
         self.register_tool("code_execution", CodeExecutionTool)
         self.register_tool("file_operations", FileOperationsTool)
         self.register_tool("feishu_file_read", FeishuFileReadTool)
-        # PPT生成工具 - 使用tools层定义的工具类，避免重复
-        self.register_tool("generate_outline", GenerateOutlineTool)
-        self.register_tool("generate_ppt", GeneratePPT)  # 使用tools层的GeneratePPT
-        self.register_tool("generate_ppt_from_outline", GeneratePPTFromOutline)  # 使用tools层的GeneratePPTFromOutline
-        self.register_tool("generate_ppt_from_content", GeneratePPTFromContentTool)
+        # PPT生成工具
+        self.register_tool("generate_ppt", GeneratePPT)
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具"""
@@ -214,11 +211,8 @@ class SandboxedToolExecutor(ToolExecutorBase):
         self.register_tool("code_execution", SandboxedCodeExecutionTool)
         self.register_tool("file_operations", SandboxedFileOperationsTool)
         self.register_tool("feishu_file_read", FeishuFileReadTool)
-        # PPT生成工具 - 使用tools层定义的工具类，避免重复
-        self.register_tool("generate_outline", GenerateOutlineTool)
-        self.register_tool("generate_ppt", GeneratePPT)  # 使用tools层的GeneratePPT
-        self.register_tool("generate_ppt_from_outline", GeneratePPTFromOutline)  # 使用tools层的GeneratePPTFromOutline
-        self.register_tool("generate_ppt_from_content", GeneratePPTFromContentTool)
+        # PPT生成工具
+        self.register_tool("generate_ppt", GeneratePPT)
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具（带安全检查）"""
@@ -1320,127 +1314,6 @@ class FeishuFileReadTool:
         except Exception as e:
             logger.error(f"❌ 获取文件内容失败: {str(e)}")
             return None
-
-
-# PPT生成工具类
-class GenerateOutlineTool:
-    """根据内容生成PPT大纲工具"""
-    
-    def __init__(self, executor=None):
-        self.executor = executor
-    
-    def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        content = parameters.get("content", "")
-        title = parameters.get("title", "文档总结")
-        
-        if not content:
-            return {"success": False, "error": "参数错误：缺少content参数"}
-        
-        try:
-            from src.plugins.model_routers import select_model, call_model
-            
-            model = select_model("summarization", "complex")
-            if not model:
-                model = select_model("document_analysis", "complex")
-            
-            if not model:
-                return {"success": False, "error": "没有可用的模型来生成大纲"}
-            
-            prompt = f"""根据以下文档内容，生成一个结构化的PPT大纲：
-
-文档内容：
-{content}
-
-要求：
-1. 分析文档核心内容，提取关键章节（3-5个章节为宜）
-2. 每个章节包含：章节标题 + 主要要点（3-5个）
-3. 大纲结构清晰，逻辑连贯
-4. 使用中文输出
-
-PPT标题：{title}
-
-请输出JSON格式，结构如下：
-[
-  {{"title": "章节1标题", "content": ["要点1", "要点2", "要点3"]}},
-  {{"title": "章节2标题", "content": ["要点1", "要点2"]}}
-]
-"""
-            result = call_model(model, [{"role": "user", "content": prompt}])
-            
-            import json
-            try:
-                outline = json.loads(result)
-                if isinstance(outline, list) and len(outline) > 0:
-                    logger.info(f"📋 大纲生成成功，共 {len(outline)} 个章节")
-                    return {
-                        "success": True,
-                        "result": {
-                            "outline": outline,
-                            "title": title,
-                            "chapters_count": len(outline)
-                        }
-                    }
-                else:
-                    return {"success": False, "error": f"无效的大纲格式: {result[:200]}"}
-            except json.JSONDecodeError:
-                return {"success": False, "error": f"无法解析大纲JSON: {result[:200]}"}
-                
-        except Exception as e:
-            logger.error(f"大纲生成失败: {str(e)}", exc_info=True)
-            return {"success": False, "error": f"大纲生成失败: {str(e)}"}
-
-
-class GeneratePPTFromContentTool:
-    """根据文件内容直接生成PPT工具（完整流程：内容→大纲→PPT）"""
-    
-    def __init__(self, executor=None):
-        self.executor = executor
-    
-    def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        content = parameters.get("content", "")
-        title = parameters.get("title", "文档总结")
-        
-        if not content:
-            return {"success": False, "error": "参数错误：缺少content参数"}
-        
-        try:
-            logger.info(f"📄 开始根据内容生成PPT，内容长度: {len(content)}")
-            
-            # 步骤1：根据内容生成大纲
-            outline_tool = GenerateOutlineTool()
-            outline_result = outline_tool.execute({"content": content, "title": title})
-            
-            if not outline_result.get("success"):
-                return {"success": False, "error": f"大纲生成失败: {outline_result.get('error', '未知错误')}"}
-            
-            outline = outline_result["result"]["outline"]
-            chapters_count = outline_result["result"]["chapters_count"]
-            
-            logger.info(f"📋 大纲生成成功，共 {chapters_count} 个章节")
-            
-            # 步骤2：根据大纲生成PPT（使用tools层的工具类）
-            ppt_tool = GeneratePPTFromOutline()
-            ppt_result = ppt_tool.execute({"title": title, "outline": outline})
-            
-            if not ppt_result.get("success"):
-                return {"success": False, "error": f"PPT生成失败: {ppt_result.get('error', '未知错误')}"}
-            
-            output_path = ppt_result["result"]["file_path"]
-            
-            logger.info(f"📊 PPT生成成功: {output_path}")
-            return {
-                "success": True,
-                "result": {
-                    "file_path": output_path,
-                    "title": title,
-                    "chapters_count": chapters_count,
-                    "outline": outline
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"根据内容生成PPT失败: {str(e)}", exc_info=True)
-            return {"success": False, "error": f"根据内容生成PPT失败: {str(e)}"}
 
 
 # 工具执行器注册表

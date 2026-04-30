@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "canvas": "16:9",
+  "color_scheme": {
+    "primary": "#553C9A",
+    "secondary": "#805AD5",
+    "accent": "#F56565",
+    "background": "#1A202C",
+    "text": "#F7FAFC"
+  },
+  "font_family": {
+    "heading": "Microsoft YaHei",
+    "body": "Microsoft YaHei"
+  },
+  "icon_style": "colorful",
+  "page_style": "creative"
+}

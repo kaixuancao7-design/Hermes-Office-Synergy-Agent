@@ -33,12 +33,6 @@ INTENT_TO_TOOL_MAP = {
     "document_analysis": None,  # 可能需要读取文件
     "code_generation": "code_execution",
     "creative_writing": None,  # 由LLM直接处理
-    
-    # PPT意图
-    "ppt_generate_outline": "generate_outline",
-    "ppt_generate_from_outline": "generate_ppt_from_outline",
-    "ppt_generate_from_content": "generate_ppt_from_content",
-    "ppt_custom_generate": "generate_ppt"
 }
 
 # 工具→意图反向映射（用于工具选择时的意图确认）

@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "canvas": "16:9",
+  "color_scheme": {
+    "primary": "#1A365D",
+    "secondary": "#2B6CB0",
+    "accent": "#ED8936",
+    "background": "#FFFFFF",
+    "text": "#2D3748"
+  },
+  "font_family": {
+    "heading": "Microsoft YaHei",
+    "body": "Arial"
+  },
+  "icon_style": "flat",
+  "page_style": "mckinsey"
+}

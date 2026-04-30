@@ -1,0 +1,110 @@
+{
+  "version": "1.0",
+  "description": "PPT图表模板索引",
+  "charts": [
+    {
+      "id": "bar_chart",
+      "name": "柱状图",
+      "description": "用于比较不同类别的数据大小",
+      "tags": ["比较", "柱形", "数据", "排名"],
+      "svg_template": "templates/charts/bar_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "horizontal_bar_chart",
+      "name": "横向柱状图",
+      "description": "用于展示排名或类别较多的比较",
+      "tags": ["排名", "横向", "比较", "数据"],
+      "svg_template": "templates/charts/horizontal_bar_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "pie_chart",
+      "name": "饼图",
+      "description": "用于展示各部分占总体的比例关系",
+      "tags": ["比例", "占比", "百分比", "分布"],
+      "svg_template": "templates/charts/pie_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "donut_chart",
+      "name": "环形图",
+      "description": "饼图的变体，中间可放汇总数据",
+      "tags": ["比例", "占比", "汇总", "分布"],
+      "svg_template": "templates/charts/donut_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "line_chart",
+      "name": "折线图",
+      "description": "用于展示数据随时间变化的趋势",
+      "tags": ["趋势", "时间", "变化", "折线"],
+      "svg_template": "templates/charts/line_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "area_chart",
+      "name": "面积图",
+      "description": "用于展示累积数据的变化趋势",
+      "tags": ["趋势", "累积", "时间", "变化"],
+      "svg_template": "templates/charts/area_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "scatter_plot",
+      "name": "散点图",
+      "description": "用于展示两个变量之间的相关性",
+      "tags": ["相关", "分析", "分布", "关系"],
+      "svg_template": "templates/charts/scatter_plot.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "radar_chart",
+      "name": "雷达图",
+      "description": "用于展示多维度数据的综合对比",
+      "tags": ["多维度", "综合", "对比", "能力评估"],
+      "svg_template": "templates/charts/radar_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "funnel_chart",
+      "name": "漏斗图",
+      "description": "用于展示流程转化或筛选过程",
+      "tags": ["转化", "流程", "筛选", "漏斗"],
+      "svg_template": "templates/charts/funnel_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "gantt_chart",
+      "name": "甘特图",
+      "description": "用于展示项目进度和时间安排",
+      "tags": ["项目", "进度", "时间", "计划"],
+      "svg_template": "templates/charts/gantt_chart.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "table",
+      "name": "表格",
+      "description": "用于展示结构化数据",
+      "tags": ["数据", "表格", "列表", "对比"],
+      "svg_template": "templates/charts/table.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "kpi_card",
+      "name": "KPI指标卡",
+      "description": "用于突出展示关键业绩指标",
+      "tags": ["KPI", "指标", "突出", "关键数据"],
+      "svg_template": "templates/charts/kpi_card.svg",
+      "aspect_ratio": "16:9"
+    },
+    {
+      "id": "process_flow",
+      "name": "流程图",
+      "description": "用于展示业务流程或工作流程",
+      "tags": ["流程", "步骤", "过程", "工作流"],
+      "svg_template": "templates/charts/process_flow.svg",
+      "aspect_ratio": "16:9"
+    }
+  ]
+}

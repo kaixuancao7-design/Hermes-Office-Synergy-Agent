@@ -161,49 +161,77 @@ class TestMessageRouter:
         
         assert result is not None
     
-    @patch('src.gateway.message_router.react_engine')
-    def test_ppt_generate_outline(self, mock_react_engine):
-        """测试PPT大纲生成意图"""
-        mock_react_engine.run.return_value = "PPT大纲生成成功"
-        
+    @patch('src.gateway.message_router.ppt_workflow')
+    def test_ppt_generate_outline(self, mock_ppt_workflow):
+        """测试PPT大纲生成意图 - 使用新workflow"""
+        mock_ctx = MagicMock()
+        mock_ctx.state = "AWAITING_CONFIRMATION"
+        mock_ppt_workflow.is_awaiting_confirmation.return_value = False
+        mock_ppt_workflow.start_workflow.return_value = (
+            "**PPT生成准备中...**\n\n是否使用以上设置生成PPT？\n\n回复 `是` 继续，或回复 `详细` 进行自定义设置。",
+            mock_ctx
+        )
+
         intent = Intent(type="ppt_generate_outline", confidence=0.9, entities={})
         result = self.router._handle_ppt_generation(self.test_user_id, intent, "人工智能发展")
-        
-        assert result == "PPT大纲生成成功"
-        mock_react_engine.run.assert_called_once()
-    
-    @patch('src.gateway.message_router.react_engine')
-    def test_ppt_generate_from_outline(self, mock_react_engine):
-        """测试从大纲生成PPT意图"""
-        mock_react_engine.run.return_value = "PPT从大纲生成成功"
-        
+
+        assert "PPT生成准备中" in result
+        assert "是否使用以上设置生成PPT" in result
+        mock_ppt_workflow.start_workflow.assert_called_once()
+
+    @patch('src.gateway.message_router.ppt_workflow')
+    def test_ppt_generate_from_outline(self, mock_ppt_workflow):
+        """测试从大纲生成PPT意图 - 使用新workflow"""
+        mock_ctx = MagicMock()
+        mock_ctx.state = "AWAITING_CONFIRMATION"
+        mock_ppt_workflow.is_awaiting_confirmation.return_value = False
+        mock_ppt_workflow.start_workflow.return_value = (
+            "**PPT生成准备中...**\n\n是否使用以上设置生成PPT？\n\n回复 `是` 继续，或回复 `详细` 进行自定义设置。",
+            mock_ctx
+        )
+
         intent = Intent(type="ppt_generate_from_outline", confidence=0.9, entities={})
         result = self.router._handle_ppt_generation(self.test_user_id, intent, "大纲内容")
-        
-        assert result == "PPT从大纲生成成功"
-        mock_react_engine.run.assert_called_once()
-    
-    @patch('src.gateway.message_router.react_engine')
-    def test_ppt_generate_from_content(self, mock_react_engine):
-        """测试从内容生成PPT意图"""
-        mock_react_engine.run.return_value = "PPT从内容生成成功"
-        
+
+        assert "PPT生成准备中" in result
+        assert "是否使用以上设置生成PPT" in result
+        mock_ppt_workflow.start_workflow.assert_called_once()
+
+    @patch('src.gateway.message_router.ppt_workflow')
+    def test_ppt_generate_from_content(self, mock_ppt_workflow):
+        """测试从内容生成PPT意图 - 使用新workflow"""
+        mock_ctx = MagicMock()
+        mock_ctx.state = "AWAITING_CONFIRMATION"
+        mock_ppt_workflow.is_awaiting_confirmation.return_value = False
+        mock_ppt_workflow.start_workflow.return_value = (
+            "**PPT生成准备中...**\n\n是否使用以上设置生成PPT？\n\n回复 `是` 继续，或回复 `详细` 进行自定义设置。",
+            mock_ctx
+        )
+
         intent = Intent(type="ppt_generate_from_content", confidence=0.9, entities={})
         result = self.router._handle_ppt_generation(self.test_user_id, intent, "文档内容")
-        
-        assert result == "PPT从内容生成成功"
-        mock_react_engine.run.assert_called_once()
-    
-    @patch('src.gateway.message_router.react_engine')
-    def test_ppt_custom_generate(self, mock_react_engine):
-        """测试自定义PPT生成意图"""
-        mock_react_engine.run.return_value = "自定义PPT生成成功"
-        
+
+        assert "PPT生成准备中" in result
+        assert "是否使用以上设置生成PPT" in result
+        mock_ppt_workflow.start_workflow.assert_called_once()
+
+    @patch('src.gateway.message_router.ppt_workflow')
+    def test_ppt_custom_generate(self, mock_ppt_workflow):
+        """测试自定义PPT生成意图 - 使用新workflow"""
+        mock_ctx = MagicMock()
+        mock_ctx.state = "AWAITING_CONFIRMATION"
+        mock_ppt_workflow.is_awaiting_confirmation.return_value = False
+        mock_ppt_workflow.start_workflow.return_value = (
+            "**PPT生成准备中...**\n\n是否使用以上设置生成PPT？\n\n回复 `是` 继续，或回复 `详细` 进行自定义设置。",
+            mock_ctx
+        )
+
         intent = Intent(type="ppt_custom_generate", confidence=0.9, entities={})
         result = self.router._handle_ppt_generation(self.test_user_id, intent, "自定义需求")
-        
-        assert result == "自定义PPT生成成功"
-        mock_react_engine.run.assert_called_once()
+
+        assert "PPT生成准备中" in result
+        assert "是否使用以上设置生成PPT" in result
+        mock_ppt_workflow.start_workflow.assert_called_once()
     
     def test_should_use_react(self):
         """测试是否应该使用ReAct模式的判断"""

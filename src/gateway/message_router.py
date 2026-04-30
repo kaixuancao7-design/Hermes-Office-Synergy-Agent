@@ -4,6 +4,7 @@ from src.engine.intent_recognition import intent_recognizer
 from src.engine.task_planner import task_planner
 from src.engine.learning_cycle import learning_cycle
 from src.engine.react_engine import react_engine
+from src.engine.ppt_workflow import ppt_workflow, WorkflowState
 from src.data.database import db
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
@@ -533,95 +534,79 @@ class MessageRouter:
         return react_engine.run(user_id, f"根据以下内容创作：\n{context}")
     
     def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
-        """处理PPT生成相关意图 - 降级到ReAct模式以使用工具执行器"""
+        """处理PPT生成相关意图 - 使用PPT工作流"""
         logger.info(f"[PPT_HANDLER] 开始PPT生成: user_id={user_id}, intent={intent.type}")
-        
-        # 获取当前消息的元数据（可能包含文件信息）
+
         metadata = metadata or {}
+
+        if ppt_workflow.is_awaiting_confirmation(user_id):
+            logger.info("[PPT_HANDLER] 检测到等待确认状态，继续工作流")
+            response, ctx = ppt_workflow.continue_workflow(user_id, context)
+            if ctx.state == WorkflowState.COMPLETED:
+                self._clear_ppt_workflow_context(user_id)
+            return response
+
+        document_content = self._extract_document_content(user_id, metadata)
+
+        response, ctx = ppt_workflow.start_workflow(
+            user_id=user_id,
+            intent_type=intent.type,
+            content=context,
+            document_content=document_content
+        )
+
+        if ctx.state == WorkflowState.COMPLETED:
+            self._clear_ppt_workflow_context(user_id)
+
+        return response
+
+    def _extract_document_content(self, user_id: str, metadata: dict) -> str:
+        """提取文档内容"""
         from src.data.database import db
-        
-        # 首先检查当前消息的元数据中是否有文件信息
+
         file_key = metadata.get("file_key")
-        file_name = metadata.get("file_name")
         file_message_id = metadata.get("message_id", "")
-        
-        # 如果当前消息没有文件信息，尝试从最近消息中查找
+
         if not file_key:
-            logger.info("[PPT_HANDLER] 当前消息无文件信息，查找最近消息")
             recent_messages = db.get_recent_messages(user_id, 5)
             for msg in recent_messages:
                 if msg.metadata and msg.role == "user":
                     file_key = msg.metadata.get("file_key")
-                    file_name = msg.metadata.get("file_name")
                     if file_key:
-                        # 使用文件消息的message_id（关键修复）
                         file_message_id = msg.metadata.get("message_id", "") or msg.id or ""
-                        logger.info(f"[PPT_HANDLER] 发现文件上传: file_key={file_key}, file_name={file_name}, message_id={file_message_id}")
                         break
-        
-        # 如果有文件上传，尝试直接读取文件内容
-        document_content = ""
+
         if file_key:
             tool_executor = get_tool_executor()
             if tool_executor:
-                logger.info(f"[PPT_HANDLER] 使用工具执行器读取文件: {file_key}")
                 try:
-                    params = {
+                    result = tool_executor.execute("feishu_file_read", {
                         "file_key": file_key,
                         "message_id": file_message_id,
                         "user_id": user_id
-                    }
-                    result = tool_executor.execute("feishu_file_read", params)
+                    })
                     if result.get("success") and result.get("result", {}).get("content"):
-                        document_content = result["result"]["content"]
-                        logger.info(f"[PPT_HANDLER] 成功读取文件内容: length={len(document_content)}")
-                    else:
-                        logger.warning(f"[PPT_HANDLER] 文件读取失败: {result.get('error')}")
+                        return result["result"]["content"]
                 except Exception as e:
                     logger.error(f"[PPT_HANDLER] 文件读取异常: {str(e)}")
-        
-        # 如果文件读取失败或没有文件，使用历史消息内容作为备选
-        if not document_content:
-            logger.info("[PPT_HANDLER] 文件读取失败或无文件，使用历史消息内容")
-            recent_messages = db.get_recent_messages(user_id, 20)
-            
-            # 过滤出有效内容
-            def has_content(content):
-                if not content or not content.strip():
-                    return False
-                content = content.strip()
-                if content.startswith('{') and content.endswith('}'):
-                    try:
-                        import json
-                        data = json.loads(content)
-                        if 'file_key' in data and 'file_name' in data and len(data) <= 3:
-                            return False
-                    except:
-                        pass
-                return True
-            
-            valid_messages = [m for m in recent_messages if has_content(m.content)]
-            file_contents = [m.content for m in valid_messages if m.role == "assistant"]
-            
-            if not file_contents:
-                file_contents = [m.content for m in valid_messages]
-            
-            document_content = "\n".join(file_contents)
-            logger.info(f"[PPT_HANDLER] 提取文档内容: length={len(document_content)}")
-        
-        # 根据不同的意图类型构建不同的提示词
-        prompt_mapping = {
-            "ppt_generate_outline": f"帮我根据以下内容生成一个PPT大纲：\n{document_content}",
-            "ppt_generate_from_outline": f"根据以下大纲生成PPT：\n{document_content}",
-            "ppt_generate_from_content": f"根据以下内容生成PPT：\n{document_content}",
-            "ppt_custom_generate": f"帮我创建一个PPT，需求：{context}\n\n参考内容：\n{document_content}"
-        }
-        
-        prompt = prompt_mapping.get(intent.type, f"帮我根据以下内容创建一个PPT：\n{document_content}")
-        
-        # PPT生成功能已迁移到工具执行器，通过ReAct模式调用
-        logger.info("[PPT_HANDLER] PPT生成功能已迁移到工具执行器，降级到ReAct模式")
-        return react_engine.run(user_id, prompt)
+
+        recent_messages = db.get_recent_messages(user_id, 20)
+        valid_messages = [
+            m for m in recent_messages
+            if m.content and m.content.strip()
+            and not (m.content.strip().startswith('{') and m.content.strip().endswith('}'))
+        ]
+        file_contents = [m.content for m in valid_messages if m.role == "assistant"]
+        if not file_contents:
+            file_contents = [m.content for m in valid_messages]
+
+        return "\n".join(file_contents)
+
+    def _clear_ppt_workflow_context(self, user_id: str):
+        """清除PPT工作流上下文"""
+        if hasattr(ppt_workflow, '_contexts') and user_id in ppt_workflow._contexts:
+            del ppt_workflow._contexts[user_id]
+            logger.info(f"[PPT_HANDLER] 清除工作流上下文: user_id={user_id}")
     
     def _handle_unknown(self, user_id: str, context: str) -> str:
         logger.info(f"[UNKNOWN_HANDLER] 开始处理未知意图: user_id={user_id}")

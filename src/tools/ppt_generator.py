@@ -25,11 +25,25 @@ class GeneratePPTFromOutlineSchema(ToolSchema):
 
 class PPTGeneratorBase:
     """PPT生成器核心实现 - 基于python-pptx库"""
-    
+
     def __init__(self):
         self.output_dir = "output/ppt"
         import os
         os.makedirs(self.output_dir, exist_ok=True)
+
+    def _parse_color(self, color_str: str) -> RGBColor:
+        """解析颜色字符串为RGBColor"""
+        if isinstance(color_str, RGBColor):
+            return color_str
+        try:
+            if color_str.startswith("#"):
+                color_str = color_str[1:]
+            r = int(color_str[0:2], 16)
+            g = int(color_str[2:4], 16)
+            b = int(color_str[4:6], 16)
+            return RGBColor(r, g, b)
+        except:
+            return RGBColor(0, 51, 102)
     
     def generate_ppt(self, title: str, slides: List[Dict[str, Any]], 
                      output_path: Optional[str] = None) -> str:
@@ -96,22 +110,37 @@ class PPTGeneratorBase:
         slide_type = slide_data.get("type", "content")
         title = slide_data.get("title", "")
         content = slide_data.get("content", "")
-        
+        style_meta = slide_data.get("_style", {})
+
+        color_scheme = style_meta.get("color_scheme", {})
+        font_family = style_meta.get("font_family", {})
+
+        primary_color = self._parse_color(color_scheme.get("primary", "003366"))
+        font_heading = font_family.get("heading", "Microsoft YaHei")
+        font_body = font_family.get("body", "Microsoft YaHei")
+
         if slide_type == "title":
             slide_layout = prs.slide_layouts[0]
             slide = prs.slides.add_slide(slide_layout)
             slide.shapes.title.text = title
             if isinstance(content, str):
                 slide.placeholders[1].text = content
-        
+
+            for shape in slide.shapes:
+                if shape.has_text_frame:
+                    for paragraph in shape.text_frame.paragraphs:
+                        for run in paragraph.runs:
+                            run.font.color.rgb = primary_color
+                            run.font.name = font_heading
+
         elif slide_type == "content":
             slide_layout = prs.slide_layouts[1]
             slide = prs.slides.add_slide(slide_layout)
             slide.shapes.title.text = title
-            
+
             content_placeholder = slide.placeholders[1]
             text_frame = content_placeholder.text_frame
-            
+
             if isinstance(content, list):
                 for i, item in enumerate(content):
                     paragraph = text_frame.add_paragraph()
@@ -120,24 +149,28 @@ class PPTGeneratorBase:
                     paragraph.text = str(item)
             else:
                 text_frame.text = str(content)
-            
+
             for paragraph in text_frame.paragraphs:
                 paragraph.font.size = Pt(18)
+                paragraph.font.name = font_body
         
         elif slide_type == "bullet":
             slide_layout = prs.slide_layouts[1]
             slide = prs.slides.add_slide(slide_layout)
             slide.shapes.title.text = title
-            
+
             content_placeholder = slide.placeholders[1]
             text_frame = content_placeholder.text_frame
-            
+
             if isinstance(content, list):
                 for item in content:
                     paragraph = text_frame.add_paragraph()
                     paragraph.text = str(item)
                     paragraph.level = 0
-        
+
+            for paragraph in text_frame.paragraphs:
+                paragraph.font.name = font_body
+
         elif slide_type == "image":
             slide_layout = prs.slide_layouts[5]
             slide = prs.slides.add_slide(slide_layout)
@@ -162,27 +195,32 @@ class PPTGeneratorBase:
         elif slide_type == "chart":
             slide_layout = prs.slide_layouts[5]
             slide = prs.slides.add_slide(slide_layout)
-            
+
             title_shape = slide.shapes.title
             if title_shape:
                 title_shape.text = title
-            
+                if title_shape.has_text_frame:
+                    for paragraph in title_shape.text_frame.paragraphs:
+                        for run in paragraph.runs:
+                            run.font.color.rgb = primary_color
+                            run.font.name = font_heading
+
             if isinstance(content, list) and len(content) > 0:
                 rows = len(content) + 1
                 cols = len(content[0]) if isinstance(content[0], list) else 2
-                
+
                 left = Inches(1)
                 top = Inches(1.5)
                 width = Inches(8)
                 height = Inches(4)
-                
+
                 table = slide.shapes.add_table(rows, cols, left, top, width, height).table
-                
+
                 header_row = table.rows[0]
                 for i in range(cols):
                     header_row.cells[i].text = f"列{i+1}"
                     header_row.cells[i].fill.solid()
-                    header_row.cells[i].fill.fore_color.rgb = RGBColor(0, 51, 102)
+                    header_row.cells[i].fill.fore_color.rgb = primary_color
                     for paragraph in header_row.cells[i].text_frame.paragraphs:
                         paragraph.font.color.rgb = RGBColor(255, 255, 255)
                 
