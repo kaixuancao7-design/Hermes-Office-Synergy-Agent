@@ -14,6 +14,7 @@ from src.engine.strategist_planner import (
     ConfirmationStatus
 )
 from src.tools.ppt_generator import PPTGeneratorBase
+from src.engine.mcp import mcp_manager, ContextType, ContextScope, ContextState
 
 logger = get_logger("engine.ppt_workflow")
 
@@ -55,6 +56,7 @@ class PPTWorkflow:
         self._generator = PPTGeneratorBase()
         self._quality_gate = QualityGate(strict_mode=False)
         self._planner = StrategistPlanner()
+        self._mcp_context_ids: Dict[str, str] = {}  # user_id -> mcp_context_id
 
     def _get_context(self, user_id: str) -> PPTWorkflowContext:
         """获取或创建用户的工作流上下文"""
@@ -69,6 +71,40 @@ class PPTWorkflow:
         """清除用户的工作流上下文"""
         if user_id in self._contexts:
             del self._contexts[user_id]
+        if user_id in self._mcp_context_ids:
+            del self._mcp_context_ids[user_id]
+
+    def _update_mcp_context(self, user_id: str, ctx: PPTWorkflowContext):
+        """更新MCP上下文状态"""
+        mcp_ctx_id = self._mcp_context_ids.get(user_id)
+        if not mcp_ctx_id:
+            return
+
+        mcp_ctx = mcp_manager.get_context(mcp_ctx_id)
+        if not mcp_ctx:
+            return
+
+        mcp_ctx.set_data({
+            "intent_type": ctx.intent_type,
+            "content": ctx.content,
+            "state": ctx.state.value if hasattr(ctx.state, 'value') else str(ctx.state),
+            "slides_count": len(ctx.slides),
+            "output_path": ctx.output_path,
+            "error_message": ctx.error_message
+        })
+
+        if ctx.state == WorkflowState.COMPLETED:
+            mcp_ctx.update_state(ContextState.COMPLETED)
+        elif ctx.state == WorkflowState.FAILED:
+            mcp_ctx.update_state(ContextState.FAILED)
+        elif ctx.state == WorkflowState.AWAITING_CONFIRMATION:
+            mcp_ctx.update_state(ContextState.PAUSED)
+        elif ctx.state == WorkflowState.PLANNING:
+            mcp_ctx.update_state(ContextState.ACTIVE)
+        elif ctx.state == WorkflowState.QUALITY_CHECKING:
+            mcp_ctx.update_state(ContextState.ACTIVE)
+        else:
+            mcp_ctx.update_state(ContextState.ACTIVE)
 
     def start_workflow(
         self,
@@ -93,6 +129,22 @@ class PPTWorkflow:
         ctx.intent_type = intent_type
         ctx.content = content
         ctx.document_content = document_content
+
+        # 创建MCP上下文
+        mcp_ctx = mcp_manager.create_context(
+            context_type=ContextType.PPT_WORKFLOW,
+            scope=ContextScope.USER,
+            user_id=user_id,
+            initial_data={
+                "intent_type": intent_type,
+                "content": content,
+                "state": ctx.state.value if hasattr(ctx.state, 'value') else str(ctx.state),
+                "slides_count": 0,
+                "output_path": ""
+            }
+        )
+        self._mcp_context_ids[user_id] = mcp_ctx.get_metadata().context_id
+        logger.info(f"[PPT_WORKFLOW] MCP上下文创建: {self._mcp_context_ids[user_id]}")
 
         logger.info(f"[PPT_WORKFLOW] 启动工作流: user_id={user_id}, intent={intent_type}")
 
@@ -211,10 +263,12 @@ class PPTWorkflow:
 
         if user_response.lower() in ["是", "yes", "y", "确认", "继续"]:
             ctx.state = WorkflowState.GENERATING
+            self._update_mcp_context(ctx.user_id, ctx)
             return self._handle_generating(ctx)
 
         if user_response.lower() in ["详细", "custom", "设置"]:
             ctx.state = WorkflowState.AWAITING_CONFIRMATION
+            self._update_mcp_context(ctx.user_id, ctx)
             return self._handle_awaiting_confirmation(ctx)
 
         quick_confirm = self._planner.build_quick_confirmation()
@@ -225,6 +279,7 @@ class PPTWorkflow:
         logger.info(f"[PPT_WORKFLOW] 生成阶段: user_id={ctx.user_id}")
 
         ctx.state = WorkflowState.GENERATING
+        self._update_mcp_context(ctx.user_id, ctx)
 
         if not ctx.slides:
             ctx.slides = self._generate_slides_from_content(ctx)
@@ -250,6 +305,7 @@ class PPTWorkflow:
             logger.error(f"[PPT_WORKFLOW] PPT生成失败: {str(e)}")
             ctx.state = WorkflowState.FAILED
             ctx.error_message = str(e)
+            self._update_mcp_context(ctx.user_id, ctx)
             return f"PPT生成失败: {str(e)}", ctx
 
     def _handle_quality_checking(self, ctx: PPTWorkflowContext) -> Tuple[str, PPTWorkflowContext]:
@@ -263,6 +319,7 @@ class PPTWorkflow:
         if quality_result.passed:
             ctx.quality_result = quality_result
             ctx.state = WorkflowState.COMPLETED
+            self._update_mcp_context(ctx.user_id, ctx)
 
             report = self._quality_gate.format_report(quality_result)
             return f"**PPT生成完成！**\n\n{report}\n\n文件已保存至: `{ctx.output_path}`", ctx
@@ -270,10 +327,12 @@ class PPTWorkflow:
         if quality_result.errors:
             ctx.state = WorkflowState.FAILED
             report = self._quality_gate.format_report(quality_result)
+            self._update_mcp_context(ctx.user_id, ctx)
             return f"**PPT质量检查未通过：**\n\n{report}", ctx
 
         ctx.quality_result = quality_result
         ctx.state = WorkflowState.COMPLETED
+        self._update_mcp_context(ctx.user_id, ctx)
         report = self._quality_gate.format_report(quality_result)
         return f"**PPT生成完成（有警告）：**\n\n{report}\n\n文件已保存至: `{ctx.output_path}`", ctx
 

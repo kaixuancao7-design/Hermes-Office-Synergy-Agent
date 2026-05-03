@@ -201,7 +201,7 @@ def test_context_merge():
     logger.info(f"合并后的ctx2_key: {merged.get('ctx2_key')}")
     logger.info(f"合并后的dict_key: {merged.get('dict_key')}")
     
-    assert merged.get("common_key") == "value1", "合并策略错误"
+    assert merged.get("common_key") == "value2", "合并策略错误：后者覆盖前者"
     assert merged.get("ctx1_key") == "ctx1_value", "合并不完整"
     assert merged.get("ctx2_key") == "ctx2_value", "合并不完整"
     assert merged.get("dict_key") == {"a": 1, "b": 2}, "字典合并错误"

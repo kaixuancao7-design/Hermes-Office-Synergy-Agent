@@ -10,6 +10,7 @@ from src.utils import generate_id, get_timestamp
 from src.data.vector_store import rag_manager
 from src.plugins import get_tool_executor, get_model_router
 from src.logging_config import get_logger
+from src.engine.mcp import mcp_manager, ContextType, ContextScope, ContextState
 
 logger = get_logger("engine")
 
@@ -68,7 +69,7 @@ class ReActOutput(BaseModel):
 
 class ReActEngine:
     """ReAct 推理引擎"""
-    
+
     def __init__(self):
         self.max_steps = 3  # 最大推理步骤
         self.llm = self._init_llm()
@@ -76,7 +77,8 @@ class ReActEngine:
         self.system_prompt = self._get_system_prompt()
         self.current_user_id = None  # 当前用户ID
         self._recent_actions = []  # 最近执行的动作列表（用于避免重复调用）
-        
+        self._mcp_context_id = None  # MCP上下文ID，用于追踪
+
         # 备用工具映射（当主工具失败时使用）
         self.backup_tools = {
             "document_search": ["memory_search"],
@@ -91,7 +93,7 @@ class ReActEngine:
             model_router = get_model_router()
             if model_router:
                 return model_router.select_model("react", "complex")
-            
+
             # 降级到传统配置
             if settings.OLLAMA_HOST:
                 return ChatOllama(
@@ -111,6 +113,32 @@ class ReActEngine:
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
             raise
+
+    def _update_mcp_context(self, state: ReActState, observation_success: Optional[bool] = None):
+        """更新MCP上下文状态"""
+        if not self._mcp_context_id:
+            return
+
+        mcp_ctx = mcp_manager.get_context(self._mcp_context_id)
+        if not mcp_ctx:
+            return
+
+        mcp_ctx.set_data({
+            "user_query": state.user_query,
+            "current_step": state.current_step,
+            "is_completed": state.is_completed,
+            "thoughts_count": len(state.thoughts),
+            "actions_count": len(state.actions),
+            "observations_count": len(state.observations),
+            "final_response": state.final_response,
+            "last_action_success": observation_success
+        })
+
+        if state.is_completed:
+            mcp_ctx.update_state(ContextState.COMPLETED)
+            logger.info(f"[REACT_ENGINE] MCP上下文完成: {self._mcp_context_id}")
+        else:
+            mcp_ctx.update_state(ContextState.ACTIVE)
     
     def _get_system_prompt(self):
         """获取系统提示词（从文件读取）"""
@@ -1025,16 +1053,36 @@ class ReActEngine:
         logger.info(f"[REACT_ENGINE] ========== ReAct引擎启动 ==========")
         logger.info(f"[REACT_ENGINE] trace_id={trace_id}, user_id={user_id}, query={user_query[:80]}...")
         logger.info(f"[REACT_ENGINE] max_steps={max_steps}, metadata_keys={list(metadata.keys()) if metadata else []}")
-        
+
         # 设置当前用户ID（供 _execute_action 使用）
         self.current_user_id = user_id
-        
+
         # 存储消息元数据
         self.current_metadata = metadata or {}
-        
+
         # 清空最近动作列表（开始新对话）
         self._recent_actions = []
-        
+
+        # 创建MCP上下文进行追踪
+        mcp_ctx = mcp_manager.create_context(
+            context_type=ContextType.REACT,
+            scope=ContextScope.USER,
+            user_id=user_id,
+            session_id=metadata.get("session_id") if metadata else None,
+            initial_data={
+                "user_query": user_query,
+                "trace_id": trace_id,
+                "max_steps": max_steps,
+                "current_step": 0,
+                "is_completed": False,
+                "thoughts_count": 0,
+                "actions_count": 0,
+                "observations_count": 0
+            }
+        )
+        self._mcp_context_id = mcp_ctx.get_metadata().context_id
+        logger.info(f"[REACT_ENGINE] MCP上下文创建: {self._mcp_context_id}")
+
         # 初始化状态
         state = ReActState(
             user_id=user_id,
@@ -1146,9 +1194,12 @@ class ReActEngine:
                 
                 # 更新步骤计数
                 state.current_step += 1
-                
+
                 logger.info(f"[REACT_ENGINE] 步骤完成: step={state.current_step}, action={action_type}, success={observation.success}")
-                
+
+                # 更新MCP上下文
+                self._update_mcp_context(state, observation.success)
+
                 # 检查是否完成
                 if self._is_completed(output.action, state):
                     state.is_completed = True
@@ -1191,15 +1242,19 @@ class ReActEngine:
                         logger.error(f"Output action at failure: {output.action}")
                 state.is_completed = True
                 state.final_response = f"处理过程中发生错误: {str(e)}"
-        
+                self._update_mcp_context(state, False)
+
         # 如果未完成，强制生成总结
         if not state.final_response:
             state.final_response = self._generate_final_response(state)
-        
+
         logger.info(f"[REACT_ENGINE] ========== ReAct引擎完成 ==========")
         logger.info(f"[REACT_ENGINE] 完成状态: completed={state.is_completed}, steps={state.current_step}, response_length={len(state.final_response)}")
         logger.info(f"[REACT_ENGINE] 最终响应预览: {state.final_response[:100]}...")
-        
+
+        # 最终更新MCP上下文
+        self._update_mcp_context(state, state.is_completed)
+
         return state.final_response
 
 
