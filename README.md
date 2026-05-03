@@ -25,6 +25,8 @@
 - **细粒度意图识别**：支持PPT相关意图的精确区分（生成大纲、从大纲生成PPT、从内容生成PPT、自定义生成），实现意图到工具的精准映射
 - **上下文感知意图分析**：支持指代性词汇解析（如"这个文件"、"那个文档"），结合上下文理解用户真实需求
 - **文档分析功能**：支持飞书文件（包括PDF、DOCX等格式）的内容提取和智能分析
+- **MCP（Model Context Protocol）**：标准的上下文管理协议，提供统一的上下文创建、更新、查询、序列化接口
+- **RAG增强**：高级检索系统，支持BM25关键词搜索、向量语义搜索、重排序、查询扩展、混合检索策略
 
 ## 架构设计
 
@@ -42,9 +44,12 @@
 │  IntentRecognition / TaskPlanner / MemoryManager / LearningCycle         │
 │  ReActEngine / 自我进化闭环 / 需求解析器 / IM触发器 / ContextualAnalyzer│
 │  PPTWorkflow / TemplateMatcher / SpecLock / QualityGate / Strategist   │
+│  MCPManager / ContextRegistry / MCPAdapter (Model Context Protocol)     │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  数据与记忆层 (Data & Memory)                                            │
 │  SQLite数据库 / MemoryBase (Chroma/Milvus/FAISS) / 程序性记忆             │
+│  VectorStore / BM25Index / AdvancedRetrieval / Reranker (RAG增强)        │
+│  DocumentLoader / VersionManager / MultimodalProcessor                  │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  基础设施层 (Infrastructure)                                             │
 │  ModelRouterBase / 安全沙箱 / 配置管理 / 权限服务 / 审计服务               │
@@ -666,7 +671,13 @@ POST /api/v1/ppt/generate
 │   ├── config.py                     # 配置管理
 │   ├── data/
 │   │   ├── database.py               # SQLite数据库
-│   │   └── vector_store.py           # 向量库（文档搜索核心）
+│   │   ├── vector_store.py           # 向量库（文档搜索核心）
+│   │   ├── document_loader.py        # 文档加载与预处理
+│   │   ├── version_manager.py        # 文档版本管理
+│   │   ├── multimodal_processor.py  # 多模态处理（图片/音频/视频）
+│   │   ├── advanced_retrieval.py     # 高级检索策略
+│   │   ├── bm25_index.py            # BM25索引实现
+│   │   └── reranker.py              # 重排序器实现
 │   ├── engine/
 │   │   ├── intent_recognition.py     # 意图识别（细粒度分类、上下文感知分析）
 │   │   ├── learning_cycle.py         # 学习循环（三闸门验证）
@@ -674,7 +685,9 @@ POST /api/v1/ppt/generate
 │   │   ├── react_engine.py           # ReAct推理引擎
 │   │   ├── task_planner.py           # 任务规划
 │   │   ├── demand_parser.py          # 需求解析器（PPT需求提取）
-│   │   └── im_trigger.py             # IM触发器（多模态触发）
+│   │   ├── im_trigger.py             # IM触发器（多模态触发）
+│   │   ├── ppt_workflow.py          # PPT工作流（集成MCP）
+│   │   └── mcp.py                   # MCP（Model Context Protocol）实现
 │   ├── gateway/
 │   │   ├── feishu_websocket.py       # 飞书WebSocket服务
 │   │   ├── im_adapter.py             # IM适配器管理
@@ -719,7 +732,9 @@ POST /api/v1/ppt/generate
 │   ├── test_agent_self_verification.py # Agent自验证用例库
 │   ├── test_ppt_generator.py         # PPT生成测试
 │   ├── test_demand_parser.py         # 需求解析测试
-│   └── test_react_engine_recovery.py # ReAct引擎恢复测试
+│   ├── test_react_engine_recovery.py # ReAct引擎恢复测试
+│   └── test_mcp.py                   # MCP测试
+├── verify_mcp.py                     # MCP验证脚本
 ├── logs/                             # 日志目录（按模块拆分）
 │   ├── api.log
 │   ├── model.log
@@ -953,6 +968,110 @@ PPT生成核心功能：
 
 ---
 
+## Model Context Protocol (MCP)
+
+### 核心概念
+
+MCP 是标准的上下文管理协议，提供统一的上下文创建、更新、查询、序列化接口。
+
+| 组件 | 说明 |
+|------|------|
+| `BaseMCPContext` | 基础上下文类，支持序列化/反序列化 |
+| `MCPManager` | 上下文管理器，提供创建、查询、删除等操作 |
+| `ContextRegistry` | 外部上下文注册表，统一管理不同类型上下文 |
+| `ContextScope` | 作用域：GLOBAL、USER、SESSION、REQUEST |
+| `ContextType` | 类型：REACT、PPT_WORKFLOW、IM、TOOL、MEMORY、CUSTOM |
+| `ContextState` | 状态：ACTIVE、PAUSED、COMPLETED、FAILED、ARCHIVED |
+
+### 核心功能
+
+```python
+from src.engine.mcp import mcp_manager, ContextType, ContextScope, ContextState
+
+# 创建上下文
+context = mcp_manager.create_context(
+    context_type=ContextType.REACT,
+    scope=ContextScope.USER,
+    scope_id="user123",
+    data={"query": "用户查询"}
+)
+
+# 更新上下文数据
+context.set_data({"step": 1, "status": "in_progress"})
+
+# 更新状态
+context.update_state(ContextState.COMPLETED)
+
+# 查询上下文
+context = mcp_manager.get_context("context_id")
+
+# 按用户查询
+contexts = mcp_manager.get_contexts_by_user("user123")
+
+# 序列化/反序列化
+serialized = context.serialize()
+restored = BaseMCPContext.deserialize(serialized)
+```
+
+### MCP 集成模块
+
+| 模块 | 集成位置 |
+|------|----------|
+| ReAct 引擎 | `src/engine/react_engine.py` - `_update_mcp_context()` |
+| PPT 工作流 | `src/engine/ppt_workflow.py` - `_update_mcp_context()` |
+
+---
+
+## RAG 增强系统
+
+### 概述
+
+高级检索系统，支持混合检索策略、重排序、查询扩展等功能。
+
+### 核心组件
+
+| 组件 | 说明 |
+|------|------|
+| `VectorStore` | 向量存储（基于 Chroma + LangChain） |
+| `BM25Index` | BM25 关键词索引（SQLite 持久化） |
+| `AdvancedRetrieval` | 高级检索管道 |
+| `Reranker` | 重排序器（Linear、BM25、CrossEncoder） |
+| `DocumentLoader` | 文档加载与预处理 |
+| `VersionManager` | 文档版本管理 |
+
+### 检索策略
+
+| 策略 | 说明 |
+|------|------|
+| 向量相似度搜索 | 基于语义相似度的检索 |
+| BM25 关键词搜索 | 基于关键词匹配的检索 |
+| 混合检索 | 向量 + BM25 加权融合 |
+| 重排序 | CrossEncoder 等模型重新排序结果 |
+| 查询扩展 | 扩展查询词提升召回率 |
+
+### 使用示例
+
+```python
+from src.data.vector_store import vector_store
+
+# 添加文档
+await vector_store.add_document(
+    user_id="user123",
+    content="文档内容",
+    metadata={"source": "web", "title": "文档标题"}
+)
+
+# 搜索（可启用高级检索）
+results = vector_store.search(
+    query="搜索关键词",
+    user_id="user123",
+    k=5,
+    use_advanced=True
+)
+```
+
+---
+
 ## 日志系统
 
 日志按模块和级别拆分：
@@ -979,6 +1098,10 @@ python -m pytest tests/ -v
 # 运行特定测试文件
 python -m pytest tests/test_ppt_generator.py -v
 python -m pytest tests/test_react_engine_recovery.py -v
+python -m pytest tests/test_mcp.py -v
+
+# 验证 MCP 功能
+python verify_mcp.py
 ```
 
 ## 常见问题
@@ -1076,3 +1199,53 @@ MIT License
 3. **错误处理增强**：改进了工具调用失败时的错误处理
    - 添加了更详细的错误日志
    - 增强了异常捕获和恢复机制
+
+---
+
+### v1.0.2 (2026-05-03)
+
+**新功能：**
+
+1. **MCP (Model Context Protocol)**：实现了标准的上下文管理协议
+   - 核心组件：`BaseMCPContext`、`MCPManager`、`ContextRegistry`、`MCPAdapter`
+   - 支持多种上下文类型：REACT、PPT_WORKFLOW、IM、TOOL、MEMORY、CUSTOM
+   - 支持多种作用域：GLOBAL、USER、SESSION、REQUEST
+   - 完整的序列化/反序列化支持
+   - 完善的错误处理机制
+
+2. **RAG 增强系统**：实现了高级检索系统
+   - BM25 关键词索引（SQLite 持久化）
+   - 高级检索管道（过滤器 + 重排序）
+   - 多种重排序策略：Linear、BM25、CrossEncoder、Hybrid
+   - 查询扩展支持
+   - 文档加载、版本管理、多模态处理
+
+3. **MCP 集成**：在现有模块中集成 MCP
+   - ReAct 引擎：完整的 MCP 上下文管理和状态更新
+   - PPT 工作流：完整的 MCP 上下文管理和状态更新
+
+**Bug修复：**
+
+1. **MCP 状态映射不完整**：修复了 PPT 工作流状态到 MCP 状态的映射问题
+   - 添加了所有 WorkflowState 的显式映射
+   - 优化了代码结构，减少重复
+   - 位置：`src/engine/ppt_workflow.py`
+
+2. **测试注释不准确**：修正了 RAG 测试注释的描述
+   - 位置：`tests/test_mcp.py`
+
+**功能改进：**
+
+1. **测试覆盖**：新增 MCP 测试用例
+   - 基础上下文操作测试
+   - 序列化/反序列化测试
+   - 管理器操作测试
+   - 合并和克隆测试
+
+2. **验证脚本**：新增 MCP 验证脚本
+   - `verify_mcp.py` 提供完整的功能演示
+
+3. **错误处理**：增强 MCP 反序列化错误处理
+   - JSON 解析错误捕获
+   - 元数据缺失错误捕获
+   - 无效类型/状态回退机制
