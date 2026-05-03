@@ -5,6 +5,19 @@ from .demand_parser import DemandParser, PPTDemand, demand_parser
 from .im_trigger import IMTrigger, TriggerResult, im_trigger
 from .task_planner import TaskPlanner, task_planner
 from .intent_recognition import IntentRecognizer, intent_recognizer
+from .mcp import (
+    mcp_manager,
+    context_registry,
+    MCPContext,
+    BaseMCPContext,
+    MCPManager,
+    MCPAdapter,
+    ContextRegistry,
+    ContextScope,
+    ContextType,
+    ContextState,
+    ContextMetadata
+)
 
 __all__ = [
     'ReActEngine',
@@ -17,5 +30,16 @@ __all__ = [
     'TaskPlanner',
     'task_planner',
     'IntentRecognizer',
-    'intent_recognizer'
+    'intent_recognizer',
+    'mcp_manager',
+    'context_registry',
+    'MCPContext',
+    'BaseMCPContext',
+    'MCPManager',
+    'MCPAdapter',
+    'ContextRegistry',
+    'ContextScope',
+    'ContextType',
+    'ContextState',
+    'ContextMetadata'
 ]
