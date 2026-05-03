@@ -99,9 +99,13 @@ class PPTWorkflow:
             mcp_ctx.update_state(ContextState.FAILED)
         elif ctx.state == WorkflowState.AWAITING_CONFIRMATION:
             mcp_ctx.update_state(ContextState.PAUSED)
+        elif ctx.state == WorkflowState.IDLE:
+            mcp_ctx.update_state(ContextState.ACTIVE)
         elif ctx.state == WorkflowState.PLANNING:
             mcp_ctx.update_state(ContextState.ACTIVE)
         elif ctx.state == WorkflowState.QUALITY_CHECKING:
+            mcp_ctx.update_state(ContextState.ACTIVE)
+        elif ctx.state == WorkflowState.GENERATING:
             mcp_ctx.update_state(ContextState.ACTIVE)
         else:
             mcp_ctx.update_state(ContextState.ACTIVE)
