@@ -343,8 +343,8 @@ class FeishuAdapter(IMAdapterBase):
                         )
                         logger.info(f"文件内容已存储到向量数据库: {file_name}")
                         
-                        # 将文件内容添加到消息文本中，便于后续处理
-                        text = f"文件：{file_name}\n\n{file_content[:2000]}..."
+                        # 将文件内容添加到消息文本中，便于后续处理（保留完整内容）
+                        text = f"文件：{file_name}\n\n{file_content}"
                     except Exception as e:
                         logger.error(f"存储文件内容失败: {str(e)}")
                 else:

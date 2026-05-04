@@ -635,8 +635,8 @@ class FeishuFileReadTool:
             return {"success": False, "error": "参数错误：file_v3格式文件需要message_id参数"}
         
         try:
-            # 首先尝试从本地向量数据库获取文件内容（文件上传时已存储，支持用户隔离）
-            file_content = self._get_content_from_vector_db(file_key, user_id)
+            # 首先从本地存储（SQLite）获取文件内容（快速、直接返回完整内容）
+            file_content = self._get_content_from_storage(file_key, user_id)
             
             # 如果本地没有找到，再从飞书下载
             if not file_content:
@@ -912,10 +912,10 @@ class FeishuFileReadTool:
                 logger.debug(f"解析pptx文件：file_name={file_name}")
                 return self._parse_pptx(content, file_name)
             
-            # pdf 文件解析
+            # pdf 文件解析（默认使用 PyMuPDF，更可靠）
             elif ext == '.pdf':
                 logger.debug(f"解析PDF文件：file_name={file_name}")
-                return self._parse_pdf(content, file_name)
+                return self._parse_pdf_with_pymupdf(content, file_name)
             
             # rtf 文件解析
             elif ext == '.rtf':
@@ -1033,30 +1033,85 @@ class FeishuFileReadTool:
             
             logger.info(f"📄 开始解析PDF文件：file_name={file_name}, content_length={len(content)}")
             
+            all_text_parts = []
+            total_chars = 0
+            
             with pdfplumber.open(BytesIO(content)) as pdf:
-                full_text = []
                 page_count = len(pdf.pages)
                 logger.info(f"📄 PDF页数: {page_count}")
                 
                 for i, page in enumerate(pdf.pages):
                     text = page.extract_text()
                     if text:
-                        full_text.append(text)
+                        all_text_parts.append(text)
+                        total_chars += len(text)
                         logger.debug(f"📄 第 {i+1} 页提取文本长度: {len(text)}")
             
-            parsed_content = '\n\n'.join(full_text)
-            logger.info(f"✅ PDF解析完成：file_name={file_name}, pages={page_count}, parsed_length={len(parsed_content)}")
+            parsed_content = '\n\n'.join(all_text_parts)
+            logger.info(f"✅ PDF解析完成：file_name={file_name}, pages={page_count}, parsed_length={len(parsed_content)}, total_chars={total_chars}")
+            
+            if page_count > 0:
+                chars_per_page = total_chars / page_count
+                if chars_per_page < 3000:  # 每页平均少于3000字符，可能解析不完整
+                    logger.warning(f"⚠️ PDF解析字符数异常（{chars_per_page:.1f}字符/页），尝试使用PyMuPDF")
+                    return self._parse_pdf_with_pymupdf(content, file_name)
             
             if not parsed_content:
-                logger.warning(f"⚠️ PDF解析结果为空，可能是扫描件或加密PDF")
-                return f"PDF文件内容为空或无法提取文本（可能是扫描件或加密PDF）\n\n文件名: {file_name}\n文件大小: {len(content)} bytes"
+                logger.warning(f"⚠️ PDF解析结果为空，可能是扫描件或加密PDF，尝试使用PyMuPDF")
+                return self._parse_pdf_with_pymupdf(content, file_name)
             
             return parsed_content
             
         except Exception as e:
-            error_msg = f"无法解析 pdf 文件: {str(e)}\n\n文件名: {file_name}"
-            logger.error(f"解析 pdf 文件失败：file_name={file_name}, 错误详情: {str(e)}", exc_info=True)
-            return error_msg
+            logger.error(f"pdfplumber解析失败，尝试PyMuPDF: {str(e)}")
+            return self._parse_pdf_with_pymupdf(content, file_name)
+    
+    def _parse_pdf_with_pymupdf(self, content: bytes, file_name: str = "") -> str:
+        """使用PyMuPDF解析PDF（备选方案）"""
+        try:
+            import fitz
+            import tempfile
+            import os
+            
+            logger.info(f"📄 使用PyMuPDF解析PDF：file_name={file_name}")
+            
+            # PyMuPDF 需要文件路径，不能直接用 BytesIO
+            # 创建临时文件
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+            
+            try:
+                doc = fitz.open(tmp_path)
+                page_count = len(doc)
+                logger.info(f"📄 PyMuPDF PDF页数: {page_count}")
+                
+                text_parts = []
+                for i, page in enumerate(doc):
+                    text = page.get_text()
+                    if text:
+                        text_parts.append(text)
+                        logger.debug(f"📄 PyMuPDF 第 {i+1} 页提取文本长度: {len(text)}")
+                
+                parsed_content = '\n\n'.join(text_parts)
+                logger.info(f"✅ PyMuPDF解析完成：file_name={file_name}, pages={page_count}, parsed_length={len(parsed_content)}")
+                doc.close()
+                
+                if not parsed_content:
+                    return f"PDF文件内容为空或无法提取文本（可能是扫描件或加密PDF）\n\n文件名: {file_name}\n文件大小: {len(content)} bytes"
+                
+                return parsed_content
+            finally:
+                # 删除临时文件
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+            
+        except ImportError:
+            logger.warning(f"PyMuPDF未安装，无法使用备选解析方案")
+            return f"PDF解析失败（pdfplumber解析异常，且PyMuPDF未安装）\n\n文件名: {file_name}\n文件大小: {len(content)} bytes"
+        except Exception as e:
+            logger.error(f"PyMuPDF解析失败: {str(e)}")
+            return f"PDF解析失败\n\n文件名: {file_name}\n错误: {str(e)}"
     
     def _parse_rtf(self, content: bytes, file_name: str = "") -> str:
         """解析 rtf 文件内容"""
@@ -1219,14 +1274,19 @@ class FeishuFileReadTool:
             if current_chunk:
                 merged_chunks.append(current_chunk)
             
-            # 策略4: 确保每个chunk至少有一定长度（至少50字符）
+            # 策略4: 确保每个chunk至少有一定长度（至少20字符，避免学术论文中的引用标记被过滤）
             result_chunks = []
             for chunk in merged_chunks:
-                if len(chunk) >= 50:
+                if len(chunk) >= 20:
                     result_chunks.append(chunk)
                 elif result_chunks:
                     # 将过小的chunk合并到前一个
                     result_chunks[-1] += chunk
+            
+            # 如果所有chunk都被过滤，说明内容本身就是短片段，直接返回原始内容
+            if not result_chunks and content.strip():
+                logger.warning(f"RAG拆分后所有chunk都小于20字符，使用原始内容作为单个chunk")
+                return [content.strip()]
             
             logger.debug(f"RAG拆分完成: 原始内容 {len(content)} 字符, 生成 {len(result_chunks)} 个chunk")
             
@@ -1242,13 +1302,18 @@ class FeishuFileReadTool:
             )
             return simple_splitter.split_text(content)
     
-    def _get_content_from_vector_db(self, file_key: str, user_id: str = None) -> Optional[str]:
+    def _get_content_from_storage(self, file_key: str, user_id: str = None) -> Optional[str]:
         """
-        从向量数据库中获取文件内容（支持用户隔离）
+        从存储中获取文件内容（支持用户隔离）
         
-        读取策略:
-        1. 先从SQLite读取完整内容（保持向后兼容）
-        2. 如果SQLite没有，从ChromaDB读取拆分的chunks并合并
+        读取策略（RAG职责分离）:
+        1. 先从SQLite读取完整内容（快速、直接返回完整内容）
+        2. 如果SQLite没有，从飞书API下载
+        3. 注意：不再使用向量库 similarity_search，避免 chunk 拼接不完整问题
+        
+        RAG 向量库的正确用法:
+        - 文件上传时：存入向量库（用于语义检索）
+        - 用户提问时：使用 search() 进行语义检索（而非文件内容重建）
         
         Args:
             file_key: 文件标识
@@ -1259,56 +1324,15 @@ class FeishuFileReadTool:
         """
         try:
             from src.data.database import db
-            from src.data.vector_store import vector_store
             
-            # 策略1: 先从SQLite读取（保持向后兼容）
             memories = db.get_memories_by_tag(file_key, user_id)
             
             if memories:
-                # 返回最新的内容
                 memories.sort(key=lambda m: m.timestamp, reverse=True)
                 logger.info(f"✅ 从SQLite获取文件内容成功: file_key={file_key}, user_id={user_id}")
                 return memories[0].content
             
-            # 策略2: 如果SQLite没有，从ChromaDB读取拆分的chunks
-            try:
-                results = vector_store.search(
-                    query="",  # 空查询，使用filter精确匹配
-                    k=100,  # 获取所有相关chunks
-                    filter={"file_key": file_key}
-                )
-                
-                if results:
-                    # 按chunk_index排序并合并
-                    chunks = sorted(
-                        [(r['metadata'].get('chunk_index', 0), r['content']) 
-                        for r in results 
-                        if 'chunk_index' in r.get('metadata', {})],
-                        key=lambda x: x[0]
-                    )
-                    
-                    # 合并所有chunks
-                    content = ''.join([chunk[1] for chunk in chunks])
-                    logger.info(f"✅ 从ChromaDB获取文件内容成功: file_key={file_key}, 合并了 {len(chunks)} 个chunks")
-                    return content
-                else:
-                    # 尝试不带chunk_index的旧格式
-                    results = vector_store.search(
-                        query="",
-                        k=10,
-                        filter={"file_key": file_key}
-                    )
-                    
-                    if results:
-                        # 返回第一个匹配的内容
-                        content = results[0].get('content', '')
-                        logger.info(f"✅ 从ChromaDB获取文件内容成功（旧格式）: file_key={file_key}")
-                        return content
-            
-            except Exception as chroma_error:
-                logger.warning(f"⚠️ 从ChromaDB读取失败: {str(chroma_error)}")
-            
-            logger.info(f"ℹ️ 未找到文件: file_key={file_key}, user_id={user_id}")
+            logger.info(f"ℹ️ 未在存储中找到文件: file_key={file_key}, user_id={user_id}")
             return None
             
         except Exception as e:

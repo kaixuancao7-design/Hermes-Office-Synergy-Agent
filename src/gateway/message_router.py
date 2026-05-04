@@ -223,33 +223,35 @@ class MessageRouter:
         return react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
     
     def _get_recent_file_content(self, user_id: str) -> str:
-        """获取最近上传的文件内容"""
-        from src.data.vector_store import rag_manager
-        
+        """获取最近上传的文件内容（优先从SQLite获取完整内容）"""
         try:
-            # 搜索最近添加的文档（基于时间戳或元数据）
-            # 使用特殊查询词搜索最近上传的文件
-            results = rag_manager.query("__recent_upload__", k=3)
-            
-            if results:
-                # 按时间排序，获取最新的
-                sorted_results = sorted(results, 
-                                      key=lambda x: x.get("metadata", {}).get("timestamp", 0),
-                                      reverse=True)
-                # 合并内容
-                contents = []
-                for result in sorted_results[:2]:  # 最多取2个最近的文件
-                    content = result.get("content", "")
-                    if content and len(content) > 50:  # 确保是有效内容
-                        contents.append(content)
-                
-                if contents:
-                    return "\n\n---\n\n".join(contents)
+            # 首先从最近消息中查找文件上传记录
+            recent_messages = db.get_recent_messages(user_id, 10)
+            for msg in recent_messages:
+                if msg.metadata and msg.role == "user":
+                    file_key = msg.metadata.get("file_key")
+                    if file_key:
+                        # 使用工具执行器从SQLite读取完整文件内容
+                        tool_executor = get_tool_executor()
+                        if tool_executor:
+                            try:
+                                params = {
+                                    "file_key": file_key,
+                                    "message_id": msg.metadata.get("message_id", ""),
+                                    "user_id": user_id
+                                }
+                                result = tool_executor.execute("feishu_file_read", params)
+                                if result.get("success") and result.get("result", {}).get("content"):
+                                    content = result["result"]["content"]
+                                    logger.info(f"[SUMMARIZE] 从SQLite获取文件内容: length={len(content)}")
+                                    return content
+                            except Exception as e:
+                                logger.error(f"[SUMMARIZE] 读取文件内容失败: {str(e)}")
         
         except Exception as e:
             logger.error(f"获取最近文件内容失败: {str(e)}")
         
-        # 如果向量库中没有找到，尝试从最近消息中提取文件内容
+        # 如果SQLite中没有找到，尝试从消息中提取
         return self._extract_file_content_from_messages(user_id)
     
     def _extract_file_content_from_messages(self, user_id: str) -> str:
@@ -412,6 +414,12 @@ class MessageRouter:
                     if result.get("success") and result.get("result", {}).get("content"):
                         document_content = result["result"]["content"]
                         logger.info(f"[DOC_HANDLER] 成功读取文件内容: length={len(document_content)}")
+                        # 添加诊断日志
+                        if document_content:
+                            first_100 = document_content[:100].replace('\n', ' ')
+                            last_100 = document_content[-100:].replace('\n', ' ')
+                            logger.info(f"[DOC_HANDLER] 内容首100字符: {first_100}...")
+                            logger.info(f"[DOC_HANDLER] 内容尾100字符: ...{last_100}")
                     else:
                         logger.warning(f"[DOC_HANDLER] 文件读取失败: {result.get('error')}")
                 except Exception as e:
@@ -463,6 +471,12 @@ class MessageRouter:
             return react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
         
         logger.info(f"[DOC_HANDLER] 调用文档分析模型")
+        # 添加诊断日志：确认传递给模型的内容完整性
+        if document_content:
+            logger.info(f"[DOC_HANDLER] 传递给模型的内容长度: {len(document_content)}")
+            logger.info(f"[DOC_HANDLER] 内容开头: {document_content[:150].replace('\\n', ' ')}...")
+            logger.info(f"[DOC_HANDLER] 内容结尾: ...{document_content[-150:].replace('\\n', ' ')}")
+        
         prompt = f"""请分析并总结以下文档内容：
 
 {document_content}
