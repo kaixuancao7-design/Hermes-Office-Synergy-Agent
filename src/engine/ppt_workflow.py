@@ -24,6 +24,8 @@ class WorkflowState(Enum):
     IDLE = "idle"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
     PLANNING = "planning"
+    OUTLINE_BUILDING = "outline_building"
+    OUTLINE_CONFIRMING = "outline_confirming"
     GENERATING = "generating"
     QUALITY_CHECKING = "quality_checking"
     COMPLETED = "completed"
@@ -42,6 +44,7 @@ class PPTWorkflowContext:
     design_spec: Optional[DesignSpec] = None
     spec_lock: Optional[SpecLock] = None
     slides: List[Dict[str, Any]] = field(default_factory=list)
+    outline: List[Dict[str, Any]] = field(default_factory=list)
     output_path: str = ""
     quality_result: Any = None
     state: WorkflowState = WorkflowState.IDLE
@@ -168,6 +171,9 @@ class PPTWorkflow:
         if ctx.state == WorkflowState.AWAITING_CONFIRMATION:
             return self._handle_confirmation_response(ctx, user_response)
 
+        if ctx.state == WorkflowState.OUTLINE_CONFIRMING:
+            return self._handle_outline_confirmation_response(ctx, user_response)
+
         logger.warning(f"[PPT_WORKFLOW] 无需继续工作流: state={ctx.state}")
         return "工作流已完成或无需处理", ctx
 
@@ -177,6 +183,8 @@ class PPTWorkflow:
             WorkflowState.IDLE: self._handle_idle,
             WorkflowState.AWAITING_CONFIRMATION: self._handle_awaiting_confirmation,
             WorkflowState.PLANNING: self._handle_planning,
+            WorkflowState.OUTLINE_BUILDING: self._handle_outline_building,
+            WorkflowState.OUTLINE_CONFIRMING: self._handle_outline_confirming,
             WorkflowState.GENERATING: self._handle_generating,
             WorkflowState.QUALITY_CHECKING: self._handle_quality_checking,
         }
@@ -217,6 +225,8 @@ class PPTWorkflow:
                 )
 
         response = self._build_planning_response(ctx)
+        ctx.state = WorkflowState.AWAITING_CONFIRMATION
+        self._update_mcp_context(ctx.user_id, ctx)
         return response, ctx
 
     def _build_planning_response(self, ctx: PPTWorkflowContext) -> str:
@@ -260,9 +270,9 @@ class PPTWorkflow:
         logger.info(f"[PPT_WORKFLOW] 处理确认响应: {user_response}")
 
         if user_response.lower() in ["是", "yes", "y", "确认", "继续"]:
-            ctx.state = WorkflowState.GENERATING
+            ctx.state = WorkflowState.OUTLINE_BUILDING
             self._update_mcp_context(ctx.user_id, ctx)
-            return self._handle_generating(ctx)
+            return self._handle_outline_building(ctx)
 
         if user_response.lower() in ["详细", "custom", "设置"]:
             ctx.state = WorkflowState.AWAITING_CONFIRMATION
@@ -272,6 +282,146 @@ class PPTWorkflow:
         quick_confirm = self._planner.build_quick_confirmation()
         return quick_confirm, ctx
 
+    def _handle_outline_building(self, ctx: PPTWorkflowContext) -> Tuple[str, PPTWorkflowContext]:
+        """处理大纲构建阶段"""
+        logger.info(f"[PPT_WORKFLOW] 大纲构建阶段: user_id={ctx.user_id}")
+
+        ctx.outline = self._generate_outline_from_content(ctx)
+
+        ctx.state = WorkflowState.OUTLINE_CONFIRMING
+        self._update_mcp_context(ctx.user_id, ctx)
+
+        response = self._build_outline_response(ctx)
+        return response, ctx
+
+    def _build_outline_response(self, ctx: PPTWorkflowContext) -> str:
+        """构建大纲确认响应"""
+        lines = ["**PPT大纲预览：**\n"]
+
+        for i, section in enumerate(ctx.outline, 1):
+            title = section.get("title", "")
+            content = section.get("content", "")
+            lines.append(f"**{i}. {title}**")
+            if content:
+                if isinstance(content, list):
+                    for item in content[:3]:
+                        lines.append(f"   - {item}")
+                else:
+                    lines.append(f"   {content[:100]}..." if len(str(content)) > 100 else f"   {content}")
+            lines.append("")
+
+        lines.append("---")
+        lines.append("是否确认以上大纲？")
+        lines.append("回复 `是` 继续生成PPT，")
+        lines.append("回复 `修改+序号+新内容` 修改对应章节（如：`修改 2 新标题`），")
+        lines.append("或回复 `重新生成` 重新生成大纲。")
+
+        return "\n".join(lines)
+
+    def _handle_outline_confirming(self, ctx: PPTWorkflowContext) -> Tuple[str, PPTWorkflowContext]:
+        """处理大纲确认阶段"""
+        confirmation_msg = self._planner.build_confirmation_message()
+        return confirmation_msg, ctx
+
+    def _handle_outline_confirmation_response(
+        self,
+        ctx: PPTWorkflowContext,
+        user_response: str
+    ) -> Tuple[str, PPTWorkflowContext]:
+        """处理大纲确认响应"""
+        logger.info(f"[PPT_WORKFLOW] 处理大纲确认响应: {user_response}")
+
+        response_lower = user_response.lower().strip()
+
+        if response_lower in ["是", "yes", "y", "确认", "确认大纲", "生成ppt", "生成"]:
+            ctx.state = WorkflowState.GENERATING
+            self._update_mcp_context(ctx.user_id, ctx)
+            return self._handle_generating(ctx)
+
+        if response_lower in ["重新生成", "regenerate", "重新生成大纲"]:
+            ctx.state = WorkflowState.OUTLINE_BUILDING
+            self._update_mcp_context(ctx.user_id, ctx)
+            return self._handle_outline_building(ctx)
+
+        if response_lower.startswith("修改 ") or response_lower.startswith("改 "):
+            parts = user_response.split(" ", 2)
+            if len(parts) >= 3:
+                try:
+                    idx = int(parts[1]) - 1
+                    new_title = parts[2].strip()
+                    if 0 <= idx < len(ctx.outline):
+                        ctx.outline[idx]["title"] = new_title
+                        logger.info(f"[PPT_WORKFLOW] 修改大纲第{idx+1}项为: {new_title}")
+                except ValueError:
+                    pass
+
+            ctx.state = WorkflowState.OUTLINE_CONFIRMING
+            self._update_mcp_context(ctx.user_id, ctx)
+            response = self._build_outline_response(ctx)
+            return response, ctx
+
+        ctx.state = WorkflowState.OUTLINE_CONFIRMING
+        self._update_mcp_context(ctx.user_id, ctx)
+        response = self._build_outline_response(ctx)
+        return response, ctx
+
+    def _generate_outline_from_content(self, ctx: PPTWorkflowContext) -> List[Dict[str, Any]]:
+        """从内容生成PPT大纲"""
+        content = ctx.document_content or ctx.content
+        sections = self._split_content_sections(content)
+
+        outline = []
+        for section in sections[:8]:
+            section = section.strip()
+            if not section:
+                continue
+
+            lines = section.split("\n")
+            title = lines[0].strip() if lines else "内容"
+            body = "\n".join(lines[1:]).strip() if len(lines) > 1 else section
+
+            if len(title) < 2:
+                continue
+
+            outline.append({
+                "title": title[:80],
+                "content": body
+            })
+
+        return outline
+
+    def _generate_slides_from_outline(self, ctx: PPTWorkflowContext) -> List[Dict[str, Any]]:
+        """从大纲生成幻灯片结构"""
+        slides = []
+
+        title = self._extract_title(ctx.content or ctx.document_content)
+        slides.append({
+            "type": "title",
+            "title": title,
+            "content": ""
+        })
+
+        for section in ctx.outline:
+            section_title = section.get("title", "")
+            section_content = section.get("content", "")
+
+            if not section_title or len(section_title) < 2:
+                continue
+
+            slides.append({
+                "type": "content",
+                "title": section_title,
+                "content": section_content
+            })
+
+        slides.append({
+            "type": "closing",
+            "title": "谢谢观看",
+            "content": ""
+        })
+
+        return slides
+
     def _handle_generating(self, ctx: PPTWorkflowContext) -> Tuple[str, PPTWorkflowContext]:
         """处理生成阶段"""
         logger.info(f"[PPT_WORKFLOW] 生成阶段: user_id={ctx.user_id}")
@@ -279,7 +429,9 @@ class PPTWorkflow:
         ctx.state = WorkflowState.GENERATING
         self._update_mcp_context(ctx.user_id, ctx)
 
-        if not ctx.slides:
+        if ctx.outline:
+            ctx.slides = self._generate_slides_from_outline(ctx)
+        elif not ctx.slides:
             ctx.slides = self._generate_slides_from_content(ctx)
 
         if ctx.spec_lock:
@@ -346,28 +498,89 @@ class PPTWorkflow:
             "content": ""
         })
 
-        sections = content.split("\n\n")
-        for section in sections[:8]:
+        sections = self._split_content_sections(content)
+        seen_titles = set()
+        slide_count = 0
+
+        for section in sections:
+            if slide_count >= 10:
+                break
             section = section.strip()
             if not section:
                 continue
 
             lines = section.split("\n")
-            slide_title = lines[0][:50] if lines else "内容"
+            slide_title = lines[0].strip() if lines else "内容"
 
+            if len(slide_title) < 2:
+                continue
+
+            normalized_title = slide_title.lower()[:30]
+            if normalized_title in seen_titles:
+                continue
+            seen_titles.add(normalized_title)
+
+            slide_count += 1
             slides.append({
                 "type": "content",
-                "title": slide_title,
-                "content": "\n".join(lines[1:]) if len(lines) > 1 else section
+                "title": slide_title[:80],
+                "content": "\n".join(lines[1:]).strip() if len(lines) > 1 else section
             })
 
         slides.append({
             "type": "closing",
-            "title": "谢谢",
+            "title": "谢谢观看",
             "content": ""
         })
 
         return slides
+
+    def _split_content_sections(self, content: str) -> List[str]:
+        """智能分割内容为多个章节"""
+        lines = content.split("\n")
+
+        sections = []
+        current_section = []
+        in_section = False
+
+        for line in lines:
+            stripped = line.strip()
+
+            if not stripped:
+                if current_section:
+                    current_section.append(stripped)
+                continue
+
+            is_main_header = (
+                stripped.startswith("一、") or stripped.startswith("二、") or
+                stripped.startswith("三、") or stripped.startswith("四、") or
+                stripped.startswith("五、") or stripped.startswith("六、") or
+                stripped.startswith("（一）") or stripped.startswith("（二）") or
+                stripped.startswith("（三）")
+            )
+
+            if stripped.startswith("# ") or stripped.startswith("## ") or stripped.startswith("### "):
+                if current_section:
+                    sections.append("\n".join(current_section))
+                    current_section = []
+                current_section.append(stripped)
+                in_section = True
+            elif is_main_header:
+                if current_section:
+                    sections.append("\n".join(current_section))
+                    current_section = []
+                current_section.append(stripped)
+                in_section = True
+            else:
+                current_section.append(stripped)
+
+        if current_section:
+            sections.append("\n".join(current_section))
+
+        if not sections and content.strip():
+            sections = [s.strip() for s in content.split("\n\n") if s.strip()]
+
+        return [s for s in sections if s.strip()]
 
     def _extract_title(self, content: str) -> str:
         """从内容中提取标题"""
@@ -394,7 +607,9 @@ class PPTWorkflow:
     def is_awaiting_confirmation(self, user_id: str) -> bool:
         """检查是否正在等待用户确认"""
         ctx = self._contexts.get(user_id)
-        return ctx.state == WorkflowState.AWAITING_CONFIRMATION if ctx else False
+        if not ctx:
+            return False
+        return ctx.state in [WorkflowState.AWAITING_CONFIRMATION, WorkflowState.OUTLINE_CONFIRMING]
 
 
 ppt_workflow = PPTWorkflow()

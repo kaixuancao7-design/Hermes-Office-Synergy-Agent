@@ -1,3 +1,5 @@
+import asyncio
+import threading
 from typing import Dict, Any, Optional, List
 from src.types import Message, Session, Intent
 from src.engine.intent_recognition import intent_recognizer
@@ -82,6 +84,14 @@ class MessageRouter:
         if self._is_group_message(message):
             if not self._is_mentioned(message):
                 return ""
+        
+        # 优先检查是否有等待确认的PPT工作流
+        if ppt_workflow.is_awaiting_confirmation(user_id):
+            logger.info(f"[ROUTER] 检测到等待确认的PPT工作流，优先处理")
+            response, ctx = ppt_workflow.continue_workflow(user_id, message.content)
+            if ctx.state == WorkflowState.COMPLETED:
+                self._clear_ppt_workflow_context(user_id)
+            return response
         
         # 检查是否是文件上传
         metadata = message.metadata or {}
@@ -557,6 +567,7 @@ class MessageRouter:
             logger.info("[PPT_HANDLER] 检测到等待确认状态，继续工作流")
             response, ctx = ppt_workflow.continue_workflow(user_id, context)
             if ctx.state == WorkflowState.COMPLETED:
+                self._send_ppt_to_user_async(user_id, ctx.output_path)
                 self._clear_ppt_workflow_context(user_id)
             return response
 
@@ -570,9 +581,37 @@ class MessageRouter:
         )
 
         if ctx.state == WorkflowState.COMPLETED:
+            self._send_ppt_to_user_async(user_id, ctx.output_path)
             self._clear_ppt_workflow_context(user_id)
 
         return response
+
+    def _send_ppt_to_user_async(self, user_id: str, output_path: str):
+        """异步发送PPT文件给用户（使用线程）"""
+        def _send():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    adapter = get_im_adapter("feishu")
+                    if not adapter:
+                        logger.error("[PPT_HANDLER] 无法获取飞书适配器")
+                        return
+
+                    file_name = os.path.basename(output_path)
+                    send_success = loop.run_until_complete(adapter.send_file(user_id, output_path, file_name))
+
+                    if send_success:
+                        logger.info(f"[PPT_HANDLER] PPT文件发送成功: {file_name}")
+                    else:
+                        logger.error(f"[PPT_HANDLER] PPT文件发送失败: {file_name}")
+                finally:
+                    loop.close()
+            except Exception as e:
+                logger.error(f"[PPT_HANDLER] 发送PPT文件异常: {str(e)}")
+
+        thread = threading.Thread(target=_send, daemon=True)
+        thread.start()
 
     def _extract_document_content(self, user_id: str, metadata: dict) -> str:
         """提取文档内容"""

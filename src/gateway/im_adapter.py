@@ -4,6 +4,7 @@ from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
 import requests
 import json
+import os
 
 logger = get_logger("im")
 
@@ -203,15 +204,18 @@ class IMAdapter:
             return False
             
         try:
-            # 解析消息内容（飞书消息内容是 JSON 字符串）
+            # 检查是否是文件消息
             content = message.content
             try:
                 content_json = json.loads(message.content)
+                # 如果包含 file_path，说明是文件消息
+                if content_json.get("file_path"):
+                    return self._send_feishu_file_message(message.user_id, content_json.get("file_path"), content_json.get("file_name"))
                 text = content_json.get("text", message.content)
             except:
                 text = message.content
             
-            # 构建消息
+            # 构建文本消息
             payload = {
                 "receive_id": message.user_id,
                 "content": json.dumps({
@@ -247,6 +251,110 @@ class IMAdapter:
             return False
         except Exception as e:
             logger.error(f"Error sending Feishu message: {str(e)}")
+            return False
+    
+    def _send_feishu_file_message(self, user_id: str, file_path: str, file_name: str = None) -> bool:
+        """发送文件消息到飞书"""
+        token = self._get_access_token()
+        if not token:
+            logger.error("Cannot send Feishu file message: no access token")
+            return False
+            
+        try:
+            # 使用文件名或从路径提取
+            if not file_name:
+                file_name = os.path.basename(file_path)
+            
+            # 检查文件是否存在
+            if not os.path.exists(file_path):
+                logger.error(f"File not found: {file_path}")
+                return False
+            
+            # 检查文件大小（飞书限制：最大30MB）
+            file_size = os.path.getsize(file_path)
+            if file_size == 0:
+                logger.error("File size is 0, cannot upload")
+                return False
+            if file_size > 30 * 1024 * 1024:
+                logger.error(f"File size exceeds limit: {file_size/1024/1024:.2f}MB > 30MB")
+                return False
+            
+            logger.info(f"Preparing to send file: {file_name}, size: {file_size/1024/1024:.2f}MB")
+            
+            # 步骤1：上传文件获取 file_key
+            upload_url = "https://open.feishu.cn/open-apis/drive/v1/files/upload_all"
+            
+            with open(file_path, 'rb') as f:
+                file_content = f.read()
+            
+            upload_headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "multipart/form-data"
+            }
+            
+            upload_params = {
+                "file_name": file_name,
+                "parent_type": "tmp"
+            }
+            
+            upload_response = requests.post(
+                upload_url,
+                headers=upload_headers,
+                params=upload_params,
+                files={"file": (file_name, file_content)}
+            )
+            
+            upload_response.raise_for_status()
+            upload_result = upload_response.json()
+            
+            if upload_result.get("code") != 0:
+                logger.error(f"File upload failed: {upload_result.get('msg')}")
+                return False
+            
+            file_key = upload_result.get("data", {}).get("file_key")
+            if not file_key:
+                logger.error("Failed to get file_key from upload response")
+                return False
+            
+            logger.info(f"File uploaded successfully, file_key: {file_key}")
+            
+            # 步骤2：发送文件消息
+            message_url = "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=user_id"
+            message_headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            
+            message_payload = {
+                "receive_id": user_id,
+                "content": json.dumps({
+                    "file_key": file_key,
+                    "file_name": file_name
+                }),
+                "msg_type": "file"
+            }
+            
+            message_response = requests.post(message_url, json=message_payload, headers=message_headers)
+            message_response.raise_for_status()
+            
+            message_result = message_response.json()
+            if message_result.get("code") == 0:
+                logger.info(f"File message sent successfully to user {user_id}")
+                return True
+            else:
+                logger.error(f"Failed to send file message: {message_result.get('msg')}")
+                return False
+                
+        except requests.exceptions.HTTPError as e:
+            try:
+                response_text = upload_response.text if 'upload_response' in locals() else message_response.text if 'message_response' in locals() else ""
+                error_detail = json.loads(response_text)
+                logger.error(f"Feishu API error: {error_detail.get('msg', str(e))} (code: {error_detail.get('code')})")
+            except:
+                logger.error(f"Feishu HTTP error: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Error sending Feishu file message: {str(e)}")
             return False
     
     def _send_dingtalk_message(self, message: Message) -> bool:
