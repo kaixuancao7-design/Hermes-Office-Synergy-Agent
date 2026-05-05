@@ -1,5 +1,6 @@
 import asyncio
 import threading
+import os
 from typing import Dict, Any, Optional, List
 from src.types import Message, Session, Intent
 from src.engine.intent_recognition import intent_recognizer
@@ -10,7 +11,7 @@ from src.engine.ppt_workflow import ppt_workflow, WorkflowState
 from src.data.database import db
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
-from src.plugins import get_memory_store, get_skill_manager, get_model_router, get_tool_executor
+from src.plugins import get_memory_store, get_skill_manager, get_model_router, get_tool_executor, get_im_adapter
 
 logger = get_logger("gateway")
 
@@ -90,6 +91,8 @@ class MessageRouter:
             logger.info(f"[ROUTER] 检测到等待确认的PPT工作流，优先处理")
             response, ctx = ppt_workflow.continue_workflow(user_id, message.content)
             if ctx.state == WorkflowState.COMPLETED:
+                logger.info(f"[ROUTER] PPT工作流完成，准备发送文件: {ctx.output_path}")
+                self._send_ppt_to_user_async(user_id, ctx.output_path)
                 self._clear_ppt_workflow_context(user_id)
             return response
         
@@ -566,7 +569,9 @@ class MessageRouter:
         if ppt_workflow.is_awaiting_confirmation(user_id):
             logger.info("[PPT_HANDLER] 检测到等待确认状态，继续工作流")
             response, ctx = ppt_workflow.continue_workflow(user_id, context)
+            logger.info(f"[PPT_HANDLER] continue_workflow完成，状态: {ctx.state}, output_path: {getattr(ctx, 'output_path', 'None')}")
             if ctx.state == WorkflowState.COMPLETED:
+                logger.info(f"[PPT_HANDLER] 工作流完成，准备发送文件: {ctx.output_path}")
                 self._send_ppt_to_user_async(user_id, ctx.output_path)
                 self._clear_ppt_workflow_context(user_id)
             return response
