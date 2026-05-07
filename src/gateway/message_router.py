@@ -7,7 +7,7 @@ from src.engine.intent_recognition import intent_recognizer
 from src.engine.task_planner import task_planner
 from src.engine.learning_cycle import learning_cycle
 from src.engine.react_engine import react_engine
-from src.engine.ppt_workflow import ppt_workflow, WorkflowState
+from src.skills import claude_skill_executor, skill_execution_manager, skill_loader, ExecutionStatus
 from src.data.database import db
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
@@ -86,15 +86,24 @@ class MessageRouter:
             if not self._is_mentioned(message):
                 return ""
         
-        # 优先检查是否有等待确认的PPT工作流
-        if ppt_workflow.is_awaiting_confirmation(user_id):
-            logger.info(f"[ROUTER] 检测到等待确认的PPT工作流，优先处理")
-            response, ctx = ppt_workflow.continue_workflow(user_id, message.content)
-            if ctx.state == WorkflowState.COMPLETED:
-                logger.info(f"[ROUTER] PPT工作流完成，准备发送文件: {ctx.output_path}")
-                self._send_ppt_to_user_async(user_id, ctx.output_path)
-                self._clear_ppt_workflow_context(user_id)
-            return response
+        # 优先检查是否有等待确认的技能执行
+        pending_executions = skill_execution_manager.get_user_executions(user_id)
+        if pending_executions:
+            logger.info(f"[ROUTER] 检测到 {len(pending_executions)} 个等待中的技能执行")
+            for execution in pending_executions:
+                if execution.status == ExecutionStatus.PAUSED:
+                    logger.info(f"[ROUTER] 继续执行: {execution.execution_id}")
+                    result = claude_skill_executor.continue_execution(execution.execution_id, message.content)
+                    if result.status == ExecutionStatus.COMPLETED:
+                        output_path = result.output_data.get("file_result", {}).get("file_path")
+                        if output_path:
+                            logger.info(f"[ROUTER] 技能执行完成，准备发送文件: {output_path}")
+                            self._send_ppt_to_user_async(user_id, output_path)
+                        skill_execution_manager.remove_execution(execution.execution_id)
+                    elif result.status == ExecutionStatus.FAILED:
+                        logger.error(f"[ROUTER] 技能执行失败: {result.error}")
+                        skill_execution_manager.remove_execution(execution.execution_id)
+                    return self._format_execution_response(result)
         
         # 检查是否是文件上传
         metadata = message.metadata or {}
@@ -561,35 +570,28 @@ class MessageRouter:
         return react_engine.run(user_id, f"根据以下内容创作：\n{context}")
     
     def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
-        """处理PPT生成相关意图 - 使用PPT工作流"""
+        """处理PPT生成相关意图 - 使用Claude范式技能执行"""
         logger.info(f"[PPT_HANDLER] 开始PPT生成: user_id={user_id}, intent={intent.type}")
 
-        metadata = metadata or {}
+        # 加载PPT生成技能
+        ppt_skill = skill_loader.get_skill_by_name("PPT生成")
+        if not ppt_skill:
+            logger.warning("[PPT_HANDLER] PPT生成技能未找到，使用默认处理")
+            return self._handle_creative_writing(user_id, intent, context, metadata)
 
-        if ppt_workflow.is_awaiting_confirmation(user_id):
-            logger.info("[PPT_HANDLER] 检测到等待确认状态，继续工作流")
-            response, ctx = ppt_workflow.continue_workflow(user_id, context)
-            logger.info(f"[PPT_HANDLER] continue_workflow完成，状态: {ctx.state}, output_path: {getattr(ctx, 'output_path', 'None')}")
-            if ctx.state == WorkflowState.COMPLETED:
-                logger.info(f"[PPT_HANDLER] 工作流完成，准备发送文件: {ctx.output_path}")
-                self._send_ppt_to_user_async(user_id, ctx.output_path)
-                self._clear_ppt_workflow_context(user_id)
-            return response
-
+        # 提取输入数据
         document_content = self._extract_document_content(user_id, metadata)
+        
+        input_data = {
+            "title": self._extract_title(context) or "演示文稿",
+            "content": document_content or context,
+            "style": "商务"
+        }
 
-        response, ctx = ppt_workflow.start_workflow(
-            user_id=user_id,
-            intent_type=intent.type,
-            content=context,
-            document_content=document_content
-        )
-
-        if ctx.state == WorkflowState.COMPLETED:
-            self._send_ppt_to_user_async(user_id, ctx.output_path)
-            self._clear_ppt_workflow_context(user_id)
-
-        return response
+        # 执行技能
+        result = claude_skill_executor.execute_skill(ppt_skill, user_id, input_data)
+        
+        return self._format_execution_response(result)
 
     def _send_ppt_to_user_async(self, user_id: str, output_path: str):
         """异步发送PPT文件给用户（使用线程）"""
@@ -660,11 +662,33 @@ class MessageRouter:
 
         return "\n".join(file_contents)
 
-    def _clear_ppt_workflow_context(self, user_id: str):
-        """清除PPT工作流上下文"""
-        if hasattr(ppt_workflow, '_contexts') and user_id in ppt_workflow._contexts:
-            del ppt_workflow._contexts[user_id]
-            logger.info(f"[PPT_HANDLER] 清除工作流上下文: user_id={user_id}")
+    def _format_execution_response(self, result) -> str:
+        """格式化技能执行响应"""
+        if result.status == ExecutionStatus.PAUSED:
+            prompt = result.output_data.get("_confirmation_prompt", "请确认是否继续？")
+            return prompt
+        elif result.status == ExecutionStatus.COMPLETED:
+            output_path = result.output_data.get("file_result", {}).get("file_path")
+            if output_path:
+                return f"PPT生成完成！文件已保存至: {output_path}"
+            return "任务已完成"
+        elif result.status == ExecutionStatus.FAILED:
+            return f"执行失败: {result.error}"
+        else:
+            return "处理中..."
+
+    def _extract_title(self, context: str) -> str:
+        """从上下文提取标题"""
+        # 简单实现：提取"生成PPT"等关键词后的内容
+        keywords = ["生成PPT", "制作PPT", "做个PPT", "根据"]
+        for keyword in keywords:
+            idx = context.find(keyword)
+            if idx != -1:
+                title = context[idx + len(keyword):].strip()
+                # 移除标点符号
+                title = title.rstrip("。，,")
+                return title[:50] if title else None
+        return None
     
     def _handle_unknown(self, user_id: str, context: str) -> str:
         logger.info(f"[UNKNOWN_HANDLER] 开始处理未知意图: user_id={user_id}")

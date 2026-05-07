@@ -482,22 +482,21 @@ class MCPAdapter:
         return ctx
 
     @staticmethod
-    def adapt_ppt_workflow_context(ppt_ctx: Any, user_id: str) -> BaseMCPContext:
-        """适配PPTWorkflowContext到MCP上下文"""
+    def adapt_skill_execution_context(execution_ctx: Any, user_id: str) -> BaseMCPContext:
+        """适配SkillExecutionContext到MCP上下文（Claude范式）"""
         ctx = mcp_manager.create_context(
             context_type=ContextType.PPT_WORKFLOW,
             scope=ContextScope.USER,
             user_id=user_id,
             initial_data={
-                "intent_type": ppt_ctx.intent_type,
-                "content": ppt_ctx.content,
-                "document_content": ppt_ctx.document_content,
-                "template_matches": [tm.model_dump() if hasattr(tm, 'model_dump') else str(tm) 
-                                    for tm in ppt_ctx.template_matches],
-                "slides": ppt_ctx.slides,
-                "output_path": ppt_ctx.output_path,
-                "state": ppt_ctx.state.value if hasattr(ppt_ctx.state, 'value') else str(ppt_ctx.state),
-                "error_message": ppt_ctx.error_message
+                "skill_id": execution_ctx.skill_id,
+                "execution_id": execution_ctx.execution_id,
+                "input_data": execution_ctx.input_data,
+                "output_data": execution_ctx.output_data,
+                "current_step": execution_ctx.current_step,
+                "tool_calls": execution_ctx.tool_calls,
+                "status": execution_ctx.status.value if hasattr(execution_ctx.status, 'value') else str(execution_ctx.status),
+                "error": execution_ctx.error
             }
         )
         return ctx
@@ -607,7 +606,7 @@ class ContextRegistry:
         if context_type == ContextType.REACT:
             mcp_ctx = MCPAdapter.adapt_react_state(context, user_id or "")
         elif context_type == ContextType.PPT_WORKFLOW:
-            mcp_ctx = MCPAdapter.adapt_ppt_workflow_context(context, user_id or "")
+            mcp_ctx = MCPAdapter.adapt_skill_execution_context(context, user_id or "")
         else:
             mcp_ctx = MCPAdapter.adapt_custom_data(
                 {"data": str(context)},

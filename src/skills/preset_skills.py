@@ -64,6 +64,56 @@ class PresetSkillsManager:
                 {"action": "execute", "parameters": {"instruction": "确定内容结构"}, "next_step_id": "step3"},
                 {"action": "execute", "parameters": {"instruction": "生成PPT大纲"}}
             ]
+        },
+        {
+            "name": "PPT生成",
+            "description": "完整的PPT生成流程，包括模板匹配、大纲生成、内容生成、质量检查和发送",
+            "trigger_patterns": ["生成PPT", "制作PPT", "做个PPT", "生成演示稿", "生成幻灯片"],
+            "steps": [
+                {
+                    "action": "ppt_template_match",
+                    "parameters": {"content": "{{content}}", "style_hint": "{{style_hint}}"},
+                    "next_step_id": "spec_lock",
+                    "output_key": "template_result"
+                },
+                {
+                    "action": "ppt_spec_lock",
+                    "parameters": {"template_id": "{{template_result.templates.0.id}}"},
+                    "next_step_id": "generate_outline",
+                    "output_key": "spec_result"
+                },
+                {
+                    "action": "ppt_generate_outline",
+                    "parameters": {"title": "{{title}}", "content": "{{content}}", "style_config": "{{spec_result.spec_lock.design_spec}}"},
+                    "next_step_id": "confirm_outline",
+                    "condition": "await_confirmation",
+                    "_prompt": "请确认生成的大纲是否满意？回复 是 继续，或 重新生成/修改+内容 进行调整",
+                    "output_key": "outline_result"
+                },
+                {
+                    "action": "ppt_generate_content",
+                    "parameters": {"outline": "{{outline_result.outline}}", "template_id": "{{template_result.templates.0.id}}", "style_config": "{{spec_result.spec_lock.design_spec}}"},
+                    "next_step_id": "generate_file",
+                    "output_key": "content_result"
+                },
+                {
+                    "action": "ppt_generate_file",
+                    "parameters": {"title": "{{title}}", "slides": "{{content_result.slides}}"},
+                    "next_step_id": "quality_check",
+                    "output_key": "file_result"
+                },
+                {
+                    "action": "ppt_quality_check",
+                    "parameters": {"file_path": "{{file_result.file_path}}"},
+                    "next_step_id": "send_file",
+                    "output_key": "quality_result"
+                },
+                {
+                    "action": "ppt_feishu_send",
+                    "parameters": {"file_path": "{{file_result.file_path}}", "user_id": "{{user_id}}"},
+                    "output_key": "send_result"
+                }
+            ]
         }
     ]
 
@@ -86,7 +136,8 @@ class PresetSkillsManager:
                 id=step_id,
                 action=step_def["action"],
                 parameters=step_def["parameters"],
-                next_step_id=step_def.get("next_step_id")
+                next_step_id=step_def.get("next_step_id"),
+                condition=step_def.get("condition")
             ))
 
         return Skill(

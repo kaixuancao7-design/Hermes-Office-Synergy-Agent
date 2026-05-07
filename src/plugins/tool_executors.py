@@ -11,6 +11,17 @@ from src.logging_config import get_logger
 
 # 导入tools层定义的PPT工具，避免重复定义
 from src.tools.ppt_generator import GeneratePPT
+from src.tools.ppt_tools import (
+    TemplateMatchTool,
+    SpecLockTool,
+    GenerateOutlineTool,
+    GenerateContentTool,
+    GeneratePPTTool,
+    QualityCheckTool,
+    FeishuSendFileTool,
+    ContextStoreTool,
+    get_all_ppt_tools
+)
 
 logger = get_logger("tool")
 
@@ -116,8 +127,20 @@ class BasicToolExecutor(ToolExecutorBase):
         self.register_tool("code_execution", CodeExecutionTool)
         self.register_tool("file_operations", FileOperationsTool)
         self.register_tool("feishu_file_read", FeishuFileReadTool)
-        # PPT生成工具
         self.register_tool("generate_ppt", GeneratePPT)
+        self._register_ppt_tools()
+
+    def _register_ppt_tools(self):
+        """注册PPT工具集"""
+        self.register_tool("ppt_template_match", TemplateMatchTool)
+        self.register_tool("ppt_spec_lock", SpecLockTool)
+        self.register_tool("ppt_generate_outline", GenerateOutlineTool)
+        self.register_tool("ppt_generate_content", GenerateContentTool)
+        self.register_tool("ppt_generate_file", GeneratePPTTool)
+        self.register_tool("ppt_quality_check", QualityCheckTool)
+        self.register_tool("ppt_feishu_send", FeishuSendFileTool)
+        self.register_tool("ppt_context_store", ContextStoreTool)
+        logger.info(f"注册了 {len(get_all_ppt_tools())} 个PPT工具")
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具"""
@@ -211,8 +234,20 @@ class SandboxedToolExecutor(ToolExecutorBase):
         self.register_tool("code_execution", SandboxedCodeExecutionTool)
         self.register_tool("file_operations", SandboxedFileOperationsTool)
         self.register_tool("feishu_file_read", FeishuFileReadTool)
-        # PPT生成工具
         self.register_tool("generate_ppt", GeneratePPT)
+        self._register_ppt_tools()
+
+    def _register_ppt_tools(self):
+        """注册PPT工具集"""
+        self.register_tool("ppt_template_match", TemplateMatchTool)
+        self.register_tool("ppt_spec_lock", SpecLockTool)
+        self.register_tool("ppt_generate_outline", GenerateOutlineTool)
+        self.register_tool("ppt_generate_content", GenerateContentTool)
+        self.register_tool("ppt_generate_file", GeneratePPTTool)
+        self.register_tool("ppt_quality_check", QualityCheckTool)
+        self.register_tool("ppt_feishu_send", FeishuSendFileTool)
+        self.register_tool("ppt_context_store", ContextStoreTool)
+        logger.info(f"注册了 {len(get_all_ppt_tools())} 个PPT工具")
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具（带安全检查）"""
