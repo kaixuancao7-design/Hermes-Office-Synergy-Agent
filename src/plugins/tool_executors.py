@@ -9,9 +9,9 @@ from src.config import settings
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
 
-# 导入tools层定义的PPT工具，避免重复定义
-from src.tools.ppt_generator import GeneratePPT
-from src.tools.ppt_tools import (
+# 导入tools层定义的PPT工具（已迁移到项目根目录tools/）
+from tools.ppt_generator import GeneratePPT
+from tools.ppt_tools import (
     TemplateMatchTool,
     SpecLockTool,
     GenerateOutlineTool,

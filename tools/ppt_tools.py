@@ -169,7 +169,7 @@ class GeneratePPTTool(BaseTool):
             slides = params.get("slides", [])
             output_path = params.get("output_path")
 
-            from src.tools.ppt_generator import GeneratePPT
+            from tools.ppt_generator import GeneratePPT
             generator = GeneratePPT()
             result_path = generator.generate_ppt(
                 title=title,
@@ -277,3 +277,17 @@ class ContextStoreTool(BaseTool):
         except Exception as e:
             logger.error(f"上下文存储失败: {str(e)}")
             return {"success": False, "error": str(e)}
+
+
+def get_all_ppt_tools() -> List[type]:
+    """获取所有PPT工具类"""
+    return [
+        TemplateMatchTool,
+        SpecLockTool,
+        GenerateOutlineTool,
+        GenerateContentTool,
+        GeneratePPTTool,
+        QualityCheckTool,
+        FeishuSendFileTool,
+        ContextStoreTool
+    ]

@@ -1,7 +1,7 @@
-"""工具模块 - 提供原子操作工具（Claude范式）"""
+"""工具模块 - 向后兼容导入（已迁移到项目根目录tools/）"""
 
-# 导入基础组件
-from tools.base import BaseTool, ToolSchema
+# 直接从新位置导入所有工具
+from tools import *
 from tools.registry import (
     register_tool,
     get_tool,
@@ -10,52 +10,7 @@ from tools.registry import (
     clear_registry
 )
 
-# 导入具体工具集
-from tools.ppt_tools import (
-    TemplateMatchTool,
-    SpecLockTool,
-    GenerateOutlineTool,
-    GenerateContentTool,
-    GeneratePPTTool,
-    QualityCheckTool,
-    FeishuSendFileTool,
-    ContextStoreTool
-)
-
-from tools.file_tools import (
-    ReadFileTool,
-    WriteFileTool,
-    ListFilesTool,
-    DeleteFileTool
-)
-
-from tools.db_tools import (
-    DBQueryTool,
-    DBInsertTool,
-    DBUpdateTool,
-    DBDeleteTool
-)
-
-from tools.api_tools import (
-    APIRequestTool
-)
-
-# 导入额外工具（保持向后兼容）
-from tools.ppt_generator import (
-    GeneratePPT,
-    PPTGeneratorBase
-)
-
-from tools.file_reader import (
-    ReadFile,
-    FeishuFileRead
-)
-
-from tools.content_tools import (
-    GeneratePPTFromContent
-)
-
-# 导出公共API
+# 导出公共API（保持与之前一致）
 __all__ = [
     # 基础类
     "BaseTool",
