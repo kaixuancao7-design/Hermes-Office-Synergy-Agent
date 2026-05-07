@@ -27,13 +27,18 @@ class MultimodalProcessorBase(ABC):
 class ImageProcessor(MultimodalProcessorBase):
     """图片处理器"""
     
-    def __init__(self):
+    def __init__(self, lazy_load: bool = True):
         self.initialized = False
         self.caption_model = None
-        self._initialize()
+        self.processor = None
+        if not lazy_load:
+            self._initialize()
     
     def _initialize(self):
         """初始化图片处理模型"""
+        if self.initialized:
+            return
+            
         try:
             from transformers import BlipProcessor, BlipForConditionalGeneration
             self.processor = BlipProcessor.from_pretrained("Salesforce/blip-image-captioning-base")
@@ -44,6 +49,10 @@ class ImageProcessor(MultimodalProcessorBase):
             logger.warning("transformers库未安装，图片描述功能不可用")
         except Exception as e:
             logger.error(f"图片处理器初始化失败: {str(e)}")
+    
+    def _ensure_initialized(self):
+        """确保模型已初始化"""
+        self._initialize()
     
     def process(self, data: Union[str, bytes], **kwargs) -> Dict[str, Any]:
         """处理图片数据"""

@@ -219,15 +219,19 @@ class BM25ReRank(ReRankStrategyBase):
 class CrossEncoderReRank(ReRankStrategyBase):
     """基于CrossEncoder的重排序"""
     
-    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+    def __init__(self, model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2", lazy_load: bool = True):
         self.initialized = False
         self.model = None
         self.tokenizer = None
         self.model_name = model_name
-        self._initialize()
+        if not lazy_load:
+            self._initialize()
     
     def _initialize(self):
         """初始化CrossEncoder模型"""
+        if self.initialized:
+            return
+        
         try:
             from sentence_transformers import CrossEncoder
             self.model = CrossEncoder(self.model_name)
@@ -237,6 +241,10 @@ class CrossEncoderReRank(ReRankStrategyBase):
             logger.warning("sentence_transformers库未安装，CrossEncoder重排序不可用")
         except Exception as e:
             logger.error(f"CrossEncoder初始化失败: {str(e)}")
+    
+    def _ensure_initialized(self):
+        """确保模型已初始化"""
+        self._initialize()
     
     def rerank(self, query: str, documents: List[Dict[str, Any]], **kwargs) -> List[Dict[str, Any]]:
         if not self.initialized:

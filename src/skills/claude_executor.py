@@ -2,7 +2,7 @@
 
 from typing import Dict, Any, Optional, List
 from src.types import Skill
-from src.tools.claude_tool import ClaudeToolExecutor, ToolCall
+from tools.claude_tool import ClaudeToolExecutor, ToolCall
 from src.skills.skill_context import SkillExecutionContext, ExecutionStatus, skill_execution_manager
 from src.logging_config import get_logger
 
