@@ -2,7 +2,8 @@ import sqlite3
 import os
 from typing import Optional, List, Dict, Any
 from src.types import UserProfile, Message, Skill, MemoryEntry
-from src.utils import get_timestamp, setup_logging
+from src.utils import get_timestamp
+from src.logging_config import setup_logging
 from src.config import settings
 
 logger = setup_logging(settings.LOG_LEVEL)

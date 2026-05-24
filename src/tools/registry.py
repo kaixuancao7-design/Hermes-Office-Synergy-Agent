@@ -99,3 +99,30 @@ def clear_registry():
     """
     _tool_registry.clear()
     logger.info("工具注册表已清空")
+
+
+def register_tools() -> Dict[str, Any]:
+    """
+    注册所有内置工具并返回工具字典
+    
+    Returns:
+        工具实例字典
+    """
+    # 导入并注册所有内置工具
+    try:
+        from src.tools.file_reader import ReadFile, FeishuFileRead
+        from src.tools.content_tools import GeneratePPTFromContent
+        from src.tools.ppt_generator import GeneratePPT
+        
+        # 注册工具
+        _tool_registry['read_file'] = ReadFile
+        _tool_registry['feishu_file_read'] = FeishuFileRead
+        _tool_registry['generate_ppt_from_content'] = GeneratePPTFromContent
+        _tool_registry['generate_ppt'] = GeneratePPT
+        
+        logger.info(f"已注册 {len(_tool_registry)} 个工具")
+    except Exception as e:
+        logger.error(f"注册工具失败: {str(e)}")
+    
+    # 返回工具实例字典
+    return {name: tool_class() for name, tool_class in _tool_registry.items()}

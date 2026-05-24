@@ -25,14 +25,20 @@ memory_store: Optional[MemoryBase] = None
 skill_manager: Optional[SkillManagerBase] = None
 tool_executor: Optional[ToolExecutorBase] = None
 
+# MCP Server 实例
+mcp_server = None
+
 
 def init_plugins(config: Dict[str, Any] = None) -> bool:
     """初始化所有插件"""
-    global im_adapter, model_router, memory_store, skill_manager, tool_executor
+    global im_adapter, model_router, memory_store, skill_manager, tool_executor, mcp_server
     
     try:
         # 检测并执行向量数据迁移（在初始化记忆存储之前）
         _check_vector_migration()
+        
+        # 初始化 MCP Server（基于官方 Python MCP SDK）
+        _init_mcp_server()
         
         # 初始化IM适配器
         im_adapter_type = config.get("im_adapter", settings.IM_ADAPTER_TYPE) if config else settings.IM_ADAPTER_TYPE
@@ -134,13 +140,40 @@ def _check_vector_migration():
     """检查并执行向量数据迁移"""
     try:
         from src.tools.vector_migration import VectorMigrationTool
-        
+
         migration_tool = VectorMigrationTool()
         migration_tool.run_auto_migration()
     except ImportError:
         logger.warning("向量迁移工具未找到，跳过迁移检测")
     except Exception as e:
         logger.error(f"向量迁移检测失败: {str(e)}")
+
+
+def _init_mcp_server():
+    """初始化 MCP Server（基于官方 Python MCP SDK）"""
+    global mcp_server
+
+    try:
+        from src.engine.mcp_server import mcp as official_mcp
+
+        mcp_server = official_mcp
+        logger.info("MCP Server 初始化成功（基于官方 Python MCP SDK）")
+    except ImportError as e:
+        logger.warning(f"MCP Server 初始化失败: {str(e)}")
+        mcp_server = None
+    except Exception as e:
+        logger.error(f"MCP Server 初始化异常: {str(e)}")
+        mcp_server = None
+
+
+def get_mcp_server():
+    """获取 MCP Server 实例"""
+    global mcp_server
+
+    if mcp_server is None:
+        _init_mcp_server()
+
+    return mcp_server
 
 
 # 导出注册表供外部使用
@@ -151,6 +184,7 @@ __all__ = [
     "get_memory_store",
     "get_skill_manager",
     "get_tool_executor",
+    "get_mcp_server",
     "IM_ADAPTER_REGISTRY",
     "MODEL_ROUTER_REGISTRY",
     "MEMORY_STORE_REGISTRY",

@@ -7,7 +7,8 @@ from src.tools.registry import (
     get_tool,
     list_tools,
     execute_tool,
-    clear_registry
+    clear_registry,
+    register_tools
 )
 
 # 导入具体工具
@@ -35,6 +36,7 @@ __all__ = [
     "list_tools",
     "execute_tool",
     "clear_registry",
+    "register_tools",
 
     # 工具类
     "GeneratePPT",
