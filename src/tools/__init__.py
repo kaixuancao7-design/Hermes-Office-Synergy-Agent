@@ -23,6 +23,14 @@ from src.tools.file_reader import (
 from src.tools.content_tools import (
     GeneratePPTFromContent
 )
+from src.tools.feishu_doc_tool import (
+    FeishuDocTool,
+    FeishuDocParams
+)
+from src.tools.url_reader_tool import (
+    UrlReaderTool,
+    UrlReaderParams
+)
 
 # 导出公共API
 __all__ = [
@@ -43,5 +51,9 @@ __all__ = [
     "PPTGeneratorBase",
     "ReadFile",
     "FeishuFileRead",
-    "GeneratePPTFromContent"
+    "GeneratePPTFromContent",
+    "FeishuDocTool",
+    "FeishuDocParams",
+    "UrlReaderTool",
+    "UrlReaderParams"
 ]

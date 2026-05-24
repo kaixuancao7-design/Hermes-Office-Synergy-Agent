@@ -95,7 +95,7 @@ class IntentRecognizer:
             ]
         }
     
-    def recognize(self, text: str) -> Intent:
+    async def recognize(self, text: str) -> Intent:
         text_lower = text.lower()
         
         # 定义意图优先级（越具体的意图优先级越高）
@@ -173,7 +173,7 @@ class IntentRecognizer:
         if max_matches > 0:
             confidence = min(0.3 + max_matches * 0.15, 0.95)
         else:
-            confidence = self._classify_with_ai(text)
+            confidence = await self._classify_with_ai(text)
         
         entities = self._extract_entities(text, matched_intent)
         
@@ -183,7 +183,7 @@ class IntentRecognizer:
             entities=entities
         )
     
-    def _classify_with_ai(self, text: str) -> float:
+    async def _classify_with_ai(self, text: str) -> float:
         prompt = f"""
         Classify the following user message into one of these intents:
         {', '.join(INTENT_TYPES)}
@@ -193,16 +193,17 @@ class IntentRecognizer:
         Return only the intent name.
         """
         
-        model = select_model("intent_classification", "simple")
-        if not model:
-            return 0.5
-        
         try:
-            response = call_model(model, [{"role": "user", "content": prompt}])
-            response = response.strip()
+            model = await select_model("intent_classification", "simple")
+            if not model:
+                return 0.5
             
-            if response in INTENT_TYPES:
-                return 0.7
+            response = await call_model(prompt, "ollama")
+            if response:
+                response = response.strip()
+                
+                if response in INTENT_TYPES:
+                    return 0.7
             return 0.5
         except Exception as e:
             logger.error(f"AI intent classification failed: {str(e)}")

@@ -37,9 +37,12 @@ class RedisStore(MemoryBase):
     
     def __init__(self):
         self._client = None
-        self._connect()
+        self._connect_timeout = 2
     
     def _connect(self):
+        if self._client is not None:
+            return
+        
         try:
             import redis
             self._client = redis.Redis(
@@ -47,16 +50,22 @@ class RedisStore(MemoryBase):
                 port=settings.REDIS_PORT,
                 db=settings.REDIS_DB,
                 password=settings.REDIS_PASSWORD,
-                decode_responses=True
+                decode_responses=True,
+                socket_timeout=self._connect_timeout,
+                socket_connect_timeout=self._connect_timeout
             )
-            # 测试连接
             self._client.ping()
             logger.info("Redis连接成功")
         except Exception as e:
             logger.error(f"Redis连接失败: {str(e)}")
             self._client = None
     
+    def _ensure_connection(self):
+        if self._client is None:
+            self._connect()
+    
     def store(self, key: str, value: Any) -> bool:
+        self._ensure_connection()
         if not self._client:
             return False
         
@@ -70,6 +79,7 @@ class RedisStore(MemoryBase):
             return False
     
     def retrieve(self, key: str) -> Optional[Any]:
+        self._ensure_connection()
         if not self._client:
             return None
         
@@ -84,6 +94,7 @@ class RedisStore(MemoryBase):
             return None
     
     def delete(self, key: str) -> bool:
+        self._ensure_connection()
         if not self._client:
             return False
         
@@ -113,6 +124,29 @@ class HybridMemoryStore(MemoryBase):
             logger.info("混合存储初始化成功")
         except Exception as e:
             logger.error(f"数据库存储初始化失败: {str(e)}")
+    
+    def add_memory(self, user_id: str, memory_entry: MemoryEntry) -> bool:
+        """添加记忆条目（兼容message_router的调用）"""
+        try:
+            # 构建存储键
+            key = f"memory:{user_id}:{memory_entry.id}"
+            
+            # 转换为字典格式存储
+            value = {
+                "user_id": memory_entry.user_id,
+                "type": memory_entry.type,
+                "content": memory_entry.content,
+                "embedding": memory_entry.embedding,
+                "timestamp": memory_entry.timestamp,
+                "tags": memory_entry.tags,
+                "group_id": memory_entry.group_id,
+                "group_name": memory_entry.group_name
+            }
+            
+            return self.store(key, value)
+        except Exception as e:
+            logger.error(f"添加记忆失败: {str(e)}")
+            return False
     
     def store(self, key: str, value: Any) -> bool:
         # 短期存储到Redis

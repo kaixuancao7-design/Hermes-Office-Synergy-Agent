@@ -34,6 +34,21 @@ class ModelRouterBase(ABC):
         """路由到合适的模型"""
         pass
     
+    async def call_model(self, model_name: str, messages: List[Dict[str, str]]) -> str:
+        """
+        调用模型（兼容接口）
+        
+        Args:
+            model_name: 模型名称
+            messages: 消息列表，格式: [{"role": "user", "content": "..."}, ...]
+            
+        Returns:
+            模型响应
+        """
+        # 将消息列表转换为单个prompt
+        prompt = "\n".join([f"{msg['role']}: {msg['content']}" for msg in messages])
+        return await self.route(prompt, model_name)
+    
     def get_router_type(self) -> str:
         """获取路由类型"""
         return self.__class__.__name__

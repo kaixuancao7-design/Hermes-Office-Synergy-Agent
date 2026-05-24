@@ -1,17 +1,19 @@
-"""工具执行插件实现"""
+"""工具执行插件实现 - 增强日志版本"""
 import os
 import re
+import time
 from typing import Dict, Any, List, Optional
 from urllib.parse import unquote
+from datetime import datetime
 
 from src.plugins.base import ToolExecutorBase
 from src.config import settings
 from src.utils import generate_id, get_timestamp
-from src.logging_config import get_logger
+from src.logging_config import get_logger, log_event
 
-# 导入tools层定义的PPT工具（已迁移到项目根目录tools/）
-from tools.ppt_generator import GeneratePPT
-from tools.ppt_tools import (
+# 导入tools层定义的PPT工具
+from src.tools.ppt_generator import GeneratePPT
+from src.tools.ppt_tools import (
     TemplateMatchTool,
     SpecLockTool,
     GenerateOutlineTool,
@@ -55,14 +57,11 @@ def decode_filename(content_disposition: str) -> str:
         file_name = match.group(1).strip('"')
         # 处理可能的编码问题：ISO-8859-1 编码的中文
         try:
-            # 先尝试直接使用（检查是否是有效的UTF-8）
             file_name.encode('utf-8')
         except UnicodeEncodeError:
-            # 如果不是有效的UTF-8，尝试ISO-8859-1解码
             try:
                 file_name = file_name.encode('ISO-8859-1').decode('utf-8')
             except:
-                # 解码失败，保持原样
                 pass
         return file_name
     
@@ -79,6 +78,8 @@ class BasicToolExecutor(ToolExecutorBase):
             "read_file": "feishu_file_read",
             "feishu_reader": "feishu_file_read"
         }
+        self._feishu_client = None
+        self.memory_manager = None
         
         # 初始化飞书客户端
         self._initialize_feishu_client()
@@ -87,6 +88,8 @@ class BasicToolExecutor(ToolExecutorBase):
         self._initialize_memory_store()
         
         self._register_default_tools()
+        
+        logger.info("[INIT] BasicToolExecutor 初始化完成 | tool_count=%d", len(self.tools))
     
     def _initialize_feishu_client(self):
         """初始化飞书API客户端"""
@@ -101,79 +104,137 @@ class BasicToolExecutor(ToolExecutorBase):
                     .app_secret(feishu_app_secret) \
                     .domain(FEISHU_DOMAIN) \
                     .build()
-                logger.info("飞书API客户端初始化成功")
+                logger.info("[FEISHU_CLIENT] 飞书API客户端初始化成功")
             except Exception as e:
                 self._feishu_client = None
-                logger.error(f"飞书API客户端初始化失败: {str(e)}")
+                logger.error(f"[FEISHU_CLIENT] 飞书API客户端初始化失败 | error={str(e)}", exc_info=True)
         else:
             self._feishu_client = None
-            logger.warning("飞书API客户端未初始化：缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET")
+            logger.warning("[FEISHU_CLIENT] 飞书API客户端未初始化：缺少 FEISHU_APP_ID 或 FEISHU_APP_SECRET")
     
     def _initialize_memory_store(self):
         """初始化记忆存储"""
         try:
             from src.engine.memory_manager import MemoryManager
             self.memory_manager = MemoryManager()
-            logger.info("记忆存储初始化成功")
+            logger.info("[MEMORY_STORE] 记忆存储初始化成功")
         except Exception as e:
             self.memory_manager = None
-            logger.warning(f"记忆存储未初始化：{str(e)}")
+            logger.warning(f"[MEMORY_STORE] 记忆存储未初始化 | error={str(e)}")
     
     def _register_default_tools(self):
         """注册默认工具"""
-        self.register_tool("document_search", DocumentSearchTool)
-        self.register_tool("memory_search", MemorySearchTool)
-        self.register_tool("web_search", WebSearchTool)
-        self.register_tool("code_execution", CodeExecutionTool)
-        self.register_tool("file_operations", FileOperationsTool)
-        self.register_tool("feishu_file_read", FeishuFileReadTool)
-        self.register_tool("generate_ppt", GeneratePPT)
+        tool_list = [
+            ("document_search", "文档搜索"),
+            ("memory_search", "记忆搜索"),
+            ("web_search", "网页搜索"),
+            ("code_execution", "代码执行"),
+            ("file_operations", "文件操作"),
+            ("feishu_file_read", "飞书文件读取"),
+            ("generate_ppt", "PPT生成")
+        ]
+        
+        for tool_id, tool_desc in tool_list:
+            try:
+                module = __import__('src.tools', fromlist=[tool_id])
+                tool_class = getattr(module, tool_id)
+                self.register_tool(tool_id, tool_class)
+                logger.debug(f"[TOOL_REGISTER] 注册工具 | id={tool_id} | desc={tool_desc}")
+            except (ImportError, AttributeError):
+                logger.debug(f"[TOOL_REGISTER] 工具 {tool_id} 注册失败，可能是动态注册")
+        
         self._register_ppt_tools()
 
     def _register_ppt_tools(self):
         """注册PPT工具集"""
-        self.register_tool("ppt_template_match", TemplateMatchTool)
-        self.register_tool("ppt_spec_lock", SpecLockTool)
-        self.register_tool("ppt_generate_outline", GenerateOutlineTool)
-        self.register_tool("ppt_generate_content", GenerateContentTool)
-        self.register_tool("ppt_generate_file", GeneratePPTTool)
-        self.register_tool("ppt_quality_check", QualityCheckTool)
-        self.register_tool("ppt_feishu_send", FeishuSendFileTool)
-        self.register_tool("ppt_context_store", ContextStoreTool)
-        logger.info(f"注册了 {len(get_all_ppt_tools())} 个PPT工具")
+        ppt_tools = [
+            ("ppt_template_match", TemplateMatchTool),
+            ("ppt_spec_lock", SpecLockTool),
+            ("ppt_generate_outline", GenerateOutlineTool),
+            ("ppt_generate_content", GenerateContentTool),
+            ("ppt_generate_file", GeneratePPTTool),
+            ("ppt_quality_check", QualityCheckTool),
+            ("ppt_feishu_send", FeishuSendFileTool),
+            ("ppt_context_store", ContextStoreTool)
+        ]
+        
+        for tool_id, tool_class in ppt_tools:
+            self.register_tool(tool_id, tool_class)
+        
+        logger.info(f"[TOOL_REGISTER] 注册了 {len(ppt_tools)} 个PPT工具")
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具"""
+        start_time = datetime.now()
+        request_id = parameters.get('request_id', generate_id())
+        user_id = parameters.get('user_id', 'unknown')
+        
         # 工具名称映射
         if tool_id in self.tool_name_mapping:
+            original_tool_id = tool_id
             tool_id = self.tool_name_mapping[tool_id]
+            logger.debug(f"[TOOL_MAP] 工具名称映射 | original={original_tool_id} | mapped={tool_id}")
         
+        # 检查工具是否存在
         if tool_id not in self.tools:
+            logger.warning(f"[TOOL_NOT_FOUND] 工具不存在 | tool_id={tool_id}")
             return {"success": False, "error": f"工具 {tool_id} 不存在"}
         
         try:
-            # 直接使用传入的参数（ReAct引擎已经处理好了参数格式）
-            # 注意：不再尝试提取嵌套的parameters，因为ReAct引擎已经处理过了
-            tool_params = parameters or {}
+            logger.info(f"[TOOL_EXECUTE] 开始执行工具 | tool_id={tool_id} | user_id={user_id} | request_id={request_id}")
+            logger.debug(f"[TOOL_PARAMS] 工具参数 | tool_id={tool_id} | params={str(parameters)[:200]}")
             
-            # 获取工具类并创建实例（传入executor，以便工具可以访问客户端和存储）
+            # 获取工具类并创建实例
             tool_class = self.tools[tool_id]
             tool_instance = tool_class(executor=self)
-            result = tool_instance.execute(tool_params)
+            
+            # 执行工具
+            result = tool_instance.execute(parameters)
+            
+            # 计算执行时间
+            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+            
+            if result.get("success"):
+                logger.info(f"[TOOL_SUCCESS] 工具执行成功 | tool_id={tool_id} | elapsed={elapsed_ms:.2f}ms")
+                logger.debug(f"[TOOL_RESULT] 工具执行结果 | tool_id={tool_id} | result={str(result.get('result'))[:200]}")
+            else:
+                logger.warning(f"[TOOL_FAILED] 工具执行失败 | tool_id={tool_id} | elapsed={elapsed_ms:.2f}ms | error={result.get('error')}")
+            
+            # 记录工具执行事件
+            log_event(logger, "tool_executed",
+                     tool_id=tool_id,
+                     user_id=user_id,
+                     request_id=request_id,
+                     success=result.get("success"),
+                     elapsed_ms=elapsed_ms)
+            
             return result
+            
         except Exception as e:
-            logger.error(f"执行工具 {tool_id} 失败: {str(e)}")
+            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+            logger.error(f"[TOOL_EXCEPTION] 工具执行异常 | tool_id={tool_id} | elapsed={elapsed_ms:.2f}ms | error={str(e)}", exc_info=True)
+            
+            log_event(logger, "tool_executed",
+                     tool_id=tool_id,
+                     user_id=user_id,
+                     request_id=request_id,
+                     success=False,
+                     error=str(e),
+                     elapsed_ms=elapsed_ms)
+            
             return {"success": False, "error": str(e)}
     
     def register_tool(self, tool_id: str, tool_class: Any) -> bool:
         """注册工具"""
         self.tools[tool_id] = tool_class
-        logger.info(f"注册工具: {tool_id}")
+        logger.debug(f"[TOOL_REGISTER] 注册工具 | tool_id={tool_id} | class={tool_class.__name__}")
         return True
     
     def get_tools(self) -> List[str]:
         """获取所有可用工具"""
-        return list(self.tools.keys())
+        tools = list(self.tools.keys())
+        logger.debug(f"[TOOL_LIST] 获取工具列表 | count={len(tools)}")
+        return tools
     
     def get_executor_type(self) -> str:
         return "basic"

@@ -9,11 +9,11 @@ from src.engine.memory_manager import memory_manager
 from src.services.skill_management import skill_version_manager
 from src.services.permission_service import permission_service
 from src.services.audit_log_service import audit_log_service
-from .preset_skills import preset_skills_manager
-from .custom_skills import custom_skills_manager
-from .learned_skills import learned_skills_manager
-from .triggers import trigger_matcher
-from .validators import skill_validator
+from src.skills.preset_skills import preset_skills_manager
+from src.skills.custom_skills import custom_skills_manager
+from src.skills.learned_skills import learned_skills_manager
+from src.skills.triggers import trigger_matcher
+from src.skills.validators import skill_validator
 
 logger = get_logger("skill")
 

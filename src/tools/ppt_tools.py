@@ -2,8 +2,8 @@
 
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
-from tools.base import BaseTool
-from tools.registry import register_tool
+from src.tools.base import BaseTool
+from src.tools.registry import register_tool
 from src.logging_config import get_logger
 
 logger = get_logger("tool.ppt")
@@ -168,8 +168,8 @@ class GeneratePPTTool(BaseTool):
             title = params.get("title", "演示文稿")
             slides = params.get("slides", [])
             output_path = params.get("output_path")
-
-            from tools.ppt_generator import GeneratePPT
+            # 导入PPT生成器
+            from src.tools.ppt_generator import GeneratePPT
             generator = GeneratePPT()
             result_path = generator.generate_ppt(
                 title=title,
