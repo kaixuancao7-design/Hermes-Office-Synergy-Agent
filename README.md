@@ -1208,6 +1208,44 @@ MIT License
 
 ---
 
+### v1.0.3 (2026-05-24)
+
+**Bug修复：**
+
+1. **异步方法声明缺失**：修复了多个方法缺少 `async` 声明导致的协程调用错误
+   - `ReActEngine.run()` 方法添加 `async` 声明
+   - `_handle_with_react()` 方法添加 `async` 声明
+   - 所有 handler 方法（`_handle_summarization`、`_handle_question_answering` 等）添加 `async` 声明
+
+2. **start_time 变量未定义**：修复了 `elapsed_ms` 计算始终为0的问题
+   - 在 `run()` 方法开始处定义 `start_time = datetime.now()`
+
+3. **API 不兼容**：修复了 `call_model()` 方法不存在的问题
+   - 在 `ModelRouterBase` 基类中添加了 `call_model()` 方法定义
+
+4. **缺少 await 调用**：修复了所有异步调用缺少 `await` 的问题
+   - 为 `react_engine.run()` 调用添加 `await`
+   - 为 `model_router.call_model()` 调用添加 `await`
+
+5. **工具执行阻塞事件循环**：优化了 `_execute_tool()` 方法
+   - 将方法改为异步（`async def`）
+   - 使用 `loop.run_in_executor()` 将同步工具执行转移到线程池
+
+6. **导入路径错误**：修复了 PPT 工具无法加载的问题
+   - 确保使用正确的导入路径 `from src.tools.ppt_tools import ...`
+
+**功能改进：**
+
+1. **异步架构优化**：全面优化了系统的异步处理能力
+   - 所有模型调用、工具执行、消息路由均改为异步
+   - 使用线程池避免阻塞事件循环
+
+2. **Ollama 配置增强**：完善了 Ollama 模型配置支持
+   - 添加完整的 Ollama 配置参数（模型名称、最大token、温度、重试次数、超时时间）
+   - 支持通过 `.env` 文件配置
+
+---
+
 ### v1.0.2 (2026-05-03)
 
 **新功能：**

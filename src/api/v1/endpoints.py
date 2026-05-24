@@ -50,7 +50,7 @@ async def send_message(message: Dict[str, Any]):
     )
     
     logger.info(f"[API_MESSAGE] 消息对象已创建，开始路由: request_id={request_id}")
-    response = message_router.route(msg)
+    response = await message_router.route(msg)
     logger.info(f"[API_MESSAGE] 路由完成: request_id={request_id}, response_length={len(response)}")
     
     return {"response": response}

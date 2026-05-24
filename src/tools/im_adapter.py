@@ -65,7 +65,7 @@ class IMFileParser:
         Returns:
             解析结果，包含适配IM的内容
         """
-        from .file_parser import file_parser
+        from src.tools.file_parser import file_parser
         
         # 先验证文件
         file_size = len(file_content) if file_content else 0
