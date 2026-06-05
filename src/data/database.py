@@ -102,8 +102,39 @@ class Database:
             
             # 为消息ID创建索引，加速查询
             cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_processed_messages_id 
+                CREATE INDEX IF NOT EXISTS idx_processed_messages_id
                 ON processed_messages(message_id)
+            """)
+
+            # 权限系统表
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS user_roles (
+                    user_id TEXT PRIMARY KEY,
+                    role TEXT NOT NULL DEFAULT 'guest',
+                    department TEXT,
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS permissions (
+                    id TEXT PRIMARY KEY,
+                    resource_type TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    permission TEXT NOT NULL,
+                    granted_by TEXT NOT NULL,
+                    granted_at INTEGER NOT NULL,
+                    scope_type TEXT DEFAULT 'user',
+                    scope_value TEXT,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_permissions_user
+                ON permissions(user_id, resource_type)
             """)
             
             conn.commit()
@@ -418,6 +449,128 @@ class Database:
             deleted = cursor.rowcount
             conn.commit()
             return deleted
+
+
+    # ==================== 权限管理方法 ====================
+
+    def set_user_role(self, user_id: str, role: str, department: str = None) -> bool:
+        """设置用户角色"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO user_roles (user_id, role, department, created_at)
+                VALUES (?, ?, ?, ?)
+            """, (user_id, role, department, get_timestamp()))
+            conn.commit()
+            return True
+
+    def get_user_role(self, user_id: str) -> Optional[str]:
+        """获取用户角色"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT role FROM user_roles WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+
+    def get_user_department(self, user_id: str) -> Optional[str]:
+        """获取用户部门"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT department FROM user_roles WHERE user_id = ?", (user_id,))
+            row = cursor.fetchone()
+            return row[0] if row and row[0] else None
+
+    def grant_permission(self, perm_id: str, resource_type: str, resource_id: str,
+                         user_id: str, permission: str, granted_by: str,
+                         scope_type: str = "user", scope_value: str = None) -> bool:
+        """授予权限"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO permissions
+                (id, resource_type, resource_id, user_id, permission, granted_by, granted_at, scope_type, scope_value)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (perm_id, resource_type, resource_id, user_id, permission, granted_by, get_timestamp(), scope_type, scope_value))
+            conn.commit()
+            return True
+
+    def revoke_permission(self, resource_type: str, resource_id: str,
+                          user_id: str, permission: str) -> bool:
+        """撤销权限"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                DELETE FROM permissions
+                WHERE resource_type = ? AND resource_id = ? AND user_id = ? AND permission = ?
+            """, (resource_type, resource_id, user_id, permission))
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted > 0
+
+    def check_permission(self, user_id: str, resource_type: str,
+                         resource_id: str, permission: str) -> bool:
+        """检查用户是否有指定权限"""
+        user_role = self.get_user_role(user_id)
+        if user_role == "admin":
+            return True
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 1 FROM permissions
+                WHERE user_id = ? AND resource_type = ? AND resource_id = ? AND permission = ?
+            """, (user_id, resource_type, resource_id, permission))
+            return cursor.fetchone() is not None
+
+    def get_user_permissions(self, user_id: str) -> list:
+        """获取用户所有权限"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT resource_type, resource_id, permission, scope_type, scope_value
+                FROM permissions WHERE user_id = ?
+            """, (user_id,))
+            return [
+                {"resource_type": r[0], "resource_id": r[1],
+                 "permission": r[2], "scope_type": r[3], "scope_value": r[4]}
+                for r in cursor.fetchall()
+            ]
+
+
+    # ==================== 会话持久化方法 ====================
+
+    def save_session(self, session_id: str, user_id: str, context_json: str,
+                     created_at: int, last_active_at: int) -> None:
+        """持久化保存会话"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO sessions (id, user_id, context, created_at, last_active_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (session_id, user_id, context_json, created_at, last_active_at))
+            conn.commit()
+
+    def load_sessions(self) -> list:
+        """加载所有已持久化的会话"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, user_id, context, created_at, last_active_at FROM sessions")
+            return [
+                {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "context": row[2],
+                    "created_at": row[3],
+                    "last_active_at": row[4],
+                }
+                for row in cursor.fetchall()
+            ]
+
+    def delete_session(self, session_id: str) -> None:
+        """删除指定会话"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            conn.commit()
 
 
 db = Database()

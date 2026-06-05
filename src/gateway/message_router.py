@@ -18,8 +18,45 @@ class MessageRouter:
     def __init__(self):
         self.sessions: Dict[str, Dict[str, Session]] = {}  # user_id -> group_id -> Session
         self.use_react_mode = True  # 启用 ReAct 模式
+        self._load_persisted_sessions()
         logger.info("[INIT] MessageRouter 初始化完成")
     
+    async def _call_model_with_fallback(
+        self, user_id: str, task_type: str, complexity: str,
+        primary_prompt: str, fallback_prompt: str = None
+    ) -> str:
+        """Call model router with three-tier fallback to ReAct engine.
+
+        Args:
+            user_id: The user ID for the request
+            task_type: Task type for model selection (e.g. 'summarization')
+            complexity: Complexity hint for model selection (e.g. 'simple')
+            primary_prompt: The prompt to send to the model
+            fallback_prompt: Override prompt for ReAct fallback. Defaults to primary_prompt.
+
+        Returns:
+            Model response or ReAct engine fallback result
+        """
+        if fallback_prompt is None:
+            fallback_prompt = primary_prompt
+
+        model_router = get_model_router()
+        if not model_router:
+            logger.warning(f"[PLUGIN_CHECK] Model router unavailable, falling back to ReAct for {task_type}")
+            return await react_engine.run(user_id, fallback_prompt)
+
+        model = model_router.select_model(task_type, complexity)
+        if not model:
+            logger.warning(f"[MODEL_ROUTER] No model for {task_type}/{complexity}, falling back to ReAct")
+            return await react_engine.run(user_id, fallback_prompt)
+
+        response = await model_router.call_model(model, [{"role": "user", "content": primary_prompt}])
+        if response and response.strip():
+            return response
+
+        logger.warning(f"[MODEL] Empty response for {task_type}, falling back to ReAct")
+        return await react_engine.run(user_id, fallback_prompt)
+
     async def route(self, message: Message) -> str:
         start_time = datetime.now()
         
@@ -66,7 +103,10 @@ class MessageRouter:
             session.context.append(message)
             session.last_active_at = get_timestamp()
             session.group_name = group_name  # 更新分组名称
-            
+
+            # 持久化会话到数据库
+            self._persist_session(session)
+
             # 保存消息到数据库
             db.save_message(message)
             logger.debug(f"[DB_SAVE] 消息已保存到数据库 | message_id={message.id}")
@@ -243,26 +283,9 @@ class MessageRouter:
             return "当前没有可总结的文本内容。您可以上传文件或发送文本消息，我会帮您总结。"
         
         logger.info(f"总结内容长度: {len(text_to_summarize)} 字符")
-        
-        # 使用插件系统的模型路由
-        model_router = get_model_router()
-        if not model_router:
-            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
-            return await react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
-        
-        model = model_router.select_model("summarization", "simple")
-        if not model:
-            logger.warning("[MODEL_ROUTER] 无法为 summarization 任务选择模型，降级到ReAct模式")
-            return await react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
-        
+
         prompt = f"总结以下内容：\n{text_to_summarize}"
-        response = await model_router.call_model(model, [{"role": "user", "content": prompt}])
-        if response and response.strip():
-            return response
-        
-        # 模型返回空响应，降级到 ReAct 模式
-        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
-        return await react_engine.run(user_id, f"总结以下内容：\n{text_to_summarize}")
+        return await self._call_model_with_fallback(user_id, "summarization", "simple", prompt)
     
     def _get_recent_file_content(self, user_id: str) -> str:
         """获取最近上传的文件内容"""
@@ -346,29 +369,12 @@ class MessageRouter:
             logger.info(f"[QA_HANDLER] 记忆搜索完成:找到 {len(results)} 条相关记忆")
         else:
             logger.warning("[PLUGIN_CHECK] 记忆存储插件不可用，跳过记忆检索")
-        
-        # 使用插件系统的模型路由
-        model_router = get_model_router()
-        if not model_router:
-            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
-            return await react_engine.run(user_id, context)
-        
-        model = model_router.select_model("question_answering", "medium")
-        if not model:
-            logger.warning("[MODEL_ROUTER] 无法为 question_answering 任务选择模型，降级到ReAct模式")
-            return await react_engine.run(user_id, context)
-        
+
         logger.info(f"[QA_HANDLER] 调用问答模型")
         prompt = f"基于以下上下文回答问题：\n\n上下文：{context_text}\n\n问题：{context}"
-        response = await model_router.call_model(model, [{"role": "user", "content": prompt}])
-        
-        if response and response.strip():
-            logger.info(f"[QA_HANDLER] 问答完成: response_length={len(response)}")
-            return response
-        
-        # 模型返回空响应，降级到 ReAct 模式
-        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
-        return await react_engine.run(user_id, context)
+        return await self._call_model_with_fallback(
+            user_id, "question_answering", "medium", prompt, fallback_prompt=context
+        )
     
     async def _handle_task_execution(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[TASK_HANDLER] 开始任务执行: user_id={user_id}, intent={intent.type}")
@@ -493,17 +499,6 @@ class MessageRouter:
             logger.warning(f"[DOC_HANDLER] 文档内容为空")
             return "已收到您上传的文件，但暂时没有可分析的内容。您可以提出具体问题，我来帮您分析。"
         
-        # 使用插件系统的模型路由进行总结分析
-        model_router = get_model_router()
-        if not model_router:
-            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
-            return await react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
-        
-        model = model_router.select_model("document_analysis", "complex")
-        if not model:
-            logger.warning("[MODEL_ROUTER] 无法为 document_analysis 任务选择模型，降级到ReAct模式")
-            return await react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
-        
         logger.info(f"[DOC_HANDLER] 调用文档分析模型")
         prompt = f"""请分析并总结以下文档内容：
 
@@ -514,66 +509,23 @@ class MessageRouter:
 2. 关键要点
 3. 主要结论或建议
 """
-        response = await model_router.call_model(model, [{"role": "user", "content": prompt}])
-        if response and response.strip():
-            logger.info(f"[DOC_HANDLER] 文档分析完成: response_length={len(response)}")
-            return response
-        
-        # 模型返回空响应，降级到 ReAct 模式
-        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
-        return await react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
+        fallback = f"分析以下文档内容：\n{document_content}"
+        return await self._call_model_with_fallback(
+            user_id, "document_analysis", "complex", prompt, fallback_prompt=fallback
+        )
     
     async def _handle_code_generation(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[CODE_HANDLER] 开始代码生成: user_id={user_id}")
-        
-        # 使用插件系统的模型路由
-        model_router = get_model_router()
-        if not model_router:
-            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
-            return await react_engine.run(user_id, f"生成代码：\n{context}")
-        
-        model = model_router.select_model("coding", "complex")
-        if not model:
-            logger.warning("[MODEL_ROUTER] 无法为 coding 任务选择模型，降级到ReAct模式")
-            return await react_engine.run(user_id, f"生成代码：\n{context}")
-        
-        logger.info(f"[CODE_HANDLER] 调用代码生成模型")
         prompt = f"生成代码：\n{context}"
-        response = await model_router.call_model(model, [{"role": "user", "content": prompt}])
-        
-        if response and response.strip():
-            logger.info(f"[CODE_HANDLER] 代码生成完成: response_length={len(response)}")
-            return response
-        
-        # 模型返回空响应，降级到 ReAct 模式
-        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
-        return await react_engine.run(user_id, f"生成代码：\n{context}")
+        return await self._call_model_with_fallback(user_id, "coding", "complex", prompt)
 
     async def _handle_creative_writing(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[CREATIVE_HANDLER] 开始创意写作: user_id={user_id}")
-        
-        # 使用插件系统的模型路由
-        model_router = get_model_router()
-        if not model_router:
-            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
-            return await react_engine.run(user_id, f"根据以下内容创作：\n{context}")
-        
-        model = model_router.select_model("creative_writing", "medium")
-        if not model:
-            logger.warning("[MODEL_ROUTER] 无法为 creative_writing 任务选择模型，降级到ReAct模式")
-            return await react_engine.run(user_id, f"根据以下内容创作：\n{context}")
-        
-        logger.info(f"[CREATIVE_HANDLER] 调用创意写作模型")
         prompt = f"创作内容：\n{context}"
-        response = await model_router.call_model(model, [{"role": "user", "content": prompt}])
-        
-        if response and response.strip():
-            logger.info(f"[CREATIVE_HANDLER] 创意写作完成: response_length={len(response)}")
-            return response
-        
-        # 模型返回空响应，降级到 ReAct 模式
-        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
-        return await react_engine.run(user_id, f"根据以下内容创作：\n{context}")    
+        fallback = f"根据以下内容创作：\n{context}"
+        return await self._call_model_with_fallback(
+            user_id, "creative_writing", "medium", prompt, fallback_prompt=fallback
+        )
     
     async def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         """处理PPT生成相关意图 - 使用PPT工作流"""
@@ -652,29 +604,54 @@ class MessageRouter:
     
     async def _handle_unknown(self, user_id: str, context: str) -> str:
         logger.info(f"[UNKNOWN_HANDLER] 开始处理未知意图: user_id={user_id}")
-        
-        # 使用插件系统的模型路由
-        model_router = get_model_router()
-        if not model_router:
-            logger.warning("[PLUGIN_CHECK] 模型路由插件不可用，降级到ReAct模式")
-            return await react_engine.run(user_id, context)
-        
-        model = model_router.select_model("general", "simple")
-        if not model:
-            logger.warning("[MODEL_ROUTER] 无法为 general 任务选择模型，降级到ReAct模式")
-            return await react_engine.run(user_id, context)
-        
-        logger.info(f"[UNKNOWN_HANDLER] 调用通用模型")
-        response = await model_router.call_model(model, [{"role": "user", "content": context}])
-        
-        if response and response.strip():
-            logger.info(f"[UNKNOWN_HANDLER] 通用处理完成: response_length={len(response)}")
-            return response
-        
-        # 模型返回空响应，降级到 ReAct 模式
-        logger.warning("[MODEL] 模型返回空响应，降级到ReAct模式")
-        return await react_engine.run(user_id, context)
+        return await self._call_model_with_fallback(user_id, "general", "simple", context)
     
+    def _load_persisted_sessions(self):
+        """从数据库恢复已持久化的会话"""
+        import json
+        try:
+            raw_sessions = db.load_sessions()
+            for s in raw_sessions:
+                try:
+                    user_id = s["user_id"]
+                    # 从原始数据重建 session_id 对应的组
+                    # 组信息嵌入在上下文消息的元数据中
+                    group_id = "default"
+                    if user_id not in self.sessions:
+                        self.sessions[user_id] = {}
+                    # 仅当该组不存在时才创建
+                    if group_id not in self.sessions[user_id]:
+                        session = Session(
+                            id=s["id"],
+                            user_id=user_id,
+                            group_id=group_id,
+                            context=[],
+                            created_at=s["created_at"],
+                            last_active_at=s["last_active_at"],
+                        )
+                        self.sessions[user_id][group_id] = session
+                except Exception:
+                    continue
+            count = sum(len(groups) for groups in self.sessions.values())
+            logger.info(f"[SESSION_LOAD] 从数据库加载了 {count} 个会话")
+        except Exception as e:
+            logger.warning(f"[SESSION_LOAD] 会话加载失败: {str(e)}")
+
+    def _persist_session(self, session: Session):
+        """将会话持久化到数据库"""
+        import json
+        try:
+            context_json = json.dumps(
+                [m.model_dump() for m in session.context],
+                ensure_ascii=False
+            )
+            db.save_session(
+                session.id, session.user_id, context_json,
+                session.created_at, session.last_active_at
+            )
+        except Exception as e:
+            logger.warning(f"[SESSION_SAVE] 会话持久化失败: {str(e)}")
+
     def capture_correction(self, user_id: str, original: str, corrected: str, context: str) -> None:
         learning_cycle.capture_correction(user_id, original, corrected, context)
     

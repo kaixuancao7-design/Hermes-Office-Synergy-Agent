@@ -1,6 +1,7 @@
 """ReAct推理引擎 - 增强日志版本"""
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+from src.config import settings
 from src.logging_config import get_logger, log_performance, log_event
 from src.utils import generate_id, get_timestamp
 from src.plugins import get_tool_executor, get_model_router
@@ -160,7 +161,7 @@ class ReActEngine:
         logger.info("[MODEL_DIRECT] 直接调用模型 | query_length=%d", len(query))
         
         try:
-            response = await call_model(query, "ollama")
+            response = await call_model(query, settings.MODEL_ROUTER_TYPE)
             if response and response.strip():
                 logger.debug(f"[MODEL_DIRECT] 模型返回成功 | response_length={len(response)}")
                 return response
@@ -177,7 +178,7 @@ class ReActEngine:
         
         try:
             prompt = f"基于以下上下文回答问题：\n\n上下文：{context}\n\n问题：{query}"
-            response = await call_model(prompt, "ollama")
+            response = await call_model(prompt, settings.MODEL_ROUTER_TYPE)
             
             if response and response.strip():
                 logger.debug(f"[RESPONSE_GENERATE] 回答生成成功 | response_length={len(response)}")

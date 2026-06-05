@@ -1,4 +1,5 @@
 from typing import List, Dict, Any, Optional
+from src.config import settings
 from src.types import Intent
 from src.plugins.model_routers import select_model, call_model
 from src.logging_config import get_logger
@@ -198,7 +199,7 @@ class IntentRecognizer:
             if not model:
                 return 0.5
             
-            response = await call_model(prompt, "ollama")
+            response = await call_model(prompt, settings.MODEL_ROUTER_TYPE)
             if response:
                 response = response.strip()
                 

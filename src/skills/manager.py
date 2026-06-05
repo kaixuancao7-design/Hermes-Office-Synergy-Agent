@@ -113,7 +113,7 @@ class SkillManager:
         user_role = permission_service.get_user_role(user_id)
 
         # 管理员可以访问所有技能
-        if user_role and user_role.role == "admin":
+        if user_role == "admin":
             return all_skills
 
         # 普通用户只能访问自己创建的或被授权的技能
@@ -232,7 +232,7 @@ class SkillManager:
         if success:
             # 记录审计日志
             old_role = permission_service.get_user_role(user_id)
-            audit_log_service.log_role_change(admin_id, user_id, old_role.role if old_role else "guest", role)
+            audit_log_service.log_role_change(admin_id, user_id, old_role or "guest", role)
 
         return success
 
@@ -268,7 +268,7 @@ class SkillManager:
 
         # 管理员可以执行所有技能
         user_role = permission_service.get_user_role(user_id)
-        if user_role and user_role.role == "admin":
+        if user_role == "admin":
             return True
 
         # 技能创建者可以执行

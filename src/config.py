@@ -82,7 +82,16 @@ class Settings(BaseSettings):
     
     # Discord 配置
     DISCORD_BOT_TOKEN: Optional[str] = None
-    
+
+    # 认证配置
+    API_KEY_ENABLED: bool = False  # 设为 True 启用 API Key 认证
+    API_KEYS: str = ""  # 逗号分隔的合法 API Key 列表（为空且启用时允许所有请求）
+
+    # 速率限制配置
+    RATE_LIMIT_ENABLED: bool = True
+    RATE_LIMIT_MAX_REQUESTS: int = 60  # 每个窗口期最大请求数
+    RATE_LIMIT_WINDOW_SECONDS: int = 60  # 窗口期（秒）
+
     model_config = SettingsConfigDict(env_file=".env")
 
 

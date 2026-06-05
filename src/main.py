@@ -41,6 +41,8 @@ from src.gateway.im_adapter import im_adapter_manager, IMAdapterConfig
 from src.gateway.feishu_websocket import feishu_websocket_service
 from src.errors import EXCEPTION_HANDLERS
 from src.middleware.logging_middleware import RequestLoggingMiddleware, ResponseLoggingMiddleware
+from src.middleware.auth_middleware import APIKeyMiddleware
+from src.middleware.rate_limit_middleware import RateLimitMiddleware
 from src.plugins import init_plugins
 
 app = FastAPI(title="Hermes Office Synergy Agent", version="1.0.0")
@@ -49,7 +51,11 @@ app = FastAPI(title="Hermes Office Synergy Agent", version="1.0.0")
 for exception_type, handler in EXCEPTION_HANDLERS.items():
     app.add_exception_handler(exception_type, handler)
 
-# 注册日志中间件（注意顺序：先添加的先执行）
+# 注册中间件（FastAPI 按添加顺序的逆序执行 request 阶段）
+# 执行顺序（request →）：RateLimit → Auth → RequestLogging → ResponseLogging → Handler
+# 执行顺序（← response）：Handler → ResponseLogging → RequestLogging → Auth → RateLimit
+app.add_middleware(RateLimitMiddleware)
+app.add_middleware(APIKeyMiddleware)
 app.add_middleware(RequestLoggingMiddleware)
 app.add_middleware(ResponseLoggingMiddleware)
 
