@@ -12,7 +12,10 @@
 ## 核心特性
 
 - **多模态交互**：支持飞书、钉钉、企业微信等主流 IM 平台
-- **自我进化闭环**：通过用户反馈自动学习并沉淀技能，包含三闸门验证机制（捕获→学习→应用）。支持从复杂任务自动生成技能、运行时自动修补技能、7天周期性技能库维护
+- **自我进化闭环**：双引擎学习架构（主动生成 + 被动反馈），三闸门验证机制，7天周期性技能库维护
+- **技能预匹配与自动执行**：在意图识别前进行轻量级技能匹配（Tier 1摘要），高置信度直接执行完整步骤链（工具调用 + LLM语义动作），无需用户手动选择
+- **渐进式披露**：三层用户可见的技能执行透明度 — 预执行披露头 → 逐步执行进度 → 归因页脚，支持接近匹配技能建议
+- **三层 Token 优化**：Tier 1 SkillSummary 常驻匹配（~500 chars/skill），Tier 2 完整 Skill 按需加载，Tier 3 参考文档延迟读取。无关技能全程不占用 LLM 上下文
 - **技能自动学习**：执行轨迹追踪 + LLM 驱动技能生成（5+次工具调用自动触发），运行时技能自动修补，SKILL.md 格式（agentskills.io 兼容）
 - **记忆分层存储**：短期记忆（会话）、长期记忆（向量库）、程序性记忆（技能库）
 - **多模型支持**：兼容 OpenAI、Claude、Ollama、智谱、Kimi、DeepSeek 等模型
@@ -21,10 +24,11 @@
 - **技能版本管理**：支持版本回滚、修改日志记录、变更diff检查
 - **细粒度权限控制**：基于角色的访问控制（RBAC），支持按部门划分权限范围
 - **操作审计日志**：SHA-256哈希链防篡改，满足企业合规要求
+- **12 个企业办公预设技能**：覆盖文档处理、沟通协作、知识管理、数据分析、任务管理、演示展示 6 大类别，每个技能绑定真实工具链
 - **IM→演示稿全流程智能协同**：支持从IM消息触发PPT生成，自动发送到IM
 - **文件服务支持**：支持文件上传、读取和内容解析，可基于上传文件生成PPT
 - **任务执行反思**：工具调用失败时自动分析原因并尝试修复（切换备用工具、重新生成参数）
-- **细粒度意图识别**：支持PPT相关意图的精确区分（生成大纲、从大纲生成PPT、从内容生成PPT、自定义生成），实现意图到工具的精准映射
+- **细粒度意图识别**：通用办公意图优先匹配，PPT意图次之，关键词+AI双重分类
 - **上下文感知意图分析**：支持指代性词汇解析（如"这个文件"、"那个文档"），结合上下文理解用户真实需求
 - **文档分析功能**：支持飞书文件（包括PDF、DOCX等格式）的内容提取和智能分析
 - **MCP（Model Context Protocol）**：标准的上下文管理协议，提供统一的上下文创建、更新、查询、序列化接口
@@ -44,7 +48,8 @@
 ├─────────────────────────────────────────────────────────────────────────┤
 │  核心引擎层 (Engine)                                                     │
 │  IntentRecognition / TaskPlanner / MemoryManager / LearningCycle         │
-│  ReActEngine / SkillAutoGenerator / SkillAutoPatcher / SkillCurator     │
+│  ReActEngine / SkillStepExecutor / SkillSummary (Tier 1 摘要)           │
+│  SkillAutoGenerator / SkillAutoPatcher / SkillCurator                   │
 │  自我进化闭环 / 需求解析器 / IM触发器 / ContextualAnalyzer              │
 │  PPTWorkflow / TemplateMatcher / SpecLock / QualityGate / Strategist   │
 │  BackgroundScheduler / MCPManager / MCPAdapter (Model Context Protocol) │
@@ -128,7 +133,7 @@
 └──────────────────┘     └──────────────────┘
 ```
 
-### 消息路由流程
+### 消息路由流程（含技能预匹配）
 
 ```
             ┌─────────────────┐
@@ -142,27 +147,35 @@
             │ (MessageRouter) │
             └────────┬────────┘
                      │
-        ┌────────────┼────────────┐
-        ▼            ▼            ▼
-┌─────────────┐ ┌─────────────┐ ┌─────────────┐
-│  @机器人触发 │ │ 关键词触发  │ │ 附件触发    │
-└──────┬──────┘ └──────┬──────┘ └──────┬──────┘
-       │               │               │
-       └───────┬───────┴───────┬───────┘
-               │               │
-               ▼               ▼
-    ┌─────────────────┐ ┌─────────────────┐
-    │   意图识别      │ │  文件解析       │
-    │ (IntentRecog)   │ │ (FileParser)    │
-    └───────┬─────────┘ └───────┬─────────┘
-            │                   │
-            └─────────┬─────────┘
-                      │
-                      ▼
-            ┌─────────────────┐
-            │   核心引擎处理  │
-            │   (ReActEngine) │
-            └─────────────────┘
+                     ▼
+            ┌──────────────────────┐
+            │  ★ 技能预匹配 (T1)   │
+            │  TriggerMatcher       │
+            │  使用 SkillSummary    │
+            │  轻量级评分 (~7KB)    │
+            └──────┬───────┬───────┘
+                   │       │
+          score≥0.5│       │score<0.5
+                   │       │
+                   ▼       ▼
+        ┌──────────────┐ ┌──────────────┐
+        │ T2 按需加载  │ │  意图识别    │
+        │ load_full()  │ │ (IntentRecog)│
+        └──────┬───────┘ └──────┬───────┘
+               │                │
+               ▼                ▼
+        ┌──────────────┐ ┌──────────────┐
+        │ 技能步骤执行 │ │ 核心引擎处理 │
+        │ SkillStep    │ │ ReAct/Direct │
+        │ Executor     │ │              │
+        └──────┬───────┘ └──────┬───────┘
+               │                │
+               ▼                ▼
+        ┌──────────────────────────────────┐
+        │         渐进式披露 + 响应         │
+        │  🔧 披露头 → ✅ 步骤进度          │
+        │  → LLM回复 → ⚡ 归因页脚          │
+        └──────────────────────────────────┘
 ```
 
 ### 记忆分层存储架构
@@ -586,7 +599,44 @@ POST /api/v1/ppt/generate
 
 ## 自我进化闭环
 
-系统通过**三层自学习机制**实现自我进化，参照 Nous Research Hermes Agent 的闭环设计：
+系统通过**三层自学习 + 三层 Token 优化 + 三层执行披露**实现完整的自我进化闭环。
+
+### 技能预匹配与执行（Skill Pre-Match & Execution）
+
+每次用户消息在意图识别之前，先进行轻量级技能匹配：
+
+```
+用户消息 → [T1 SkillSummary 匹配] → score≥0.5? → [T2 load_full_skill()] → [SkillStepExecutor 执行]
+                                         ↓ score<0.5
+                                    [意图识别 → 路由 → ReAct/Direct]
+```
+
+- **Tier 1 匹配**：使用 `SkillSummary`（~500 chars/skill）进行轻量级评分，仅加载触发词/名称/描述/步骤指令
+- **Tier 2 按需加载**：确认匹配后通过 `load_full_skill()` 加载完整 Skill（含 SkillStep 对象）
+- **Tier 3 参考文档**：`metadata.references` 中指定的领域文档按需读取，注入 LLM prompt
+- **匹配阈值**：score ≥ 0.5 自动执行，0.3-0.5 接近匹配建议但不自动执行
+- **工具链执行**：`SkillStepExecutor` 按步骤链顺序执行 — 工具调用（15 个注册工具）→ LLM 语义动作（22 种）
+
+### 执行披露（Progressive Disclosure）
+
+技能执行全程对用户透明，三层信息渐进展示：
+
+```
+🔧 使用技能「文档摘要」(预设) — 共 2 步          ← Layer 1: 预执行披露
+   置信度: 90% | 版本: 1.0.0
+
+✅ 步骤 1/2: 读取源文档内容 — 完成 (1,234 字符)  ← Layer 2: 步骤进度
+✅ 步骤 2/2: 提取核心观点 — 完成 (856 字符)
+
+[LLM 生成的结构化文档总结...]                     ← 技能实际输出
+
+────────────────────                              ← Layer 3: 归因页脚
+⚡ 技能: 文档摘要 | 类型: 预设 | 置信度: 90%
+💡 回复「不用技能」可直接对话 | 回复「技能列表」查看所有可用技能
+```
+
+- **接近匹配建议**：score 0.3-0.5 时提示 "💡 您的问题可能适合使用「xxx」技能..."
+- **用户控制**：回复「不用技能」绕过技能直接对话，「技能列表」查看全部技能
 
 ### 1. 自动技能生成（Skill Auto-Generator）
 
@@ -606,10 +656,10 @@ POST /api/v1/ppt/generate
 当用户纠正结果与已有 learned 技能相关时，自动修补该技能：
 
 ```
-用户纠正 → 关联技能检测 → LLM diff 分析 → 更新技能步骤 → 版本递增 → 重写 SKILL.md
+用户纠正 → [T1 摘要匹配关联技能] → [T2 加载完整技能] → LLM diff 分析 → 更新步骤 → 版本递增 → 重写 SKILL.md
 ```
 
-- **关联检测**：基于触发模式子字符串匹配判断纠正是否关联到已有技能
+- **关联检测**：使用 SkillSummary 轻量级匹配，基于触发模式子字符串匹配
 - **LLM diff**：对比原始输出 vs 纠正输出，判断是否需要修补
 - **版本管理**：修补后自动递增补丁版本号
 
@@ -641,22 +691,29 @@ POST /api/v1/ppt/generate
 ### 学习流水线总览
 
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│                      自我进化双引擎                               │
-│                                                                  │
-│  引擎 A: 主动学习 (Auto-Generator)                               │
-│  ─────────────────────────────────────                           │
-│  ReAct 完成(5+工具) → 执行轨迹 → LLM分析 → 草稿 → SKILL.md      │
-│                                                                  │
-│  引擎 B: 被动学习 (Feedback Learning)                            │
-│  ─────────────────────────────────────                           │
-│  用户纠正 → 关联检测 → 已有技能? → Auto-Patch                    │
-│                      → 新技能?   → Draft → Review → Skill        │
-│                                                                  │
-│  后台维护: Skill Curator (7天周期)                                │
-│  ─────────────────────────────────────                           │
-│  评分 → 合并 → 归档 → 报告                                       │
-└──────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────┐
+│                      自我进化完整闭环                                  │
+│                                                                      │
+│  执行层                                                              │
+│  ─────────────────────────────────────                               │
+│  用户消息 → [T1 摘要匹配] → [T2 按需加载] → [SkillStepExecutor]       │
+│                  │                              │                     │
+│                  ▼                              ▼                     │
+│             执行披露                      ExecutionTrace              │
+│           (头/进度/尾)                          │                     │
+│                                                ▼                     │
+│  学习层                                    SkillAutoGenerator         │
+│  ─────────────────────────────────────     SkillAutoPatcher           │
+│  引擎 A: 主动学习 (Auto-Generator)                                    │
+│  ReAct 完成(5+工具) → 执行轨迹 → LLM分析 → SkillDraft → SKILL.md     │
+│                                                                      │
+│  引擎 B: 被动学习 (Feedback Learning)                                 │
+│  用户纠正 → [T1 关联检测] → [T2 加载] → Auto-Patch / Draft → Review  │
+│                                                                      │
+│  维护层                                                              │
+│  ─────────────────────────────────────                               │
+│  Skill Curator (7天周期): 评分 → 合并 → 归档 → 报告                  │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
 ## 任务执行反思环节
@@ -764,9 +821,10 @@ POST /api/v1/ppt/generate
 │   │   ├── learning_cycle.py         # 学习循环（三闸门验证）
 │   │   ├── memory_manager.py         # 记忆管理
 │   │   ├── react_engine.py           # ReAct推理引擎（含执行轨迹捕获）
+│   │   ├── skill_executor.py         # ★ 技能步骤执行器（工具+LLM分发、执行披露、T3参考文档）
 │   │   ├── task_planner.py           # 任务规划
 │   │   ├── skill_generator.py        # 技能自动生成器（执行轨迹→技能）
-│   │   ├── skill_patcher.py          # 技能自动修补器（运行时修补）
+│   │   ├── skill_patcher.py          # 技能自动修补器（T1摘要匹配→T2按需加载）
 │   │   ├── skill_curator.py          # 技能库维护器（7天周期）
 │   │   ├── scheduler.py              # 后台周期性任务调度器
 │   │   ├── demand_parser.py          # 需求解析器（PPT需求提取）
@@ -804,7 +862,7 @@ POST /api/v1/ppt/generate
 │   ├── skills/
 │   │   ├── manager.py                # 技能管理器（延迟初始化、循环依赖解决）
 │   │   ├── workflow.py               # 工作流引擎
-│   │   ├── triggers.py               # 触发匹配器（含技能使用统计）
+│   │   ├── triggers.py               # 触发匹配器（T1摘要匹配 + T2按需加载 + 接近匹配）
 │   │   ├── skill_md.py               # SKILL.md 文件管理器（agentskills.io兼容）
 │   │   ├── learned_skills.py         # 学习型技能管理器
 │   │   ├── preset_skills.py          # 预设技能
@@ -816,7 +874,7 @@ POST /api/v1/ppt/generate
 │   │   ├── ppt_generator.py          # PPT生成工具
 │   │   ├── file_reader.py            # 文件读取工具
 │   │   └── content_tools.py          # 内容处理工具
-│   ├── types.py                      # 类型定义（含AssumptionChecklist）
+│   ├── types.py                      # 类型定义（Skill, SkillSummary, ExecutionTrace等）
 │   └── utils.py                      # 工具函数
 ├── prompts/
 │   └── react_system_prompt.txt       # ReAct系统提示词（外部化管理）
@@ -989,6 +1047,7 @@ await im_adapter_manager.send_message(
 **触发条件：** 工具调用次数 >= 5 且任务成功完成
 
 **生成流程：**
+
 1. 总结执行轨迹 → LLM 结构化分析
 2. 输出 JSON `{skill_name, description, trigger_patterns, steps, confidence}`
 3. 置信度 >= 0.3 时创建 SkillDraft
@@ -1008,12 +1067,12 @@ await im_adapter_manager.send_message(
 
 7 天周期自动维护技能库健康度：
 
-| 阶段 | 操作 | 说明 |
-|------|------|------|
-| 评分 | `0.4*使用频率 + 0.3*成功率 + 0.3*活跃度` | 使用 `skill_usage` 表数据 |
-| 合并 | LLM 两两比较 | similarity >= 0.7 建议合并 |
-| 归档 | score < 0.2 且 30天未使用 | 标记为 archived |
-| 报告 | 生成 Markdown 报告 | `skills/curator_report.md` |
+| 阶段 | 操作                                       | 说明                         |
+| ---- | ------------------------------------------ | ---------------------------- |
+| 评分 | `0.4*使用频率 + 0.3*成功率 + 0.3*活跃度` | 使用 `skill_usage` 表数据  |
+| 合并 | LLM 两两比较                               | similarity >= 0.7 建议合并   |
+| 归档 | score < 0.2 且 30天未使用                  | 标记为 archived              |
+| 报告 | 生成 Markdown 报告                         | `skills/curator_report.md` |
 
 #### 2.8 后台调度器 (`src/engine/scheduler.py`)
 
@@ -1023,6 +1082,46 @@ await im_adapter_manager.send_message(
 - `add_one_shot()` — 注册一次性延迟任务
 - `start()` / `stop()` — 生命周期管理
 - 启动时注册 Curator 7天周期任务 + 60秒后首次运行
+
+#### 2.9 技能步骤执行器 (`src/engine/skill_executor.py`)
+
+按技能定义的步骤链顺序执行工具调用和 LLM 语义动作的核心引擎：
+
+- **`execute_skill()`** — 主入口，接收 Skill + query，逐步执行并返回 `SkillExecutionResult`
+- **工具/LLM 自动分发**：`_is_tool_action()` 判断 action 是否在 17 个已注册工具中，工具调用走 `tool_executor.execute()`，语义动作走 `call_model()`
+- **上下文累积**：每步结果追加到累积上下文中，后续步骤可引用之前的输出
+- **Tier 3 参考文档**：`_load_reference_docs()` 从 `skill.metadata.references` 按需加载领域文档
+- **执行披露**：`build_disclosure()` / `build_footer()` / `build_near_miss_suggestion()` 生成三层披露文本
+- **执行轨迹**：捕获 `ExecutionTrace` 供自学习管道使用
+- **容错**：工具执行器插件不可用时自动回退到硬编码的 17 个已知工具 ID 列表
+
+#### 2.10 三层 Token 优化（Tiered Lazy-Loading）
+
+```
+Tier 1: SkillSummary          Tier 2: Full Skill           Tier 3: References
+(常驻内存 ~500 chars/skill)   (按需加载 ~3KB/skill)        (延迟读取 可变)
+
+id, name, description,        + steps (SkillStep[])         metadata.references:
+type, trigger_patterns,       + metadata                    按需加载的领域文档
+step_instructions[]
+
+用于: TriggerMatcher 匹配      用于: SkillStepExecutor 执行  用于: LLM prompt 注入
+     执行披露                       SkillCurator 归档
+     SkillAutoPatcher 关联检测        SKILL.md 导出
+```
+
+**核心原则**：
+
+- Tier 1 永不全量灌入 Prompt — 仅匹配所需字段
+- Tier 2 仅在确认匹配后加载 — 99% 的技能不触发时不加载完整步骤
+- Tier 3 仅在步骤执行中发现需要时才加载 — 领域知识不占用常驻内存
+- 12 技能场景：15KB → 7KB（55% 缩减）；50 技能场景：60KB → 12KB（5x 缩减）
+
+**关键类型**：`SkillSummary`（`src/types.py`）— 新增的 Tier 1 轻量级摘要模型，支持 `from_skill()` 从完整 Skill 提取。
+
+**数据库层**：`db.get_skills_summaries()` — 不反序列化 SkillStep 对象，仅提取 instruction 文本。
+
+**匹配器更新**：`TriggerMatcher` 使用 `get_skills_summaries()` 进行匹配评分，`load_full_skill()` 按需加载 Tier 2。
 
 ---
 
@@ -1095,6 +1194,7 @@ await im_adapter_manager.send_message(
 agentskills.io 兼容的 Markdown 技能文件管理器：
 
 **文件格式：**
+
 ```markdown
 ---
 name: skill-name
@@ -1122,16 +1222,17 @@ updated_at: 1717000000
 
 **核心方法：**
 
-| 方法 | 说明 |
-|------|------|
-| `skill_to_markdown(skill)` | Skill 对象 → SKILL.md 字符串 |
-| `markdown_to_skill(content)` | SKILL.md 字符串 → Skill 对象 |
-| `write_skill_md(skill)` | 写入 `skills/learned/{name}.md` |
-| `read_skill_md(filepath)` | 读取单个 SKILL.md |
-| `sync_from_directory()` | 启动时从文件系统导入技能 |
-| `delete_skill_md(name)` | 删除 SKILL.md 文件 |
+| 方法                           | 说明                              |
+| ------------------------------ | --------------------------------- |
+| `skill_to_markdown(skill)`   | Skill 对象 → SKILL.md 字符串     |
+| `markdown_to_skill(content)` | SKILL.md 字符串 → Skill 对象     |
+| `write_skill_md(skill)`      | 写入 `skills/learned/{name}.md` |
+| `read_skill_md(filepath)`    | 读取单个 SKILL.md                 |
+| `sync_from_directory()`      | 启动时从文件系统导入技能          |
+| `delete_skill_md(name)`      | 删除 SKILL.md 文件                |
 
 **集成点：**
+
 - 技能创建时自动写入 SKILL.md（`learned_skills.py`）
 - 启动时同步文件系统中的 SKILL.md 到数据库（`main.py`）
 - 自动修补时重写 SKILL.md（`skill_patcher.py`）
@@ -1227,6 +1328,7 @@ run_server(transport="http")
 MCP Server 支持两种运行模式：
 
 **1. 独立启动（Stdio/HTTP）：**
+
 ```python
 from src.engine.mcp_server import run_server
 run_server(transport="stdio")   # 或 transport="http"
@@ -1235,6 +1337,7 @@ run_server(transport="stdio")   # 或 transport="http"
 **2. 作为后台子服务（生产环境）：**
 
 在 `.env` 中启用：
+
 ```env
 MCP_SERVER_ENABLED=true
 MCP_SERVER_PORT=8000
@@ -1399,6 +1502,24 @@ MIT License
 
 ## 更新日志
 
+### v1.2.0 (2026-06-05)
+
+**新功能：技能预匹配执行 + 执行披露 + 三层 Token 优化**
+
+- **技能预匹配路由**：在意图识别前进行 Tier 1 轻量级技能匹配（使用 `SkillSummary`），高置信度（score ≥ 0.5）直接执行技能步骤链，跳过意图识别→路由→处理器流程
+- **`SkillStepExecutor`** (`src/engine/skill_executor.py`)：按技能步骤链顺序执行工具调用（17 个已注册工具）和 LLM 语义动作（22 种），上下文在步骤间累积传递，捕获 `ExecutionTrace` 供自学习管道使用
+- **三层执行披露**：预执行披露头（🔧 使用技能「xxx」）→ 逐步执行进度（✅/❌/⏱️）→ 归因页脚（⚡ 技能信息 + 用户控制提示）
+- **接近匹配建议**：score 0.3-0.5 的技能不自动执行，仅提示用户 "💡 您的问题可能适合使用「xxx」技能..."
+- **`SkillSummary` 模型** (`src/types.py`)：Tier 1 轻量级技能摘要（~500 chars），仅含匹配所需字段，内存为完整 Skill 的 1/5~1/10
+- **`db.get_skills_summaries()`**：不反序列化完整 SkillStep 对象，仅提取 instruction 文本，12 技能场景减少 55% 数据量
+- **Tier 2 按需加载**：`TriggerMatcher.load_full_skill()` 仅在确认匹配后加载完整 Skill
+- **Tier 3 参考文档**：`_load_reference_docs()` 从 `skill.metadata.references` 按需加载领域知识文档，注入 LLM prompt
+- **`TriggerMatcher` 重构**：`find_relevant_skill()` 返回 `SkillSummary`；新增 `find_relevant_skill_with_near_misses()` 返回 `(best, [near_misses])`；`_calculate_match_score()` 兼容两种类型
+- **LangGraph 消息图更新**：新增 `skill_prematch` 节点（detect_file → recognize 之间）+ `handle_skill` 节点
+- **`_handle_skill_request()` 修复**：从返回技能描述文本改为实际执行技能步骤链
+- **12 个企业办公预设技能**：覆盖 6 大类别（文档处理、沟通协作、知识管理、数据分析、任务管理、演示展示），每个技能绑定真实工具链
+- **触发模式优化**：174 个触发模式覆盖自然语言变体，匹配准确率 75%（9/12 高置信度），0 误匹配
+
 ### v1.1.0 (2026-06-05)
 
 **新功能：技能自学习系统（参照 Nous Research Hermes Agent 设计）**
@@ -1543,9 +1664,7 @@ MIT License
 
 **Bug修复：**
 
-
 ---
-
 
 ### v1.0.1 (2026-04-28)
 
