@@ -7,15 +7,16 @@ from src.logging_config import get_logger
 logger = get_logger("engine")
 
 INTENT_TYPES = [
+    # 通用办公意图（优先匹配）
     "summarization",
     "question_answering",
     "task_execution",
-    "skill_request",
-    "memory_query",
     "document_analysis",
-    "code_generation",
     "creative_writing",
-    # PPT相关意图（细粒度）
+    "code_generation",
+    "memory_query",
+    "skill_request",
+    # PPT相关意图（细粒度 — 仅当明确提及 PPT/演示时匹配）
     "ppt_generate_outline",      # 生成PPT大纲
     "ppt_generate_from_outline", # 从大纲生成PPT
     "ppt_generate_from_content", # 从内容直接生成PPT
@@ -25,15 +26,15 @@ INTENT_TYPES = [
 
 # 意图→工具映射
 INTENT_TO_TOOL_MAP = {
-    # 通用意图
-    "summarization": None,  # 由引擎直接处理
-    "question_answering": None,  # 可能需要搜索
-    "task_execution": None,  # 需要进一步分析
-    "skill_request": "skill_manager",
-    "memory_query": "memory_search",
-    "document_analysis": None,  # 可能需要读取文件
+    # 通用办公意图
+    "summarization": None,       # 由引擎直接处理
+    "question_answering": "document_search",  # 知识库搜索优先
+    "task_execution": None,      # 需要进一步分析
+    "document_analysis": "feishu_file_read",  # 读取文件进行分析
+    "creative_writing": None,    # 由LLM直接处理
     "code_generation": "code_execution",
-    "creative_writing": None,  # 由LLM直接处理
+    "memory_query": "memory_search",
+    "skill_request": "skill_manager",
 }
 
 # 工具→意图反向映射（用于工具选择时的意图确认）
@@ -99,73 +100,59 @@ class IntentRecognizer:
     async def recognize(self, text: str) -> Intent:
         text_lower = text.lower()
         
-        # 定义意图优先级（越具体的意图优先级越高）
+        # 定义意图优先级（通用办公意图优先，PPT意图仅在明确提及时匹配）
         intent_priority = [
-            "ppt_generate_from_content",  # 最具体：明确提到"根据内容"
-            "ppt_generate_from_outline",   # 较具体：明确提到"根据大纲"
-            "ppt_generate_outline",        # 较具体：明确提到"生成大纲"
+            # 通用办公意图 — 优先匹配（覆盖 80%+ 的企业办公场景）
             "summarization",
             "document_analysis",
-            "code_generation",
-            "memory_query",
             "question_answering",
             "task_execution",
-            "skill_request",
             "creative_writing",
-            "ppt_custom_generate",         # 通用：简单的"做ppt"，放在最后
+            "code_generation",
+            "memory_query",
+            "skill_request",
+            # PPT 意图 — 仅在明确包含 PPT/演示关键词时才匹配
+            "ppt_generate_from_content",
+            "ppt_generate_from_outline",
+            "ppt_generate_outline",
+            "ppt_custom_generate",
             "unknown"
         ]
-        
+
         matched_intent = "unknown"
         max_matches = 0
-        
-        # PPT相关意图的特殊关键词匹配（支持更灵活的匹配）
-        ppt_intent_keywords = {
-            "ppt_generate_from_content": ["文件", "文档", "内容", "生成ppt"],
-            "ppt_generate_from_outline": ["大纲", "提纲", "结构", "生成ppt"],
-            "ppt_generate_outline": ["ppt大纲", "大纲", "提纲", "结构"],
-            "ppt_custom_generate": ["ppt", "演示", "汇报"]
-        }
-        
+
         # 按优先级顺序遍历意图
         for intent in intent_priority:
             if intent not in self.intent_patterns:
                 continue
-                
+
             patterns = self.intent_patterns[intent]
-            
+
             # 统计匹配的关键词数量
             matches = 0
             matched_patterns = []
-            
+
             for pattern in patterns:
                 # 确保模式和文本都转为小写进行比较
                 if pattern.lower() in text_lower:
                     matches += 1
                     matched_patterns.append(pattern)
-            
-            # 对于PPT相关意图，额外进行关键词匹配（提高匹配灵活性）
-            if intent in ppt_intent_keywords:
-                keywords = ppt_intent_keywords[intent]
-                keyword_matches = sum(1 for kw in keywords if kw in text_lower)
-                # 如果关键词匹配数大于等于2，增加匹配分数
-                if keyword_matches >= 2:
-                    matches += keyword_matches
-            
+
             # 匹配规则：
             # 1. 如果当前意图匹配数大于之前的最大匹配数，更新
             # 2. 如果匹配数相同，优先级高的意图优先
-            # 3. 对于PPT通用意图(ppt_custom_generate)，只有在没有匹配到其他PPT意图时才使用
+            # 3. 对于 PPT 通用意图，仅在未匹配到其他 PPT 意图时使用
             if matches > 0:
                 if intent == "ppt_custom_generate":
                     # 检查是否已经匹配到更具体的PPT意图
                     has_specific_ppt_intent = any(
-                        specific_intent in matched_intent 
+                        specific_intent in matched_intent
                         for specific_intent in ["ppt_generate_from_content", "ppt_generate_from_outline", "ppt_generate_outline"]
                     )
                     if has_specific_ppt_intent:
                         continue  # 跳过通用意图
-                
+
                 if matches > max_matches or \
                    (matches == max_matches and intent_priority.index(intent) < intent_priority.index(matched_intent)):
                     max_matches = matches
@@ -374,35 +361,37 @@ class ContextualIntentAnalyzer:
         """
         intent = analysis["intent"]
         
-        # 如果用户提到"这个文件"但没有明确意图，建议询问具体需求
+        # 指代性词汇 → 询问具体需求
         if analysis["has_referential"] and intent == "unknown":
             return "询问用户对文件的具体操作需求"
-        
-        # 如果意图是生成PPT但没有文件内容，建议读取文件
-        if intent.startswith("ppt_") and not context.get("file_content"):
+
+        # 需要文件内容但尚未加载的场景（通用模式）
+        content_required_intents = {
+            "summarization", "document_analysis", "ppt_generate_from_content",
+            "ppt_generate_from_outline", "ppt_generate_outline",
+        }
+        if intent in content_required_intents and not context.get("file_content"):
             return "读取文件内容"
-        
-        # 如果意图是总结但没有文件内容，建议读取文件
-        if intent == "summarization" and not context.get("file_content"):
-            return "读取文件内容"
-        
-        # 如果意图是文档分析但没有文件内容，建议读取文件
-        if intent == "document_analysis" and not context.get("file_content"):
-            return "读取文件内容"
-        
-        # 如果意图是记忆查询，建议执行记忆搜索
+
+        # 记忆查询 → 搜索记忆
         if intent == "memory_query":
             return "执行记忆搜索"
-        
-        # 如果意图是问答且有历史对话，建议先搜索记忆
-        if intent == "question_answering" and context.get("chat_history"):
-            return "先搜索历史对话记忆"
-        
-        # 如果意图是代码生成，检查是否有必要的上下文信息
+
+        # 问答 → 优先搜索知识库和记忆
+        if intent == "question_answering":
+            if context.get("chat_history"):
+                return "先搜索历史对话记忆和知识库"
+            return "搜索知识库"
+
+        # 代码生成 → 确认语言和上下文
         if intent == "code_generation":
             if not analysis.get("entities") or not analysis["entities"].get("language"):
                 return "询问用户目标编程语言"
-        
+
+        # 任务执行 → 分析具体任务类型
+        if intent == "task_execution":
+            return "分析任务类型并匹配合适的技能"
+
         # 默认返回 None，表示没有特别建议的下一步操作
         return None
 
