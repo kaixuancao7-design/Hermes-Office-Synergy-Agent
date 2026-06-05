@@ -10,6 +10,8 @@ from src.data.database import db
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger, set_request_context, clear_request_context, log_event
 from src.plugins import get_memory_store, get_skill_manager, get_model_router, get_tool_executor
+from src.skills.triggers import trigger_matcher
+from src.engine.skill_executor import skill_executor
 
 logger = get_logger("gateway")
 
@@ -106,6 +108,45 @@ class MessageRouter:
             if self._is_group_message(message) and not self._is_mentioned(message):
                 logger.debug(f"[GROUP_FILTER] 群消息未提及机器人，忽略 | user_id={user_id}")
                 return ""
+
+            # =================================================================
+            # 技能预匹配：在意图识别之前检查是否有高置信度技能匹配
+            # 如果匹配到技能（score ≥ 0.5），直接执行技能的步骤链，
+            # 跳过意图识别 → 路由 → 处理器的常规流程
+            # =================================================================
+            matched_skill = trigger_matcher.find_relevant_skill(message.content, user_id)
+            if matched_skill:
+                score = trigger_matcher._calculate_match_score(
+                    matched_skill, message.content.lower()
+                )
+                if score >= skill_executor.SKILL_MATCH_THRESHOLD:
+                    logger.info(
+                        f"[SKILL_PREMATCH] Executing skill directly | "
+                        f"skill={matched_skill.name} | score={score:.2f} | "
+                        f"type={matched_skill.type}"
+                    )
+                    try:
+                        result = await skill_executor.execute_skill(
+                            matched_skill, message.content, user_id,
+                            metadata=message.metadata,
+                        )
+                        response = result.response
+                        # 记录技能使用（供 Curator 评分）
+                        db.record_skill_usage(matched_skill.id, user_id)
+                        # 保存响应和日志
+                        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+                        log_event(logger, "message_processed", trace_id=trace_id,
+                                 user_id=user_id, intent="skill_prematch",
+                                 mode="Skill", response_length=len(response),
+                                 elapsed_ms=elapsed_ms)
+                        self._save_response_to_db(user_id, response, group_id, group_name, "skill_prematch")
+                        return response
+                    except Exception as e:
+                        logger.error(
+                            f"[SKILL_PREMATCH] Skill execution failed, "
+                            f"falling through to normal routing | error={str(e)}"
+                        )
+                        # 执行失败时降级到正常流程（不阻塞用户请求）
 
             # 意图识别
             metadata = message.metadata or {}
@@ -370,17 +411,48 @@ class MessageRouter:
         return f"任务完成！\n步骤：\n{chr(10).join(f'{i+1}. {s.description}: {s.result}' for i, s in enumerate(task.steps))}"
     
     async def _handle_skill_request(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
+        """处理技能请求 — 查找匹配技能并执行其步骤链
+
+        优先使用 SkillStepExecutor 执行完整的技能工作流（工具调用 + LLM 语义动作）。
+        如果技能管理器未找到技能，降级使用 TriggerMatcher 直接匹配。
+        如果仍未找到，降级到 ReAct 引擎进行自由推理。
+        """
         logger.info(f"[SKILL_HANDLER] 开始技能请求处理: user_id={user_id}")
-        
-        # 使用插件系统的技能管理器
+
+        # 方式 1: 通过插件系统的技能管理器查找
         skill_manager = get_skill_manager()
-        
+        skill = None
+
         if skill_manager:
-            skill = skill_manager.find_relevant_skill(context)
-            if skill:
-                logger.info(f"[SKILL_HANDLER] 找到相关技能: skill_name={skill.name}")
-                return f"已找到相关技能：{skill.name}\n描述：{skill.description}"
-        
+            try:
+                skill = skill_manager.find_relevant_skill(context)
+            except AttributeError:
+                # HybridSkillManager 没有 find_relevant_skill 方法
+                pass
+
+        # 方式 2: 通过 TriggerMatcher 直接匹配（更可靠）
+        if skill is None:
+            skill = trigger_matcher.find_relevant_skill(context, user_id)
+
+        # 执行匹配到的技能
+        if skill:
+            logger.info(
+                f"[SKILL_HANDLER] Found skill, executing | "
+                f"skill={skill.name} | type={skill.type} | steps={len(skill.steps)}"
+            )
+            try:
+                result = await skill_executor.execute_skill(
+                    skill, context, user_id, metadata=metadata,
+                )
+                # 记录技能使用
+                db.record_skill_usage(skill.id, user_id)
+                return result.response
+            except Exception as e:
+                logger.error(
+                    f"[SKILL_HANDLER] Skill execution failed, "
+                    f"falling back to ReAct | error={str(e)}"
+                )
+
         logger.warning("[SKILL_HANDLER] 未找到相关技能，降级到ReAct模式")
         return await react_engine.run(user_id, f"查找与以下内容相关的技能：{context}")
     

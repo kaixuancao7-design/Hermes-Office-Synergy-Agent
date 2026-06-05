@@ -3,15 +3,18 @@
 图结构:
   __start__
       ↓
-   setup        ← trace_id, 会话管理, 消息存储
+   setup         ← trace_id, 会话管理, 消息存储
       ↓
-   filter       ← 群消息检查 → skip (提前结束)
+   filter        ← 群消息检查 → skip (提前结束)
       ↓
-   detect_file  ← 文件上传检测 → 覆盖意图
+   detect_file   ← 文件上传检测 → 覆盖意图
       ↓
-   recognize    ← 意图识别
+   skill_prematch ← ★ 技能预匹配：高置信度技能直接执行
       ↓
-   route_intent ← 条件分发
+   recognize     ← 意图识别（skill_prematch 未命中时）
+      ↓
+   route_intent  ← 条件分发
+      ├── skill  → handle_skill  → save_response → END
       ├── ppt    → handle_ppt    → save_response → END
       ├── react  → handle_react  → save_response → END
       └── direct → handle_direct → save_response → END
@@ -29,6 +32,8 @@ from src.data.database import db
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger, set_request_context, clear_request_context, log_event
 from src.plugins import get_memory_store, get_tool_executor
+from src.skills.triggers import trigger_matcher
+from src.engine.skill_executor import skill_executor
 
 logger = get_logger("gateway")
 
@@ -60,7 +65,10 @@ class RouteState(TypedDict, total=False):
     intent_confidence: float
     intent_entities: dict
     use_react: bool
-    mode: str                  # "ReAct" | "Direct" | "PPT"
+    mode: str                  # "ReAct" | "Direct" | "PPT" | "Skill"
+
+    # ---- 技能预匹配 ----
+    matched_skill: Any         # 预匹配到的技能对象（Skill），供 handle_skill 节点使用
 
     # ---- 输出 ----
     response: str
@@ -102,7 +110,9 @@ class MessageGraph:
             graph.add_node("setup", self._setup_node)
             graph.add_node("filter", self._filter_node)
             graph.add_node("detect_file", self._detect_file_node)
+            graph.add_node("skill_prematch", self._skill_prematch_node)
             graph.add_node("recognize", self._recognize_node)
+            graph.add_node("handle_skill", self._handle_skill_node)
             graph.add_node("handle_ppt", self._handle_ppt_node)
             graph.add_node("handle_react", self._handle_react_node)
             graph.add_node("handle_direct", self._handle_direct_node)
@@ -119,13 +129,16 @@ class MessageGraph:
                 {"detect_file": "detect_file", "end": END},
             )
 
-            graph.add_edge("detect_file", "recognize")
+            # detect_file → skill_prematch → recognize
+            graph.add_edge("detect_file", "skill_prematch")
+            graph.add_edge("skill_prematch", "recognize")
 
-            # recognize → ppt / react / direct
+            # recognize → skill / ppt / react / direct
             graph.add_conditional_edges(
                 "recognize",
                 self._route_intent,
                 {
+                    "handle_skill": "handle_skill",
                     "handle_ppt": "handle_ppt",
                     "handle_react": "handle_react",
                     "handle_direct": "handle_direct",
@@ -133,6 +146,7 @@ class MessageGraph:
             )
 
             # 所有处理器 → save_response
+            graph.add_edge("handle_skill", "save_response")
             graph.add_edge("handle_ppt", "save_response")
             graph.add_edge("handle_react", "save_response")
             graph.add_edge("handle_direct", "save_response")
@@ -268,8 +282,49 @@ class MessageGraph:
             logger.info(f"[MSG_DETECT] 文件上传 | file_name={state['file_name']}")
         return state
 
+    async def _skill_prematch_node(self, state: RouteState) -> RouteState:
+        """SkillPrematch节点 — 在意图识别前检查是否有高置信度技能匹配
+
+        如果匹配到技能（score ≥ 0.5），直接设置 intent_type="skill_execute"，
+        跳过后续的意图识别。文件上传场景跳过技能匹配。
+        """
+        if state.get("is_file_upload"):
+            return state  # 文件上传跳过技能匹配，走正常文档分析流程
+
+        query = state["content"]
+        user_id = state.get("user_id", "unknown")
+
+        matched = trigger_matcher.find_relevant_skill(query, user_id)
+        if matched:
+            score = trigger_matcher._calculate_match_score(matched, query.lower())
+            if score >= skill_executor.SKILL_MATCH_THRESHOLD:
+                logger.info(
+                    f"[MSG_SKILL_PREMATCH] Skill matched | "
+                    f"skill={matched.name} | score={score:.2f} | type={matched.type}"
+                )
+                state["matched_skill"] = matched
+                state["intent_type"] = "skill_execute"
+                state["intent_confidence"] = score
+                state["mode"] = "Skill"
+                state["use_react"] = False
+                return state
+
+        return state
+
     async def _recognize_node(self, state: RouteState) -> RouteState:
-        """Recognize节点 — 意图识别 + 路由决策"""
+        """Recognize节点 — 意图识别 + 路由决策
+
+        如果 skill_prematch 已经匹配到技能（intent_type="skill_execute"），
+        则跳过意图识别，直接保留技能匹配结果。
+        """
+        # 技能预匹配已命中 → 跳过意图识别
+        if state.get("intent_type") == "skill_execute":
+            logger.info(
+                f"[MSG_RECOGNIZE] Skipping intent recognition — "
+                f"skill already matched | skill={state.get('matched_skill').name if state.get('matched_skill') else '?'}"
+            )
+            return state
+
         from src.engine.intent_recognition import intent_recognizer
 
         if state.get("is_file_upload"):
@@ -290,6 +345,41 @@ class MessageGraph:
             state["mode"] = "ReAct" if use_react else "Direct"
 
         logger.info(f"[MSG_RECOGNIZE] intent={state['intent_type']} | confidence={state['intent_confidence']:.2f} | mode={state['mode']}")
+        return state
+
+    async def _handle_skill_node(self, state: RouteState) -> RouteState:
+        """HandleSkill节点 — 执行预匹配到的技能步骤链"""
+        from src.data.database import db
+
+        skill = state.get("matched_skill")
+        user_id = state["user_id"]
+        content = state["content"]
+        metadata = state.get("metadata")
+
+        if skill is None:
+            logger.warning("[MSG_SKILL] No matched_skill in state, falling back to direct handler")
+            state["response"] = "技能匹配数据丢失，请重试。"
+            return state
+
+        logger.info(
+            f"[MSG_SKILL] Executing skill | skill={skill.name} | "
+            f"steps={len(skill.steps)} | type={skill.type}"
+        )
+
+        try:
+            result = await skill_executor.execute_skill(
+                skill, content, user_id, metadata=metadata,
+            )
+            state["response"] = result.response
+            # 记录技能使用（供 Curator 评分）
+            db.record_skill_usage(skill.id, user_id)
+        except Exception as e:
+            logger.error(f"[MSG_SKILL] Skill execution failed | error={str(e)}")
+            state["response"] = (
+                f"执行技能「{skill.name}」时出现错误，已切换到通用模式处理您的请求。\n\n"
+                f"错误详情: {str(e)[:200]}"
+            )
+
         return state
 
     async def _handle_ppt_node(self, state: RouteState) -> RouteState:
@@ -393,8 +483,12 @@ class MessageGraph:
         return "detect_file"
 
     def _route_intent(self, state: RouteState) -> str:
-        """意图路由: PPT工作流 / ReAct引擎 / 直接处理器"""
+        """意图路由: 技能执行 / PPT工作流 / ReAct引擎 / 直接处理器"""
         intent_type = state.get("intent_type", "unknown")
+
+        # 技能执行（预匹配命中）
+        if intent_type == "skill_execute" and state.get("matched_skill"):
+            return "handle_skill"
 
         # PPT相关意图
         if intent_type.startswith("ppt_"):
@@ -409,7 +503,7 @@ class MessageGraph:
 
 # 图节点列表（供可视化）
 GRAPH_NODES = [
-    "setup", "filter", "detect_file", "recognize",
-    "handle_ppt", "handle_react", "handle_direct",
+    "setup", "filter", "detect_file", "skill_prematch", "recognize",
+    "handle_skill", "handle_ppt", "handle_react", "handle_direct",
     "save_response",
 ]

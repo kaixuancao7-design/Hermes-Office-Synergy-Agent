@@ -76,6 +76,8 @@ class PresetSkillsManager:
                 'trigger_patterns': [
                     '总结文档', '文档摘要', '这篇文章说了什么', '概括内容',
                     '总结一下', '帮我读一下', '文件讲了什么', 'summarize document',
+                    '总结', '摘要', '文档总结', '内容摘要', '帮我总结',
+                    '这篇文章', '这个文件', '读一下', '讲一下',
                 ],
                 'metadata': {
                     'category': 'document',
@@ -118,7 +120,9 @@ class PresetSkillsManager:
                 'trigger_patterns': [
                     '润色', '改写', '优化表达', '改进措辞', 'polish',
                     '帮我改一下', '措辞优化', '表达优化', '文字润色',
-                    '改得好一点', '修辞', '润色文字',
+                    '改得好一点', '修辞', '润色文字', '润色一下',
+                    '优化', '改改', '措辞', '润色这段', '帮我润色',
+                    '修改一下', '帮忙改', '文字优化',
                 ],
                 'metadata': {
                     'category': 'document',
@@ -355,6 +359,8 @@ class PresetSkillsManager:
                 'trigger_patterns': [
                     '发消息', '写消息', '通知大家', '群公告', 'IM消息',
                     '工作群消息', '发通知', '群发', 'draft message',
+                    '群里发', '群里通知', '写通知', '群消息', '发群里',
+                    '群发消息', '写个通知', '发个通知', '公告',
                 ],
                 'metadata': {
                     'category': 'communication',
@@ -406,6 +412,8 @@ class PresetSkillsManager:
                     '知识库', '公司文档', '内部资料', '查一下', '搜索文档',
                     '有没有相关文档', '帮我查', 'knowledge base', 'search docs',
                     '找一下文档', '公司有规定吗', '之前怎么做的',
+                    '内部文档', '搜文档', '找文档', '查文档', '公司资料',
+                    '规章制度', '有没有文档', '搜一下', '找一下',
                 ],
                 'metadata': {
                     'category': 'knowledge',
@@ -540,7 +548,8 @@ class PresetSkillsManager:
                 'trigger_patterns': [
                     '数据分析', '分析数据', '统计分析', '数据洞察',
                     'data analysis', '趋势分析', '数据报表', '分析表格',
-                    '数据汇总', '透视分析',
+                    '数据汇总', '透视分析', 'Excel分析', '表格分析',
+                    '分析Excel', '分析表格', '数据处理', 'Excel数据',
                 ],
                 'metadata': {
                     'category': 'data',
@@ -622,7 +631,8 @@ class PresetSkillsManager:
                 'trigger_patterns': [
                     '生成图表', '画图', '图表', '可视化', 'chart',
                     '柱状图', '折线图', '饼图', '散点图', '数据可视化',
-                    '做成图', 'graph', 'plot',
+                    '做成图', 'graph', 'plot', '画个图', '做图表',
+                    '帮我画', '画个', '制图', '做图', '画一张',
                 ],
                 'metadata': {
                     'category': 'data',
@@ -693,6 +703,8 @@ class PresetSkillsManager:
                 'trigger_patterns': [
                     '周报', 'weekly report', '工作周报', '本周总结',
                     '写周报', '生成周报', '一周工作总结', '本周工作',
+                    '一周总结', '这周工作', '上周周报', '周工作总结',
+                    '本周汇报', '一周回顾',
                 ],
                 'metadata': {
                     'category': 'task',
