@@ -111,8 +111,8 @@ class ReActEngine:
                 create_langchain_tools,
                 create_chat_model,
             )
+            from src.engine.checkpointer import get_checkpointer
             from langchain.agents import create_agent
-            from langgraph.checkpoint.memory import MemorySaver
             from langchain_core.messages import HumanMessage
 
             # 1. 创建 LangChain 工具（复用已有包装层）
@@ -135,7 +135,7 @@ class ReActEngine:
                 model=chat_model,
                 tools=lc_tools,
                 system_prompt=system_prompt,
-                checkpointer=MemorySaver(),
+                checkpointer=get_checkpointer(),
             )
 
             # 5. 调用 agent
@@ -454,7 +454,7 @@ class ReActEngine:
             return self._langgraph_available
         try:
             from langchain.agents import create_agent  # noqa: F401
-            from langgraph.checkpoint.memory import MemorySaver  # noqa: F401
+            from src.engine.checkpointer import get_checkpointer  # noqa: F401
             self._langgraph_available = True
             logger.info("[ReAct_LG] langgraph可用，优先使用 create_agent")
         except ImportError:

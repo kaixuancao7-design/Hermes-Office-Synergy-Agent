@@ -409,9 +409,9 @@ class DeepSeekRouter(ModelRouterBase):
 
     @log_performance(logger, "DeepSeek调用")
     async def route(self, prompt: str, model_type: str = None) -> str:
-        """路由到DeepSeek模型"""
+        """路由到DeepSeek模型 — 严格使用配置文件中的预设模型"""
         start_time = datetime.now()
-        model = model_type or self.default_model
+        model = self.default_model  # 始终使用配置的模型，model_type仅作标识
         prompt_length = len(prompt)
 
         if not self.api_key:

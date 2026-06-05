@@ -5,7 +5,7 @@ from src.engine.intent_recognition import intent_recognizer
 from src.engine.task_planner import task_planner
 from src.engine.learning_cycle import learning_cycle
 from src.engine.react_engine import react_engine
-from src.engine.ppt_workflow import ppt_workflow, WorkflowState
+from src.engine.ppt_workflow import ppt_workflow
 from src.data.database import db
 from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger, set_request_context, clear_request_context, log_event
@@ -19,6 +19,7 @@ class MessageRouter:
         self.sessions: Dict[str, Dict[str, Session]] = {}  # user_id -> group_id -> Session
         self.use_react_mode = True  # 启用 ReAct 模式
         self._load_persisted_sessions()
+        self._graph = None  # 延迟初始化 LangGraph 消息图
         logger.info("[INIT] MessageRouter 初始化完成")
     
     async def _call_model_with_fallback(
@@ -58,168 +59,143 @@ class MessageRouter:
         return await react_engine.run(user_id, fallback_prompt)
 
     async def route(self, message: Message) -> str:
+        """路由消息 — 优先使用 LangGraph 消息图，失败回退到手写管道"""
+        # 延迟初始化 LangGraph 消息图
+        if self._graph is None:
+            try:
+                from src.gateway.message_graph import MessageGraph
+                self._graph = MessageGraph(self)
+                logger.info("[ROUTER] LangGraph消息图已启用")
+            except Exception as e:
+                logger.warning(f"[ROUTER] LangGraph消息图不可用: {str(e)}，使用手写管道")
+
+        if self._graph is not None:
+            try:
+                return await self._graph.route(message)
+            except Exception as e:
+                logger.error(f"[ROUTER] LangGraph消息图异常: {str(e)}，回退到手写管道")
+
+        # 回退：原始手写管道
+        return await self._route_manual(message)
+
+    async def _route_manual(self, message: Message) -> str:
+        """手写消息路由管道（LangGraph不可用时的回退）"""
         start_time = datetime.now()
-        
-        # 生成请求追踪ID
         trace_id = message.metadata.get("message_id", generate_id()) if message.metadata else generate_id()
         user_id = message.user_id
-        
-        # 设置请求上下文（用于日志追踪）
         set_request_context(request_id=trace_id, user_id=user_id)
-        
+
         try:
             content_preview = message.content[:50] if len(message.content) > 50 else message.content
             logger.info(f"[ROUTER_INPUT] 开始路由消息 | trace_id={trace_id} | user_id={user_id} | content={content_preview}")
-            
-            # 从metadata获取分组信息
+
             metadata = message.metadata or {}
             group_id = metadata.get("group_id", "default")
             group_name = metadata.get("group_name", "默认会话")
-            tags = metadata.get("tags", [])
-            
-            logger.debug(f"[SESSION_INFO] 用户会话信息 | user_id={user_id} | group_id={group_id} | group_name={group_name}")
-            
-            # 初始化用户会话字典
-            if user_id not in self.sessions:
-                self.sessions[user_id] = {}
-                logger.debug(f"[SESSION_CREATE] 创建新用户会话 | user_id={user_id}")
-            
-            # 创建或获取会话
-            if group_id not in self.sessions[user_id]:
-                session_id = generate_id()
-                self.sessions[user_id][group_id] = Session(
-                    id=session_id,
-                    user_id=user_id,
-                    group_id=group_id,
-                    group_name=group_name,
-                    context=[],
-                    created_at=get_timestamp(),
-                    last_active_at=get_timestamp(),
-                    tags=tags
-                )
-                logger.info(f"[SESSION_CREATE] 创建新分组会话 | session_id={session_id} | group_id={group_id} | group_name={group_name}")
-            
-            session = self.sessions[user_id][group_id]
+
+            # 会话管理
+            session = self._get_or_create_session(user_id, group_id, group_name)
             session.context.append(message)
             session.last_active_at = get_timestamp()
-            session.group_name = group_name  # 更新分组名称
-
-            # 持久化会话到数据库
             self._persist_session(session)
-
-            # 保存消息到数据库
             db.save_message(message)
-            logger.debug(f"[DB_SAVE] 消息已保存到数据库 | message_id={message.id}")
-            
-            # 使用插件系统的记忆存储
-            memory_store = get_memory_store()
-            if memory_store:
-                logger.debug(f"[PLUGIN_CHECK] 记忆存储插件可用 | type={type(memory_store).__name__}")
-                try:
-                    from src.types import MemoryEntry
-                    memory_entry = MemoryEntry(
-                        id=generate_id(),
-                        user_id=user_id,
-                        type="short",
-                        content=message.content,
-                        timestamp=message.timestamp,
-                        tags=["short_term", "message", group_id],
-                        group_id=group_id,
-                        group_name=group_name
-                    )
-                    memory_store.add_memory(user_id, memory_entry)
-                    logger.debug(f"[MEMORY_STORE] 消息已存储到记忆 | user_id={user_id} | message_id={message.id}")
-                except Exception as e:
-                    logger.error(f"[MEMORY_STORE] 记忆存储失败 | user_id={user_id} | error={str(e)}", exc_info=True)
-            else:
-                logger.warning("[PLUGIN_CHECK] 记忆存储插件不可用，消息仅保存到数据库")
-        
-            # 检查群消息提及
-            if self._is_group_message(message):
-                if not self._is_mentioned(message):
-                    logger.debug(f"[GROUP_FILTER] 群消息未提及机器人，忽略 | user_id={user_id}")
-                    return ""
-            
-            # 检查是否是文件上传
+
+            # 记忆存储
+            self._store_message_memory(user_id, message, group_id, group_name)
+
+            # 群消息过滤
+            if self._is_group_message(message) and not self._is_mentioned(message):
+                logger.debug(f"[GROUP_FILTER] 群消息未提及机器人，忽略 | user_id={user_id}")
+                return ""
+
+            # 意图识别
             metadata = message.metadata or {}
-            is_file_upload = metadata.get("file_key") is not None or metadata.get("file_name") is not None
-            file_name = metadata.get("file_name", "")
-            
-            # 如果是文件上传，强制使用文档分析意图
+            is_file_upload = bool(metadata.get("file_key") or metadata.get("file_name"))
             if is_file_upload:
-                logger.info(f"[FILE_UPLOAD] 检测到文件上传 | file_name={file_name} | file_key={metadata.get('file_key')}")
-                intent = Intent(
-                    type="document_analysis",
-                    confidence=0.95,
-                    entities={"file_name": file_name}
-                )
+                intent = Intent(type="document_analysis", confidence=0.95,
+                               entities={"file_name": metadata.get("file_name", "")})
             else:
                 intent = await intent_recognizer.recognize(message.content)
-                logger.info(f"[INTENT_RECOGNIZE] 意图识别完成 | intent={intent.type} | confidence={intent.confidence:.2f}")
-            
-            # 判断是否使用 ReAct 模式
+
+            logger.info(f"[INTENT_RECOGNIZE] intent={intent.type} | confidence={intent.confidence:.2f}")
+
+            # 路由
             use_react = self.use_react_mode and self._should_use_react(intent)
             mode = "ReAct" if use_react else "Direct"
-            logger.info(f"[MODE_SELECT] 选择处理模式 | mode={mode} | intent={intent.type}")
-            
+            logger.info(f"[MODE_SELECT] mode={mode} | intent={intent.type}")
+
             if use_react:
                 response = await self._handle_with_react(user_id, message.content, message.metadata)
             else:
                 response = await self._handle_intent(user_id, intent, message.content, message.metadata)
-            
-            # 记录性能指标
+
+            # 保存响应
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
-            logger.info(f"[ROUTER_OUTPUT] 路由响应生成完成 | trace_id={trace_id} | response_length={len(response)} | elapsed={elapsed_ms:.2f}ms")
-            
-            # 记录业务事件
-            log_event(logger, "message_processed", 
-                     trace_id=trace_id, 
-                     user_id=user_id, 
-                     intent=intent.type, 
-                     mode=mode,
-                     response_length=len(response),
-                     elapsed_ms=elapsed_ms)
-            
-            response_message = Message(
-                id=generate_id(),
-                user_id=user_id,
-                content=response,
-                role="assistant",
-                timestamp=get_timestamp(),
-                metadata={"intent": intent.type}
-            )
-            
-            db.save_message(response_message)
-            logger.debug(f"[DB_SAVE] 响应消息已保存到数据库 | message_id={response_message.id}")
-            
-            # 使用插件系统的记忆存储
-            memory_store = get_memory_store()
-            if memory_store:
-                try:
-                    from src.types import MemoryEntry
-                    memory_entry = MemoryEntry(
-                        id=generate_id(),
-                        user_id=user_id,
-                        type="short",
-                        content=response_message.content,
-                        timestamp=response_message.timestamp,
-                        tags=["short_term", "response", group_id],
-                        group_id=group_id,
-                        group_name=group_name
-                    )
-                    memory_store.add_memory(user_id, memory_entry)
-                    logger.debug(f"[MEMORY_STORE] 响应已存储到记忆 | user_id={user_id}")
-                except Exception as e:
-                    logger.error(f"[MEMORY_STORE] 响应存储失败 | user_id={user_id} | error={str(e)}", exc_info=True)
-            
+            log_event(logger, "message_processed", trace_id=trace_id, user_id=user_id,
+                     intent=intent.type, mode=mode, response_length=len(response), elapsed_ms=elapsed_ms)
+
+            self._save_response_to_db(user_id, response, group_id, group_name, intent.type)
             return response
+
         except Exception as e:
-            logger.error(f"[ROUTER_ERROR] 消息路由失败 | trace_id={trace_id} | user_id={user_id} | error={str(e)}", exc_info=True)
+            logger.error(f"[ROUTER_ERROR] trace_id={trace_id} | error={str(e)}", exc_info=True)
             return "处理请求时出现错误，请稍后重试。"
         finally:
-            # 清理请求上下文
             clear_request_context()
     
+    def _get_or_create_session(self, user_id: str, group_id: str, group_name: str) -> Session:
+        """获取或创建会话"""
+        if user_id not in self.sessions:
+            self.sessions[user_id] = {}
+        if group_id not in self.sessions[user_id]:
+            session = Session(
+                id=generate_id(), user_id=user_id, group_id=group_id,
+                group_name=group_name, context=[],
+                created_at=get_timestamp(), last_active_at=get_timestamp(), tags=[],
+            )
+            self.sessions[user_id][group_id] = session
+            logger.debug(f"[SESSION_CREATE] 创建新分组会话 | group_id={group_id}")
+        return self.sessions[user_id][group_id]
+
+    def _store_message_memory(self, user_id: str, message: Message, group_id: str, group_name: str):
+        """将消息存入记忆存储"""
+        memory_store = get_memory_store()
+        if not memory_store:
+            return
+        try:
+            from src.types import MemoryEntry
+            entry = MemoryEntry(
+                id=generate_id(), user_id=user_id, type="short",
+                content=message.content, timestamp=message.timestamp,
+                tags=["short_term", "message", group_id],
+                group_id=group_id, group_name=group_name,
+            )
+            memory_store.add_memory(user_id, entry)
+        except Exception as e:
+            logger.error(f"[MEMORY_STORE] 消息记忆存储失败: {str(e)}")
+
+    def _save_response_to_db(self, user_id: str, response: str, group_id: str, group_name: str, intent_type: str):
+        """保存响应到数据库和记忆"""
+        response_msg = Message(
+            id=generate_id(), user_id=user_id, content=response,
+            role="assistant", timestamp=get_timestamp(), metadata={"intent": intent_type},
+        )
+        db.save_message(response_msg)
+
+        memory_store = get_memory_store()
+        if memory_store and response:
+            try:
+                from src.types import MemoryEntry
+                entry = MemoryEntry(
+                    id=generate_id(), user_id=user_id, type="short",
+                    content=response, timestamp=response_msg.timestamp,
+                    tags=["short_term", "response", group_id],
+                    group_id=group_id, group_name=group_name,
+                )
+                memory_store.add_memory(user_id, entry)
+            except Exception as e:
+                logger.error(f"[MEMORY_STORE] 响应记忆存储失败: {str(e)}")
+
     def _is_group_message(self, message: Message) -> bool:
         metadata = message.metadata or {}
         return metadata.get("group", False)
@@ -528,30 +504,23 @@ class MessageRouter:
         )
     
     async def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
-        """处理PPT生成相关意图 - 使用PPT工作流"""
-        logger.info(f"[PPT_HANDLER] 开始PPT生成: user_id={user_id}, intent={intent.type}")
+        """处理PPT生成相关意图 - 使用LangGraph PPT工作流"""
+        logger.info(f"[PPT_HANDLER] 开始PPT生产: user_id={user_id}, intent={intent.type}")
 
         metadata = metadata or {}
 
         if ppt_workflow.is_awaiting_confirmation(user_id):
             logger.info("[PPT_HANDLER] 检测到等待确认状态，继续工作流")
             response, ctx = ppt_workflow.continue_workflow(user_id, context)
-            if ctx.state == WorkflowState.COMPLETED:
-                self._clear_ppt_workflow_context(user_id)
+            self._clear_ppt_workflow_context(user_id)
             return response
 
         document_content = self._extract_document_content(user_id, metadata)
-
         response, ctx = ppt_workflow.start_workflow(
-            user_id=user_id,
-            intent_type=intent.type,
-            content=context,
-            document_content=document_content
+            user_id=user_id, intent_type=intent.type,
+            content=context, document_content=document_content,
         )
-
-        if ctx.state == WorkflowState.COMPLETED:
-            self._clear_ppt_workflow_context(user_id)
-
+        self._clear_ppt_workflow_context(user_id)
         return response
 
     def _extract_document_content(self, user_id: str, metadata: dict) -> str:
@@ -597,10 +566,12 @@ class MessageRouter:
         return "\n".join(file_contents)
 
     def _clear_ppt_workflow_context(self, user_id: str):
-        """清除PPT工作流上下文"""
+        """清除PPT工作流上下文（LangGraph 版本由 checkpointer 自动管理）"""
+        # LangGraph StateGraph 通过 checkpointer 管理状态，无需手动清理内存
+        # 保留 _contexts 兼容：移除活跃用户标记
         if hasattr(ppt_workflow, '_contexts') and user_id in ppt_workflow._contexts:
-            del ppt_workflow._contexts[user_id]
-            logger.info(f"[PPT_HANDLER] 清除工作流上下文: user_id={user_id}")
+            ppt_workflow._contexts.pop(user_id, None)
+            logger.debug(f"[PPT_HANDLER] 清除工作流上下文: user_id={user_id}")
     
     async def _handle_unknown(self, user_id: str, context: str) -> str:
         logger.info(f"[UNKNOWN_HANDLER] 开始处理未知意图: user_id={user_id}")

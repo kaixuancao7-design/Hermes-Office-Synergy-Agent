@@ -21,6 +21,7 @@ langchain-chroma>=0.1.0
 langchain-text-splitters>=0.1.0
 # LangGraph (ReAct agent + state machine workflows)
 langgraph>=0.2.0
+aiosqlite>=0.20.0  # AsyncSqliteSaver 依赖
 # ChromaDB vector database
 chromadb>=0.4.0
 # Redis for caching and session management

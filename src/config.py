@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     KIMI_API_KEY: Optional[str] = None
     MOONSHOT_API_KEY: Optional[str] = None
     DEEPSEEK_API_KEY: Optional[str] = None
-    DEEPSEEK_DEFAULT_MODEL: str = "deepseek-chat"  # deepseek-chat / deepseek-reasoner
+    DEEPSEEK_DEFAULT_MODEL: str = "deepseek-v4-pro"  # deepseek-v4-pro / deepseek-v4-flash
 
     DATABASE_PATH: str = "./data/agent.db"
     VECTOR_DB_PATH: str = "./data/vectors"
