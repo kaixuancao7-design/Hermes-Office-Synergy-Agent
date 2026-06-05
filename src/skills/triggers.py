@@ -32,7 +32,14 @@ class TriggerMatcher:
         
         if best_match:
             logger.info(f"找到相关技能: {best_match.name}, 匹配度: {best_score}")
-        
+
+            # 记录 learned 技能的使用（为 Curator 评分提供数据）
+            if best_match.type == "learned":
+                try:
+                    db.record_skill_usage(best_match.id, user_id or "unknown")
+                except Exception:
+                    pass  # 静默失败，不影响主流程
+
         return best_match
     
     def _calculate_match_score(self, skill: Skill, query: str) -> float:

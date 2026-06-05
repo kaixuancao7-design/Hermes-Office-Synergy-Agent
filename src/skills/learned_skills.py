@@ -38,9 +38,16 @@ class LearnedSkillsManager:
             )
             
             db.save_skill(skill)
-            
+
+            # 写入 SKILL.md 文件（agentskills.io 兼容格式）
+            try:
+                from src.skills.skill_md import skill_md_manager
+                skill_md_manager.write_skill_md(skill)
+            except Exception as e:
+                logger.warning(f"SKILL.md 写入失败: {e}")
+
             logger.info(f"从草稿创建学习技能: {skill.name}")
-            
+
             return skill
         
         except Exception as e:

@@ -125,6 +125,9 @@ class MessageRouter:
 
             if use_react:
                 response = await self._handle_with_react(user_id, message.content, message.metadata)
+                # 异步检查是否需要从执行轨迹自动生成技能
+                import asyncio
+                asyncio.create_task(self._auto_generate_skill_if_complex(user_id))
             else:
                 response = await self._handle_intent(user_id, intent, message.content, message.metadata)
 
@@ -675,9 +678,44 @@ class MessageRouter:
             intent="implicit_correction",
         )
 
+        # 自动修补：检查纠正是否关联到已有 learned 技能
+        import asyncio
+        asyncio.create_task(self._auto_patch_if_relevant(
+            user_id, context, last_response, corrected
+        ))
+
     def capture_correction(self, user_id: str, original: str, corrected: str, context: str) -> None:
         """显式捕获用户纠正（API调用入口）"""
         learning_cycle.capture_correction(user_id, original, corrected, context)
+
+    async def _auto_generate_skill_if_complex(self, user_id: str) -> None:
+        """检查最近一次 ReAct 执行轨迹，如果足够复杂则自动生成技能"""
+        try:
+            trace = react_engine.get_last_trace()
+            if not trace:
+                return
+
+            from src.engine.skill_generator import skill_auto_generator
+            if skill_auto_generator.should_trigger(trace):
+                logger.info(f"[AUTO_SKILL] Complex task detected:"
+                             f" {len(trace.tool_sequence)} tool calls"
+                             f" | mode={trace.mode}")
+                await skill_auto_generator.generate_from_trace(trace)
+        except Exception as e:
+            logger.warning(f"[AUTO_SKILL] Auto-generation check failed: {e}")
+
+    async def _auto_patch_if_relevant(self, user_id: str, context: str,
+                                       original: str, corrected: str) -> None:
+        """检查纠正是否关联到已有 learned 技能，如是则自动修补"""
+        try:
+            from src.engine.skill_patcher import skill_auto_patcher
+
+            related = await skill_auto_patcher.find_related_skill(context)
+            if related:
+                logger.info(f"[AUTO_PATCH] Correction relates to skill: {related.name}")
+                await skill_auto_patcher.patch_skill(related, original, corrected, context)
+        except Exception as e:
+            logger.warning(f"[AUTO_PATCH] Auto-patch check failed: {e}")
     
     def _should_use_react(self, intent: Intent) -> bool:
         """判断是否应该使用 ReAct 模式"""

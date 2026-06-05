@@ -162,23 +162,60 @@ async def startup_event():
     ensure_directory("./logs")
     ensure_directory("./workspace")
     ensure_directory("./output")
-    
+    ensure_directory("./skills")
+    ensure_directory("./skills/learned")
+
     # 初始化插件系统（必须在其他服务启动之前）
     if not init_plugins():
         logger.error("插件系统初始化失败")
         return
-    
+
     register_im_adapters()
-    
+
     # 启动飞书 WebSocket 长连接服务（后台运行）- 仅在插件初始化成功后启动
     asyncio.create_task(start_feishu_websocket())
-    
+
     # MCP Server HTTP (optional, background)
     if settings.MCP_SERVER_ENABLED:
         from src.engine.mcp_server import start_http_server
         logger.info(f"[MCP] MCP Server HTTP starting (port={settings.MCP_SERVER_PORT})")
         asyncio.create_task(start_http_server(port=settings.MCP_SERVER_PORT))
-    
+
+    # SKILL.md 文件同步：导入文件系统中已有的技能文件
+    try:
+        from src.skills.skill_md import skill_md_manager
+        disk_skills = skill_md_manager.sync_from_directory()
+        if disk_skills:
+            for skill in disk_skills:
+                existing = db.get_skill(skill.id)
+                if not existing:
+                    db.save_skill(skill)
+                    logger.info(f"[STARTUP] Imported SKILL.md: {skill.name}")
+            logger.info(f"[STARTUP] Synced {len(disk_skills)} SKILL.md files")
+    except Exception as e:
+        logger.warning(f"[STARTUP] SKILL.md sync skipped: {e}")
+
+    # 启动后台调度器 + Curator 周期性维护
+    try:
+        from src.engine.scheduler import scheduler as bg_scheduler
+        from src.engine.skill_curator import skill_curator
+
+        await bg_scheduler.start()
+        await bg_scheduler.add_periodic(
+            "skill_curator",
+            skill_curator.run_curation_cycle,
+            interval_seconds=7 * 24 * 3600,  # 7 天
+        )
+        # 首次启动 60 秒后运行一次 Curator（避免阻塞启动）
+        await bg_scheduler.add_one_shot(
+            "skill_curator_initial",
+            skill_curator.run_curation_cycle,
+            delay_seconds=60,
+        )
+        logger.info("[STARTUP] Background scheduler started with curator task")
+    except Exception as e:
+        logger.warning(f"[STARTUP] Scheduler init failed: {e}")
+
     logger.info("Hermes Office Synergy Agent started successfully")
     logger.info("飞书使用 WebSocket 长连接方式接收消息")
 
@@ -189,6 +226,14 @@ async def shutdown_event():
     if settings.MCP_SERVER_ENABLED:
         from src.engine.mcp_server import stop_http_server
         await stop_http_server()
+
+    # 停止后台调度器
+    try:
+        from src.engine.scheduler import scheduler as bg_scheduler
+        await bg_scheduler.stop()
+    except Exception:
+        pass
+
     feishu_websocket_service.stop()
     logger.info("Hermes Office Synergy Agent shutting down")
 

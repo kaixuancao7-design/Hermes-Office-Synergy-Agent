@@ -11,6 +11,7 @@
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from src.config import settings
+from src.types import ExecutionTrace, ToolCallRecord
 from src.logging_config import get_logger, log_performance, log_event
 from src.utils import generate_id, get_timestamp
 from src.plugins import get_tool_executor, get_model_router
@@ -33,6 +34,7 @@ class ReActEngine:
         self.max_tool_calls = 3
         self._langchain_available = None      # 延迟检测
         self._langgraph_available = None       # 延迟检测
+        self.last_trace: Optional[ExecutionTrace] = None  # 最近一次执行轨迹
         logger.info("[INIT] ReActEngine 初始化完成 | max_steps=%d | max_tool_calls=%d",
                    self.max_thinking_steps, self.max_tool_calls)
 
@@ -50,11 +52,21 @@ class ReActEngine:
         trace_id = metadata.get("message_id", generate_id()) if metadata else generate_id()
         logger.info(f"[ReAct_START] 开始推理 | trace_id={trace_id} | user_id={user_id} | query={query[:50]}")
 
+        # 初始化执行轨迹
+        self.last_trace = None
+        self._trace_tool_sequence: List[ToolCallRecord] = []
+
         try:
             tool_executor = get_tool_executor()
             if not tool_executor:
                 logger.warning("[ReAct_WARNING] 工具执行器不可用，降级到直接调用模型")
-                return await self._call_model_directly(query)
+                result = await self._call_model_directly(query)
+                self.last_trace = ExecutionTrace(
+                    trace_id=trace_id, user_id=user_id, query=query,
+                    final_response=result, step_count=0, mode="direct",
+                    created_at=get_timestamp(),
+                )
+                return result
 
             available_tools = tool_executor.get_tools()
             logger.info(f"[ReAct_TOOLS] 可用工具列表 | count={len(available_tools)} | tools={available_tools}")
@@ -66,10 +78,16 @@ class ReActEngine:
                 log_event(logger, "react_complete", trace_id=trace_id, user_id=user_id,
                          mode="langgraph", response_length=len(result), elapsed_ms=elapsed_ms)
                 logger.info(f"[ReAct_COMPLETE] LangGraph推理完成 | trace_id={trace_id} | response_length={len(result)} | elapsed={elapsed_ms:.2f}ms")
+                self.last_trace = ExecutionTrace(
+                    trace_id=trace_id, user_id=user_id, query=query,
+                    tool_sequence=self._trace_tool_sequence,
+                    final_response=result, step_count=len(self._trace_tool_sequence),
+                    mode="langgraph", created_at=get_timestamp(),
+                )
                 return result
 
             # ---- 第2层：LangChain JSON 模式 + 第3层：关键词回退 ----
-            return await self._run_with_manual_loop(
+            result = await self._run_with_manual_loop(
                 query=query,
                 available_tools=available_tools,
                 user_id=user_id,
@@ -78,9 +96,21 @@ class ReActEngine:
                 trace_id=trace_id,
                 start_time=start_time,
             )
+            self.last_trace = ExecutionTrace(
+                trace_id=trace_id, user_id=user_id, query=query,
+                tool_sequence=self._trace_tool_sequence,
+                final_response=result, step_count=len(self._trace_tool_sequence),
+                mode="manual_loop", created_at=get_timestamp(),
+            )
+            return result
 
         except Exception as e:
             logger.error(f"[ReAct_ERROR] 推理失败 | trace_id={trace_id} | user_id={user_id} | error={str(e)}", exc_info=True)
+            self.last_trace = ExecutionTrace(
+                trace_id=trace_id, user_id=user_id, query=query,
+                final_response=f"处理请求时出现错误: {str(e)}",
+                step_count=0, mode="manual_loop", created_at=get_timestamp(),
+            )
             return f"处理请求时出现错误: {str(e)}"
 
     # ========================================================================
@@ -144,6 +174,9 @@ class ReActEngine:
                 {"messages": [HumanMessage(content=query)]},
                 config={"configurable": {"thread_id": user_id}},
             )
+
+            # 5b. 从 LangGraph 消息中提取工具调用轨迹
+            self._extract_trace_from_messages(result.get("messages", []))
 
             # 6. 提取最终回答（最后一条 AI 消息）
             messages = result.get("messages", [])
@@ -228,7 +261,19 @@ class ReActEngine:
                 logger.info(f"[ReAct_TOOL_CALL] 调用工具 | step={step+1} | tool={tool_id} | count={tool_call_count}")
                 logger.debug(f"[ReAct_TOOL_PARAMS] 工具参数 | tool={tool_id} | params={params}")
 
+                tool_start = datetime.now()
                 result = await self._execute_tool(tool_executor, tool_id, query, user_id, metadata, params)
+                tool_elapsed = (datetime.now() - tool_start).total_seconds() * 1000
+
+                # 记录工具调用到执行轨迹
+                self._trace_tool_sequence.append(ToolCallRecord(
+                    tool_id=tool_id,
+                    parameters=params,
+                    result=str(result.get("result", ""))[:500] if result.get("success") else None,
+                    success=result.get("success", False),
+                    elapsed_ms=tool_elapsed,
+                    step_index=step + 1,
+                ))
 
                 if result.get("success"):
                     tool_result = result.get("result", "")
@@ -431,6 +476,59 @@ class ReActEngine:
         except Exception as e:
             logger.error(f"[RESPONSE_GENERATE] 模型调用失败 | error={str(e)}", exc_info=True)
             return "根据分析，我已处理您的请求。"
+
+    # ========================================================================
+    # 执行轨迹
+    # ========================================================================
+
+    def get_last_trace(self) -> Optional[ExecutionTrace]:
+        """获取最近一次 ReAct 执行的完整轨迹
+
+        在 run() 返回后调用此方法获取结构化执行记录，
+        可用于技能自动生成（SkillAutoGenerator）。
+        """
+        return self.last_trace
+
+    def _extract_trace_from_messages(self, messages: list) -> None:
+        """从 LangGraph 消息列表中提取工具调用轨迹
+
+        LangGraph 的消息序列格式：
+          HumanMessage → AIMessage(tool_calls=[...]) → ToolMessage(result=...) → AIMessage → ...
+        """
+        step_idx = 0
+        for msg in messages:
+            msg_type = getattr(msg, "type", "")
+
+            # AIMessage with tool_calls
+            if msg_type == "ai" and hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    tool_name = tc.get("name", "unknown") if isinstance(tc, dict) else getattr(tc, "name", "unknown")
+                    tool_args = tc.get("args", {}) if isinstance(tc, dict) else getattr(tc, "args", {})
+                    step_idx += 1
+
+                    # 尝试匹配后续的 ToolMessage 来获取结果
+                    result_text = None
+                    success = True
+                    # 在后续消息中查找对应的 ToolMessage
+                    for later_msg in messages[messages.index(msg) + 1:]:
+                        if getattr(later_msg, "type", "") == "tool":
+                            later_tool_id = getattr(later_msg, "tool_call_id", "")
+                            tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
+                            if later_tool_id == tc_id:
+                                result_text = getattr(later_msg, "content", str(later_msg))[:500]
+                                break
+
+                    self._trace_tool_sequence.append(ToolCallRecord(
+                        tool_id=tool_name,
+                        parameters=tool_args if isinstance(tool_args, dict) else {},
+                        result=result_text,
+                        success=success,
+                        step_index=step_idx,
+                    ))
+
+            # ToolMessage — 已在上面的匹配循环处理，此处跳过
+            elif msg_type == "tool":
+                pass
 
     # ========================================================================
     # 辅助方法

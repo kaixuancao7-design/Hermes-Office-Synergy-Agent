@@ -257,6 +257,28 @@ class ToolCall(BaseModel):
     parameters: Dict[str, Any]
 
 
+class ToolCallRecord(BaseModel):
+    """单次工具调用的执行记录 — 用于技能自动生成"""
+    tool_id: str
+    parameters: Dict[str, Any]
+    result: Optional[str] = None
+    success: bool = True
+    elapsed_ms: float = 0.0
+    step_index: int = 0
+
+
+class ExecutionTrace(BaseModel):
+    """ReAct 引擎的完整执行轨迹 — 复杂任务完成后用于自动生成技能"""
+    trace_id: str
+    user_id: str
+    query: str
+    tool_sequence: List[ToolCallRecord] = []
+    final_response: str = ""
+    step_count: int = 0
+    mode: Literal["langgraph", "manual_loop", "direct"] = "manual_loop"
+    created_at: int = 0
+
+
 class Intent(BaseModel):
     type: str
     confidence: float

@@ -4,7 +4,7 @@ import sqlite3
 import os
 from typing import Optional, List, Dict, Any
 from src.types import UserProfile, Message, Skill, MemoryEntry
-from src.utils import get_timestamp
+from src.utils import generate_id, get_timestamp
 from src.logging_config import get_logger
 from src.config import settings
 
@@ -182,6 +182,39 @@ class Database:
             cursor.execute("""
                 CREATE INDEX IF NOT EXISTS idx_skill_drafts_user
                 ON skill_drafts(user_id, status)
+            """)
+
+            # 执行轨迹表 — 记录 ReAct 引擎完整调用序列（技能自动生成数据源）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS execution_traces (
+                    trace_id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    query TEXT,
+                    tool_sequence TEXT DEFAULT '[]',
+                    final_response TEXT DEFAULT '',
+                    step_count INTEGER DEFAULT 0,
+                    mode TEXT DEFAULT 'manual_loop',
+                    created_at INTEGER NOT NULL,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+
+            # 技能使用统计表 — Curator 评分数据源
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS skill_usage (
+                    id TEXT PRIMARY KEY,
+                    skill_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL,
+                    trace_id TEXT,
+                    used_at INTEGER NOT NULL,
+                    success INTEGER DEFAULT 1,
+                    FOREIGN KEY (skill_id) REFERENCES skills(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_skill_usage_skill
+                ON skill_usage(skill_id, used_at)
             """)
 
             conn.commit()
@@ -748,6 +781,128 @@ class Database:
             "reviewed_by": row[13],
             "reviewed_at": row[14],
         }
+
+    # ==================== 执行轨迹方法 ====================
+
+    def save_execution_trace(self, trace: dict) -> None:
+        """保存 ReAct 引擎执行轨迹"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO execution_traces (
+                    trace_id, user_id, query, tool_sequence,
+                    final_response, step_count, mode, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                trace["trace_id"],
+                trace["user_id"],
+                trace.get("query", ""),
+                json.dumps([t if isinstance(t, dict) else t.model_dump()
+                           for t in trace.get("tool_sequence", [])], ensure_ascii=False),
+                trace.get("final_response", ""),
+                trace.get("step_count", 0),
+                trace.get("mode", "manual_loop"),
+                trace.get("created_at", get_timestamp()),
+            ))
+            conn.commit()
+
+    def get_execution_trace(self, trace_id: str) -> Optional[dict]:
+        """获取单条执行轨迹"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM execution_traces WHERE trace_id = ?", (trace_id,))
+            row = cursor.fetchone()
+            if row:
+                return {
+                    "trace_id": row[0], "user_id": row[1], "query": row[2],
+                    "tool_sequence": _safe_deserialize(row[3], []),
+                    "final_response": row[4], "step_count": row[5],
+                    "mode": row[6], "created_at": row[7],
+                }
+            return None
+
+    def get_recent_traces(self, user_id: str = None, limit: int = 10) -> list:
+        """获取最近的执行轨迹"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            if user_id:
+                cursor.execute(
+                    "SELECT trace_id, user_id, query, tool_sequence, final_response,"
+                    " step_count, mode, created_at FROM execution_traces"
+                    " WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                    (user_id, limit),
+                )
+            else:
+                cursor.execute(
+                    "SELECT trace_id, user_id, query, tool_sequence, final_response,"
+                    " step_count, mode, created_at FROM execution_traces"
+                    " ORDER BY created_at DESC LIMIT ?",
+                    (limit,),
+                )
+            return [
+                {
+                    "trace_id": r[0], "user_id": r[1], "query": r[2],
+                    "tool_sequence": _safe_deserialize(r[3], []),
+                    "final_response": r[4], "step_count": r[5],
+                    "mode": r[6], "created_at": r[7],
+                }
+                for r in cursor.fetchall()
+            ]
+
+    # ==================== 技能使用统计方法 ====================
+
+    def record_skill_usage(self, skill_id: str, user_id: str,
+                           trace_id: str = None, success: bool = True) -> None:
+        """记录一次技能使用"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO skill_usage (id, skill_id, user_id, trace_id, used_at, success)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (generate_id(), skill_id, user_id, trace_id, get_timestamp(), 1 if success else 0))
+            conn.commit()
+
+    def get_skill_usage_stats(self, skill_id: str) -> dict:
+        """获取技能使用统计数据"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT COUNT(*), SUM(success), MAX(used_at) FROM skill_usage WHERE skill_id = ?",
+                (skill_id,),
+            )
+            row = cursor.fetchone()
+            total = row[0] or 0
+            success_count = row[1] or 0
+            last_used = row[2] or 0
+            return {
+                "total_uses": total,
+                "success_count": success_count,
+                "success_rate": (success_count / total * 100) if total > 0 else 0.0,
+                "last_used_at": last_used,
+            }
+
+    def get_all_learned_skill_usage(self) -> list:
+        """获取所有 learned 类型技能的使用统计"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT s.id, s.name, s.type,
+                       COUNT(u.id) as total_uses,
+                       COALESCE(SUM(u.success), 0) as success_count,
+                       COALESCE(MAX(u.used_at), 0) as last_used
+                FROM skills s
+                LEFT JOIN skill_usage u ON s.id = u.skill_id
+                WHERE s.type = 'learned'
+                GROUP BY s.id, s.name
+                ORDER BY last_used DESC
+            """)
+            return [
+                {
+                    "skill_id": r[0], "skill_name": r[1], "type": r[2],
+                    "total_uses": r[3], "success_count": r[4], "last_used_at": r[5],
+                }
+                for r in cursor.fetchall()
+            ]
 
 
 db = Database()

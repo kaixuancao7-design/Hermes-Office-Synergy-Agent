@@ -12,9 +12,10 @@
 ## 核心特性
 
 - **多模态交互**：支持飞书、钉钉、企业微信等主流 IM 平台
-- **自我进化闭环**：通过用户反馈自动学习并沉淀技能，包含三闸门验证机制（假设澄清→复杂度检查→测试验证）
+- **自我进化闭环**：通过用户反馈自动学习并沉淀技能，包含三闸门验证机制（捕获→学习→应用）。支持从复杂任务自动生成技能、运行时自动修补技能、7天周期性技能库维护
+- **技能自动学习**：执行轨迹追踪 + LLM 驱动技能生成（5+次工具调用自动触发），运行时技能自动修补，SKILL.md 格式（agentskills.io 兼容）
 - **记忆分层存储**：短期记忆（会话）、长期记忆（向量库）、程序性记忆（技能库）
-- **多模型支持**：兼容 OpenAI、Claude、Ollama、智谱、Kimi 等模型
+- **多模型支持**：兼容 OpenAI、Claude、Ollama、智谱、Kimi、DeepSeek 等模型
 - **安全沙箱**：代码执行隔离，插件白名单机制，危险工具权限管控
 - **插件化架构**：IM适配器、模型路由、记忆存储、技能管理、工具执行均为独立插件
 - **技能版本管理**：支持版本回滚、修改日志记录、变更diff检查
@@ -43,9 +44,10 @@
 ├─────────────────────────────────────────────────────────────────────────┤
 │  核心引擎层 (Engine)                                                     │
 │  IntentRecognition / TaskPlanner / MemoryManager / LearningCycle         │
-│  ReActEngine / 自我进化闭环 / 需求解析器 / IM触发器 / ContextualAnalyzer│
+│  ReActEngine / SkillAutoGenerator / SkillAutoPatcher / SkillCurator     │
+│  自我进化闭环 / 需求解析器 / IM触发器 / ContextualAnalyzer              │
 │  PPTWorkflow / TemplateMatcher / SpecLock / QualityGate / Strategist   │
-│  MCPManager / ContextRegistry / MCPAdapter (Model Context Protocol)     │
+│  BackgroundScheduler / MCPManager / MCPAdapter (Model Context Protocol) │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  数据与记忆层 (Data & Memory)                                            │
 │  SQLite数据库 / MemoryBase (Chroma/Milvus/FAISS) / 程序性记忆             │
@@ -243,6 +245,10 @@ MEMORY_STORE_TYPE=simple  # chroma, simple, milvus, faiss, hybrid, redis_hybrid
 # RATE_LIMIT_ENABLED=true
 # RATE_LIMIT_MAX_REQUESTS=60
 # RATE_LIMIT_WINDOW_SECONDS=60
+
+# MCP Server 配置
+# MCP_SERVER_ENABLED=false  # 设为 true 启用 MCP HTTP 子服务
+# MCP_SERVER_PORT=8000      # MCP Server HTTP 端口
 
 # 飞书配置（可选）
 # FEISHU_APP_ID=your-feishu-app-id
@@ -580,18 +586,77 @@ POST /api/v1/ppt/generate
 
 ## 自我进化闭环
 
-系统通过学习循环实现自我进化，包含完整的技能提炼与验证流程：
+系统通过**三层自学习机制**实现自我进化，参照 Nous Research Hermes Agent 的闭环设计：
 
-1. **反馈捕获**：用户提交修正反馈
-2. **意图提取**：分析用户真实意图
-3. **差异分析**：对比原始输出与修正输出，结合上下文提炼可复用模式
-4. **技能草稿生成**：LLM 生成技能草稿
-5. **技能验证**：自动验证（对比历史任务效果）或人工审核
-6. **技能存储**：验证通过的技能存入技能库
-7. **自动应用**：后续任务自动匹配并使用学习到的技能
+### 1. 自动技能生成（Skill Auto-Generator）
+
+当 ReAct 引擎完成复杂任务（5+ 次工具调用）后，自动触发技能生成：
 
 ```
-用户提问 → 生成响应 → 用户反馈修正 → 差异分析 → 生成草稿 → 自动/人工验证 → 存入技能库 → 下次自动匹配
+复杂任务执行 → 执行轨迹捕获 → LLM 分析提炼 → 生成 SkillDraft → 写入 SKILL.md → 待审核
+```
+
+- **触发条件**：工具调用次数 >= 5 且任务成功完成
+- **执行轨迹**：完整记录每次工具调用（工具名、参数、结果、耗时）
+- **LLM 提炼**：调用 LLM 将工具调用序列泛化为可复用技能步骤
+- **置信度评分**：LLM 自评技能质量，>= 0.6 自动提升为待审核状态
+
+### 2. 运行时技能修补（Skill Auto-Patcher）
+
+当用户纠正结果与已有 learned 技能相关时，自动修补该技能：
+
+```
+用户纠正 → 关联技能检测 → LLM diff 分析 → 更新技能步骤 → 版本递增 → 重写 SKILL.md
+```
+
+- **关联检测**：基于触发模式子字符串匹配判断纠正是否关联到已有技能
+- **LLM diff**：对比原始输出 vs 纠正输出，判断是否需要修补
+- **版本管理**：修补后自动递增补丁版本号
+
+### 3. 技能库维护（Skill Curator）
+
+后台 7 天周期性自动维护技能库：
+
+```
+评分（使用频率+成功率+活跃度） → 相似技能合并检测 → 低质量技能归档 → 生成维护报告
+```
+
+- **评分公式**：`score = 0.4 * usage_freq + 0.3 * success_rate + 0.3 * recency`
+- **合并检测**：LLM 两两比较功能相似的技能，建议合并
+- **自动归档**：score < 0.2 且 30 天未使用的技能自动归档
+- **维护报告**：生成 `skills/curator_report.md`
+
+### 4. 用户反馈学习（Feedback Learning）
+
+用户显式提交纠正反馈（API 或 IM 关键词检测）：
+
+1. **反馈捕获**：用户提交修正反馈（显式 API 或隐式关键词检测："不对"、"应该是"、"错了"）
+2. **意图提取**：分析用户真实意图
+3. **差异分析**：逐行对比原始输出与修正输出，提取可复用模式
+4. **技能草稿生成**：生成 SkillDraft（状态=draft 或 pending_review）
+5. **人工审核**：管理员审核通过后创建 learned 技能
+6. **SKILL.md 持久化**：审核通过后写入 `skills/learned/{name}.md`
+7. **自动应用**：后续任务通过触发模式自动匹配
+
+### 学习流水线总览
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                      自我进化双引擎                               │
+│                                                                  │
+│  引擎 A: 主动学习 (Auto-Generator)                               │
+│  ─────────────────────────────────────                           │
+│  ReAct 完成(5+工具) → 执行轨迹 → LLM分析 → 草稿 → SKILL.md      │
+│                                                                  │
+│  引擎 B: 被动学习 (Feedback Learning)                            │
+│  ─────────────────────────────────────                           │
+│  用户纠正 → 关联检测 → 已有技能? → Auto-Patch                    │
+│                      → 新技能?   → Draft → Review → Skill        │
+│                                                                  │
+│  后台维护: Skill Curator (7天周期)                                │
+│  ─────────────────────────────────────                           │
+│  评分 → 合并 → 归档 → 报告                                       │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 ## 任务执行反思环节
@@ -693,14 +758,17 @@ POST /api/v1/ppt/generate
 │   │   ├── version_manager.py        # 文档版本管理
 │   │   ├── multimodal_processor.py  # 多模态处理（图片/音频/视频）
 │   │   ├── advanced_retrieval.py     # 高级检索策略
-│   │   ├── bm25_index.py            # BM25索引实现
-│   │   └── reranker.py              # 重排序器实现
+│   │   └── reranker.py              # BM25 + CrossEncoder 重排序器
 │   ├── engine/
 │   │   ├── intent_recognition.py     # 意图识别（细粒度分类、上下文感知分析）
 │   │   ├── learning_cycle.py         # 学习循环（三闸门验证）
 │   │   ├── memory_manager.py         # 记忆管理
-│   │   ├── react_engine.py           # ReAct推理引擎
+│   │   ├── react_engine.py           # ReAct推理引擎（含执行轨迹捕获）
 │   │   ├── task_planner.py           # 任务规划
+│   │   ├── skill_generator.py        # 技能自动生成器（执行轨迹→技能）
+│   │   ├── skill_patcher.py          # 技能自动修补器（运行时修补）
+│   │   ├── skill_curator.py          # 技能库维护器（7天周期）
+│   │   ├── scheduler.py              # 后台周期性任务调度器
 │   │   ├── demand_parser.py          # 需求解析器（PPT需求提取）
 │   │   ├── im_trigger.py             # IM触发器（多模态触发）
 │   │   ├── ppt_workflow.py          # PPT工作流（LangGraph StateGraph）
@@ -736,7 +804,11 @@ POST /api/v1/ppt/generate
 │   ├── skills/
 │   │   ├── manager.py                # 技能管理器（延迟初始化、循环依赖解决）
 │   │   ├── workflow.py               # 工作流引擎
-│   │   ├── triggers.py               # 触发匹配器
+│   │   ├── triggers.py               # 触发匹配器（含技能使用统计）
+│   │   ├── skill_md.py               # SKILL.md 文件管理器（agentskills.io兼容）
+│   │   ├── learned_skills.py         # 学习型技能管理器
+│   │   ├── preset_skills.py          # 预设技能
+│   │   ├── custom_skills.py          # 自定义技能
 │   │   └── adapters/                 # 外部技能适配器
 │   ├── tools/
 │   │   ├── base.py                   # 工具基类和接口
@@ -756,7 +828,8 @@ POST /api/v1/ppt/generate
 │   ├── test_agent_self_verification.py # Agent自验证用例库
 │   ├── test_ppt_generator.py         # PPT生成测试
 │   ├── test_demand_parser.py         # 需求解析测试
-│   └── test_react_engine_recovery.py # ReAct引擎恢复测试
+│   ├── test_react_engine_recovery.py # ReAct引擎恢复测试
+│   └── test_skill_autolearn.py       # 技能自学习集成测试
 ├── test_mcp_server.py                # MCP Server 测试
 ├── logs/                             # 日志目录（按模块拆分）
 │   ├── api.log
@@ -909,6 +982,48 @@ await im_adapter_manager.send_message(
 - **附件触发**：文件上传
 - **上下文触发**：指代性词汇理解
 
+#### 2.5 技能自动生成器 (`src/engine/skill_generator.py`)
+
+从 ReAct 执行轨迹自动生成技能（参照 Hermes Agent 设计）：
+
+**触发条件：** 工具调用次数 >= 5 且任务成功完成
+
+**生成流程：**
+1. 总结执行轨迹 → LLM 结构化分析
+2. 输出 JSON `{skill_name, description, trigger_patterns, steps, confidence}`
+3. 置信度 >= 0.3 时创建 SkillDraft
+4. 置信度 >= 0.6 时自动提升为 `pending_review`
+5. 写入 `skills/learned/{name}.md`（agentskills.io 兼容格式）
+
+#### 2.6 技能自动修补器 (`src/engine/skill_patcher.py`)
+
+运行时检测用户纠正并修补已有 learned 技能：
+
+- **关联检测**：触发模式子字符串匹配 → 分数 >= 0.5 视为关联
+- **LLM diff**：分析原始输出 vs 纠正输出的差异
+- **自动修补**：LLM 判断 `should_patch=true` 时更新技能步骤
+- **版本递增**：修补后自动递增补丁版本号
+
+#### 2.7 技能库维护器 (`src/engine/skill_curator.py`)
+
+7 天周期自动维护技能库健康度：
+
+| 阶段 | 操作 | 说明 |
+|------|------|------|
+| 评分 | `0.4*使用频率 + 0.3*成功率 + 0.3*活跃度` | 使用 `skill_usage` 表数据 |
+| 合并 | LLM 两两比较 | similarity >= 0.7 建议合并 |
+| 归档 | score < 0.2 且 30天未使用 | 标记为 archived |
+| 报告 | 生成 Markdown 报告 | `skills/curator_report.md` |
+
+#### 2.8 后台调度器 (`src/engine/scheduler.py`)
+
+纯 asyncio 实现的周期性任务调度器：
+
+- `add_periodic()` — 注册周期性任务（如 7 天 Curator）
+- `add_one_shot()` — 注册一次性延迟任务
+- `start()` / `stop()` — 生命周期管理
+- 启动时注册 Curator 7天周期任务 + 60秒后首次运行
+
 ---
 
 ### 3. 服务层 (Services)
@@ -974,6 +1089,52 @@ await im_adapter_manager.send_message(
 - 外部技能注册：按需注册外部适配器
 - 技能版本管理：支持版本回滚和变更记录
 - 权限控制：基于角色的访问控制
+
+#### 5.2 SKILL.md 文件管理器 (`src/skills/skill_md.py`)
+
+agentskills.io 兼容的 Markdown 技能文件管理器：
+
+**文件格式：**
+```markdown
+---
+name: skill-name
+description: What this skill does
+version: 1.0.0
+type: learned
+triggers:
+  - trigger phrase 1
+  - trigger phrase 2
+created_by: system
+created_at: 1717000000
+updated_at: 1717000000
+---
+
+# skill-name
+
+## Description
+...
+
+## Steps
+### Step 1: action_name
+- **Action**: ...
+- **Parameters**: ...
+```
+
+**核心方法：**
+
+| 方法 | 说明 |
+|------|------|
+| `skill_to_markdown(skill)` | Skill 对象 → SKILL.md 字符串 |
+| `markdown_to_skill(content)` | SKILL.md 字符串 → Skill 对象 |
+| `write_skill_md(skill)` | 写入 `skills/learned/{name}.md` |
+| `read_skill_md(filepath)` | 读取单个 SKILL.md |
+| `sync_from_directory()` | 启动时从文件系统导入技能 |
+| `delete_skill_md(name)` | 删除 SKILL.md 文件 |
+
+**集成点：**
+- 技能创建时自动写入 SKILL.md（`learned_skills.py`）
+- 启动时同步文件系统中的 SKILL.md 到数据库（`main.py`）
+- 自动修补时重写 SKILL.md（`skill_patcher.py`）
 
 ---
 
@@ -1063,13 +1224,28 @@ run_server(transport="http")
 
 ### 集成到插件系统
 
-MCP Server 在插件初始化时自动启动：
+MCP Server 支持两种运行模式：
+
+**1. 独立启动（Stdio/HTTP）：**
+```python
+from src.engine.mcp_server import run_server
+run_server(transport="stdio")   # 或 transport="http"
+```
+
+**2. 作为后台子服务（生产环境）：**
+
+在 `.env` 中启用：
+```env
+MCP_SERVER_ENABLED=true
+MCP_SERVER_PORT=8000
+```
+
+FastAPI 启动时自动在后台启动 MCP HTTP Server（非阻塞）：
 
 ```python
-from src.plugins import get_mcp_server
-
-# 获取 MCP Server 实例
-mcp_server = get_mcp_server()
+# main.py startup_event 自动处理
+if settings.MCP_SERVER_ENABLED:
+    asyncio.create_task(start_http_server(port=settings.MCP_SERVER_PORT))
 ```
 
 ---
@@ -1222,6 +1398,71 @@ GET /api/v1/document/search?query=关键词&limit=5&user_id=user123
 MIT License
 
 ## 更新日志
+
+### v1.1.0 (2026-06-05)
+
+**新功能：技能自学习系统（参照 Nous Research Hermes Agent 设计）**
+
+1. **技能自动生成器** (`src/engine/skill_generator.py`)
+   - ReAct 引擎完成复杂任务（5+ 次工具调用）后自动生成技能
+   - LLM 分析执行轨迹，生成结构化技能定义 + SKILL.md
+   - 置信度 >= 0.6 自动提升为待审核状态
+2. **技能自动修补器** (`src/engine/skill_patcher.py`)
+   - 用户纠正时检测是否关联到已有 learned 技能
+   - LLM diff 分析后自动修补技能步骤，版本号递增
+3. **技能库维护器** (`src/engine/skill_curator.py`)
+   - 7天周期自动评分、合并检测、归档低质量技能
+   - 评分公式: `0.4*使用频率 + 0.3*成功率 + 0.3*活跃度`
+   - 生成维护报告 `skills/curator_report.md`
+4. **SKILL.md 文件管理器** (`src/skills/skill_md.py`)
+   - agentskills.io 兼容的 Markdown 技能文件读写
+   - YAML frontmatter + Markdown body 格式
+   - 启动时自动同步文件系统 → 数据库
+5. **执行轨迹系统** (`src/engine/react_engine.py`)
+   - ReAct 引擎新增 `ExecutionTrace` 捕获（LangGraph + 手动循环两路径）
+   - 完整记录工具调用序列（工具名、参数、结果、耗时）
+   - 新增 `execution_traces` + `skill_usage` 数据库表
+6. **后台调度器** (`src/engine/scheduler.py`)
+   - 纯 asyncio 实现，零外部依赖
+   - 支持周期性任务和一次性延迟任务
+
+**功能改进：**
+
+1. **三闸门学习循环完善** (`src/engine/learning_cycle.py`)
+   - Gate 1 (捕获): 隐式纠正检测（6 个中文关键词）+ 显式 API 反馈
+   - Gate 2 (学习): 差异分析 → 技能草稿生成 → DB 持久化
+   - Gate 3 (应用): 人工审核 → 创建 learned 技能 → 写入 SKILL.md
+2. **MCP Server 生产化** (`src/engine/mcp_server.py`)
+   - 新增 `start_http_server()` / `stop_http_server()` 非阻塞实现
+   - 新增 `MCP_SERVER_ENABLED` / `MCP_SERVER_PORT` 配置项
+   - FastAPI startup/shutdown 事件自动启停
+3. **VectorStore + RAG 集成** (`src/data/vector_store.py`, `src/data/reranker.py`)
+   - VectorStore 从空占位符升级为可用搜索引擎（关键词 + BM25 评分）
+   - 纯 Python BM25Reranker 实现
+   - 高级检索管道：BM25 → CrossEncoder → RecencyBoost
+4. **安全加固**
+   - 8 处 `eval()` 替换为 `ast.literal_eval()` + `json.loads()` 安全反序列化
+   - FileOperationsTool 添加路径白名单检查
+5. **认证与限流** (`src/middleware/`)
+   - API Key 认证中间件
+   - 滑动窗口速率限制中间件
+6. **权限系统持久化** (`src/services/permission_service.py`, `src/data/database.py`)
+   - 新增 `user_roles`、`permissions` 数据库表
+   - 完整的 RBAC 实现（admin/developer/user/guest）
+7. **会话持久化** (`src/gateway/message_router.py`)
+   - 会话从内存迁移到 SQLite，重启不丢失
+
+**架构优化：**
+
+1. **LangGraph 集成**
+   - ReAct 引擎: `create_agent()` 替代手写循环
+   - PPT 工作流: `StateGraph` 替代手动状态机
+   - 消息路由: LangGraph 管道图 + 手写管道回退
+   - 检查点: `AsyncSqliteSaver` 替代 `MemorySaver`
+2. **DeepSeek 模型支持** — 新增 `DeepSeekRouter`（OpenAI API 兼容）
+3. **LangChain 工具包装层** (`src/engine/langchain_tools.py`)
+4. **表情符号映射分离** — `EMOJI_MAP` 从 utils.py 提取到独立文件
+5. **配置优化** — `MEMORY_STORE_TYPE` 默认值改为 `simple`
 
 ### v1.0.1 (2026-04-28)
 
