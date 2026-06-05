@@ -376,7 +376,7 @@ class FeishuAdapter(IMAdapterBase):
                 }
             )
             
-            response = message_router.route(msg)
+            response = await message_router.route(msg)
             await self.send_message(user_id, response)
         except Exception as e:
             logger.error(f"异步消息处理失败: {str(e)}")

@@ -256,18 +256,18 @@ class IntentRecognizer:
         """
         return TOOL_TO_INTENT_MAP.get(tool_id)
     
-    def suggest_tools(self, text: str, context: Optional[Dict[str, Any]] = None) -> List[str]:
+    async def suggest_tools(self, text: str, context: Optional[Dict[str, Any]] = None) -> List[str]:
         """
         根据用户输入和上下文建议可用的工具列表
-        
+
         Args:
             text: 用户输入文本
             context: 上下文信息（如是否有文件上传等）
-            
+
         Returns:
             建议的工具列表（按优先级排序）
         """
-        intent = self.recognize(text)
+        intent = await self.recognize(text)
         suggested_tools = []
         
         # 1. 根据意图获取直接映射的工具
@@ -308,21 +308,21 @@ class ContextualIntentAnalyzer:
             "这份文档", "那个文档", "刚刚的文档"
         ]
     
-    def analyze_with_context(self, 
-                            user_input: str, 
+    async def analyze_with_context(self,
+                            user_input: str,
                             context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """
         结合上下文分析用户意图
-        
+
         Args:
             user_input: 用户输入文本
             context: 上下文信息
-            
+
         Returns:
             分析结果字典
         """
         # 使用基础意图识别
-        intent_result = self.intent_recognizer.recognize(user_input)
+        intent_result = await self.intent_recognizer.recognize(user_input)
         
         result = {
             "intent": intent_result.type,

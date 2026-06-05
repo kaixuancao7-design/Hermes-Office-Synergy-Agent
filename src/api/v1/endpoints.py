@@ -78,11 +78,11 @@ async def im_webhook(adapter_type: str, payload: Dict[str, Any]):
     
     logger.info(f"[API_WEBHOOK] 消息解析成功: request_id={request_id}, user_id={message.user_id}, content={message.content[:50]}")
     
-    response = message_router.route(message)
+    response = await message_router.route(message)
     logger.info(f"[API_WEBHOOK] 响应生成完成: request_id={request_id}, response_length={len(response)}")
-    
+
     try:
-        adapter.send_message(Message(
+        await adapter.send_message(Message(
             id=generate_id(),
             user_id=message.user_id,
             content=response,

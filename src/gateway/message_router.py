@@ -413,7 +413,7 @@ class MessageRouter:
                 return "\n\n".join(f"[{r.timestamp}] {r.content[:100]}..." for r in results)
         
         logger.warning("[MEMORY_HANDLER] 记忆存储插件不可用或未找到相关记忆，降级到ReAct模式")
-        return   react_engine.run(user_id, f"搜索与以下内容相关的记忆：{context}")
+        return await react_engine.run(user_id, f"搜索与以下内容相关的记忆：{context}")
     
     async def _handle_document_analysis(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[DOC_HANDLER] 开始文档分析: user_id={user_id}")
@@ -450,7 +450,7 @@ class MessageRouter:
                         "message_id": metadata.get("message_id", ""),
                         "user_id": user_id
                     }
-                    result = await tool_executor.execute("feishu_file_read", params)
+                    result = tool_executor.execute("feishu_file_read", params)
                     if result.get("success") and result.get("result", {}).get("content"):
                         document_content = result["result"]["content"]
                         logger.info(f"[DOC_HANDLER] 成功读取文件内容: length={len(document_content)}")
@@ -502,7 +502,7 @@ class MessageRouter:
         model = model_router.select_model("document_analysis", "complex")
         if not model:
             logger.warning("[MODEL_ROUTER] 无法为 document_analysis 任务选择模型，降级到ReAct模式")
-            return   react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
+            return await react_engine.run(user_id, f"分析以下文档内容：\n{document_content}")
         
         logger.info(f"[DOC_HANDLER] 调用文档分析模型")
         prompt = f"""请分析并总结以下文档内容：
