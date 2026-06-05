@@ -16,7 +16,9 @@ class Settings(BaseSettings):
     ZHIPU_API_KEY: Optional[str] = None
     KIMI_API_KEY: Optional[str] = None
     MOONSHOT_API_KEY: Optional[str] = None
-    
+    DEEPSEEK_API_KEY: Optional[str] = None
+    DEEPSEEK_DEFAULT_MODEL: str = "deepseek-chat"  # deepseek-chat / deepseek-reasoner
+
     DATABASE_PATH: str = "./data/agent.db"
     VECTOR_DB_PATH: str = "./data/vectors"
     
@@ -35,7 +37,7 @@ class Settings(BaseSettings):
     
     # 插件配置
     IM_ADAPTER_TYPE: str = "feishu"  # feishu, dingtalk, wecom, slack, discord
-    MODEL_ROUTER_TYPE: str = "ollama"  # ollama, openai, anthropic, zhipu, moonshot, multi
+    MODEL_ROUTER_TYPE: str = "ollama"  # ollama, openai, anthropic, zhipu, moonshot, deepseek, multi
     MEMORY_STORE_TYPE: str = "redis_hybrid"  # chroma, simple, milvus, faiss, hybrid, redis_hybrid
     SKILL_MANAGER_TYPE: str = "hybrid"  # database, file, hybrid
     EMBEDDING_SERVICE_TYPE: str = "default"  # default, openai, ollama, sentence_transformer, zhipu, moonshot

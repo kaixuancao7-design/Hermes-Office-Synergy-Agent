@@ -396,6 +396,72 @@ class MoonshotRouter(ModelRouterBase):
         return "moonshot"
 
 
+class DeepSeekRouter(ModelRouterBase):
+    """DeepSeek模型路由器 — 兼容OpenAI API接口"""
+
+    def __init__(self):
+        self.api_key = settings.DEEPSEEK_API_KEY
+        self.default_model = settings.DEEPSEEK_DEFAULT_MODEL
+        if self.api_key:
+            logger.info("[INIT] DeepSeekRouter 初始化 | API密钥已配置 | model=%s", self.default_model)
+        else:
+            logger.warning("[INIT] DeepSeekRouter 初始化 | API密钥未配置")
+
+    @log_performance(logger, "DeepSeek调用")
+    async def route(self, prompt: str, model_type: str = None) -> str:
+        """路由到DeepSeek模型"""
+        start_time = datetime.now()
+        model = model_type or self.default_model
+        prompt_length = len(prompt)
+
+        if not self.api_key:
+            logger.warning(f"[MODEL_CONFIG] DeepSeek API密钥未配置 | model={model}")
+            return ""
+
+        logger.info(f"[MODEL_CALL] 调用DeepSeek模型 | model={model} | prompt_length={prompt_length}")
+
+        try:
+            import openai
+            client = openai.OpenAI(
+                api_key=self.api_key,
+                base_url="https://api.deepseek.com",
+            )
+
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+            response_text = response.choices[0].message.content
+            response_length = len(response_text)
+
+            logger.info(f"[MODEL_SUCCESS] DeepSeek响应成功 | model={model} | response_length={response_length} | elapsed={elapsed_ms:.2f}ms")
+            log_event(logger, "model_call",
+                     model_type="deepseek",
+                     model_name=model,
+                     success=True,
+                     prompt_length=prompt_length,
+                     response_length=response_length,
+                     elapsed_ms=elapsed_ms)
+
+            return response_text
+        except Exception as e:
+            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+            logger.error(f"[MODEL_ERROR] DeepSeek路由失败 | model={model} | error={str(e)} | elapsed={elapsed_ms:.2f}ms", exc_info=True)
+            log_event(logger, "model_call",
+                     model_type="deepseek",
+                     model_name=model,
+                     success=False,
+                     error=str(e),
+                     prompt_length=prompt_length,
+                     elapsed_ms=elapsed_ms)
+            return ""
+
+    def get_router_type(self) -> str:
+        return "deepseek"
+
+
 class MultiModelRouter(ModelRouterBase):
     """多模型路由器 - 可根据需求选择最优模型"""
     
@@ -438,6 +504,7 @@ MODEL_ROUTER_REGISTRY = {
     "claude": ClaudeRouter,
     "zhipu": ZhipuRouter,
     "moonshot": MoonshotRouter,
+    "deepseek": DeepSeekRouter,
     "multi": MultiModelRouter
 }
 

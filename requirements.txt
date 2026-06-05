@@ -19,6 +19,8 @@ langchain-anthropic>=1.0.0
 langchain-ollama>=0.1.0
 langchain-chroma>=0.1.0
 langchain-text-splitters>=0.1.0
+# LangGraph (ReAct agent + state machine workflows)
+langgraph>=0.2.0
 # ChromaDB vector database
 chromadb>=0.4.0
 # Redis for caching and session management
