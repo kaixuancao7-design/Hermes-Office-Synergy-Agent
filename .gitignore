@@ -56,7 +56,7 @@ htmlcov/
 dist/
 build/
 *.egg-info/
-
+RESUME.md
 # Docker
 docker-compose.override.yml
 
