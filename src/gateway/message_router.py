@@ -26,12 +26,12 @@ class MessageRouter:
         self, user_id: str, task_type: str, complexity: str,
         primary_prompt: str, fallback_prompt: str = None
     ) -> str:
-        """Call model router with three-tier fallback to ReAct engine.
+        """Call model router with fallback to ReAct engine on failure.
 
         Args:
             user_id: The user ID for the request
-            task_type: Task type for model selection (e.g. 'summarization')
-            complexity: Complexity hint for model selection (e.g. 'simple')
+            task_type: Task type for logging (e.g. 'summarization')
+            complexity: Complexity hint for logging (e.g. 'simple')
             primary_prompt: The prompt to send to the model
             fallback_prompt: Override prompt for ReAct fallback. Defaults to primary_prompt.
 
@@ -46,12 +46,8 @@ class MessageRouter:
             logger.warning(f"[PLUGIN_CHECK] Model router unavailable, falling back to ReAct for {task_type}")
             return await react_engine.run(user_id, fallback_prompt)
 
-        model = model_router.select_model(task_type, complexity)
-        if not model:
-            logger.warning(f"[MODEL_ROUTER] No model for {task_type}/{complexity}, falling back to ReAct")
-            return await react_engine.run(user_id, fallback_prompt)
-
-        response = await model_router.call_model(model, [{"role": "user", "content": primary_prompt}])
+        # 直接调用 model_router 的 route() 方法（所有路由器的基础接口）
+        response = await model_router.route(primary_prompt)
         if response and response.strip():
             return response
 
@@ -102,6 +98,9 @@ class MessageRouter:
 
             # 记忆存储
             self._store_message_memory(user_id, message, group_id, group_name)
+
+            # 隐式纠正检测：用户是否在纠正上一轮回答？（三闸门 Gate 1）
+            self._detect_implicit_correction(user_id, message, session)
 
             # 群消息过滤
             if self._is_group_message(message) and not self._is_mentioned(message):
@@ -623,7 +622,61 @@ class MessageRouter:
         except Exception as e:
             logger.warning(f"[SESSION_SAVE] 会话持久化失败: {str(e)}")
 
+    def _detect_implicit_correction(self, user_id: str, message: Message, session: Session) -> None:
+        """Gate 1 隐式触发: 检测用户是否在纠正上一轮回答
+
+        关键词匹配用户消息中的纠正意图，自动捕获原始输出与纠正输出，
+        送入三闸门学习循环。
+        """
+        CORRECTION_KEYWORDS = [
+            "不对", "应该是", "不是这样的", "错了", "纠正", "改正",
+            "应该是这样", "你再看看", "重新来", "不是这个意思",
+            "应该是…", "不对吧", "搞错了", "你理解错了",
+        ]
+        content = message.content.strip()
+        if not content:
+            return
+
+        # 检测纠正意图
+        has_correction = any(kw in content for kw in CORRECTION_KEYWORDS)
+        if not has_correction:
+            return
+
+        # 获取上一轮 assistant 回复
+        assistant_msgs = [m for m in session.context if m.role == "assistant"]
+        if not assistant_msgs:
+            return
+
+        last_response = assistant_msgs[-1].content
+        if not last_response or len(last_response) < 20:
+            return
+
+        # 提取真实意图（去除纠正前缀后的内容作为 corrected）
+        corrected = content
+        for kw in CORRECTION_KEYWORDS:
+            corrected = corrected.replace(kw, "").strip("，,。.！!？?：: ")
+
+        if not corrected or len(corrected) < 5:
+            return  # 纠正内容太短，跳过
+
+        logger.info(f"[LEARN:G1] 检测到隐式纠正 | user_id={user_id}"
+                     f" | original_len={len(last_response)} | corrected_len={len(corrected)}")
+
+        # 送入学习循环
+        context = "\n".join(
+            m.content for m in session.context[-4:]
+            if m.role in ("user", "assistant")
+        )
+        learning_cycle.capture_correction(
+            user_id=user_id,
+            original=last_response,
+            corrected=corrected,
+            context=context,
+            intent="implicit_correction",
+        )
+
     def capture_correction(self, user_id: str, original: str, corrected: str, context: str) -> None:
+        """显式捕获用户纠正（API调用入口）"""
         learning_cycle.capture_correction(user_id, original, corrected, context)
     
     def _should_use_react(self, intent: Intent) -> bool:

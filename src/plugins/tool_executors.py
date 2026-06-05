@@ -473,24 +473,33 @@ class MemorySearchTool:
 
 
 class WebSearchTool:
-    """网页搜索工具"""
-    
+    """网页搜索工具
+
+    NOTE: 当前为 Mock 实现，返回示例数据。
+    接入真实搜索引擎（如 Bing API、SerpAPI）时替换 execute() 方法。
+    """
+
     def __init__(self, executor=None):
         self.executor = executor
-    
+
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         query = parameters.get("query", "")
-        
+
+        if not query:
+            return {"success": False, "error": "缺少搜索关键词"}
+
         try:
-            # 模拟网页搜索结果
+            # Mock: 搜索功能占位，正式环境需接入搜索引擎 API
             results = [
-                {"title": "搜索结果1", "url": "https://example.com", "summary": f"关于 '{query}' 的信息..."},
-                {"title": "搜索结果2", "url": "https://example.org", "summary": f"更多关于 '{query}' 的内容..."}
+                {"title": f"[Mock] 关于 '{query}' 的搜索结果",
+                 "url": "https://example.com",
+                 "summary": f"这是模拟搜索 '{query}' 的占位结果。生产环境请配置搜索引擎 API。"},
             ]
-            
+
             return {
                 "success": True,
-                "result": results
+                "result": results,
+                "message": "搜索完成（Mock 模式，仅返回占位数据）"
             }
         except Exception as e:
             return {"success": False, "error": str(e)}
@@ -596,39 +605,57 @@ class SandboxedCodeExecutionTool:
 
 
 class FileOperationsTool:
-    """文件操作工具"""
-    
+    """文件操作工具 — 限制在安全目录范围内"""
+
+    # 允许操作的目录（相对于项目根目录）
+    _ALLOWED_DIRS = {"./data", "./output", "./workspace", "./skills", "./logs"}
+
     def __init__(self, executor=None):
         self.executor = executor
-    
+
+    def _is_path_allowed(self, file_path: str) -> bool:
+        """检查路径是否在允许的目录范围内"""
+        if not file_path:
+            return False
+        import os as _os
+        abs_path = _os.path.abspath(file_path)
+        for allowed in self._ALLOWED_DIRS:
+            if abs_path.startswith(_os.path.abspath(allowed)):
+                return True
+        return False
+
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         operation = parameters.get("operation", "")
         path = parameters.get("path", "")
         content = parameters.get("content", "")
-        
+
+        # 路径安全检查
+        if not self._is_path_allowed(path):
+            return {"success": False, "error": f"路径不在允许范围内: {path}"}
+
         try:
             if operation == "read":
                 with open(path, "r", encoding="utf-8") as f:
                     return {"success": True, "result": f.read()}
-            
+
             elif operation == "write":
                 with open(path, "w", encoding="utf-8") as f:
                     f.write(content)
                 return {"success": True, "result": "文件写入成功"}
-            
+
             elif operation == "append":
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(content)
                 return {"success": True, "result": "内容追加成功"}
-            
+
             elif operation == "list":
                 import os
                 files = os.listdir(path)
                 return {"success": True, "result": files}
-            
+
             else:
                 return {"success": False, "error": f"未知操作: {operation}"}
-        
+
         except FileNotFoundError:
             return {"success": False, "error": "文件不存在"}
         except PermissionError:
@@ -673,11 +700,11 @@ class SandboxedFileOperationsTool:
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(content)
                 return {"success": True, "result": "内容追加成功"}
-            
+
             elif operation == "list":
                 import os
                 files = os.listdir(path)
-                return {"success": False, "result": files}
+                return {"success": True, "result": files}
             
             else:
                 return {"success": False, "error": f"未知操作: {operation}"}

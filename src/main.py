@@ -173,12 +173,22 @@ async def startup_event():
     # 启动飞书 WebSocket 长连接服务（后台运行）- 仅在插件初始化成功后启动
     asyncio.create_task(start_feishu_websocket())
     
+    # MCP Server HTTP (optional, background)
+    if settings.MCP_SERVER_ENABLED:
+        from src.engine.mcp_server import start_http_server
+        logger.info(f"[MCP] MCP Server HTTP starting (port={settings.MCP_SERVER_PORT})")
+        asyncio.create_task(start_http_server(port=settings.MCP_SERVER_PORT))
+    
     logger.info("Hermes Office Synergy Agent started successfully")
     logger.info("飞书使用 WebSocket 长连接方式接收消息")
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    # MCP Server shutdown
+    if settings.MCP_SERVER_ENABLED:
+        from src.engine.mcp_server import stop_http_server
+        await stop_http_server()
     feishu_websocket_service.stop()
     logger.info("Hermes Office Synergy Agent shutting down")
 

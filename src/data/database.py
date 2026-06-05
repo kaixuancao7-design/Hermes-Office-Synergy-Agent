@@ -1,12 +1,32 @@
+import ast
+import json
 import sqlite3
 import os
 from typing import Optional, List, Dict, Any
 from src.types import UserProfile, Message, Skill, MemoryEntry
 from src.utils import get_timestamp
-from src.logging_config import setup_logging
+from src.logging_config import get_logger
 from src.config import settings
 
-logger = setup_logging(settings.LOG_LEVEL)
+logger = get_logger("data")
+
+
+def _safe_deserialize(value: str, default=None):
+    """安全反序列化 — 先尝试 json.loads()，失败则回退到 ast.literal_eval()
+
+    新数据使用 json.dumps() 序列化 → json.loads() 反序列化
+    旧数据使用 str() 序列化（Python repr）→ ast.literal_eval() 兼容读取
+    """
+    if not value:
+        return default
+    try:
+        return json.loads(value)
+    except (json.JSONDecodeError, ValueError):
+        try:
+            return ast.literal_eval(value)
+        except (ValueError, SyntaxError):
+            logger.warning(f"无法反序列化: {str(value)[:100]}")
+            return default
 
 
 class Database:
@@ -136,7 +156,34 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_permissions_user
                 ON permissions(user_id, resource_type)
             """)
-            
+
+            # 学习循环 — 技能草稿表（三闸门：捕获→学习→应用）
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS skill_drafts (
+                    id TEXT PRIMARY KEY,
+                    skill_name TEXT NOT NULL DEFAULT '',
+                    description TEXT DEFAULT '',
+                    trigger_patterns TEXT DEFAULT '[]',
+                    steps TEXT DEFAULT '[]',
+                    original_context TEXT DEFAULT '',
+                    original_output TEXT DEFAULT '',
+                    corrected_output TEXT DEFAULT '',
+                    user_intent TEXT DEFAULT '',
+                    user_id TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'draft',
+                    review_comments TEXT,
+                    reviewed_by TEXT,
+                    reviewed_at INTEGER,
+                    FOREIGN KEY (user_id) REFERENCES users(id)
+                )
+            """)
+
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_skill_drafts_user
+                ON skill_drafts(user_id, status)
+            """)
+
             conn.commit()
     
     def save_user(self, user: UserProfile) -> None:
@@ -151,25 +198,25 @@ class Database:
                 user.name,
                 user.role,
                 user.writing_style,
-                str(user.preferences),
+                json.dumps(user.preferences, ensure_ascii=False),
                 user.created_at,
                 user.updated_at
             ))
             conn.commit()
-    
+
     def get_user(self, user_id: str) -> Optional[UserProfile]:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
             row = cursor.fetchone()
-            
+
             if row:
                 return UserProfile(
                     id=row[0],
                     name=row[1],
                     role=row[2],
                     writing_style=row[3],
-                    preferences=eval(row[4]) if row[4] else {},
+                    preferences=_safe_deserialize(row[4], {}),
                     created_at=row[5],
                     updated_at=row[6]
                 )
@@ -188,11 +235,11 @@ class Database:
                 message.content,
                 message.role,
                 message.timestamp,
-                str(message.metadata) if message.metadata else None
+                json.dumps(message.metadata, ensure_ascii=False) if message.metadata else None
             ))
-            
+
             conn.commit()
-    
+
     def search_messages(self, user_id: str, query: str, limit: int = 10) -> List[Message]:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -205,7 +252,7 @@ class Database:
                 ORDER BY m.timestamp DESC
                 LIMIT ?
             """, (query, user_id, limit))
-            
+
             messages = []
             for row in cursor.fetchall():
                 messages.append(Message(
@@ -214,10 +261,10 @@ class Database:
                     content=row[2],
                     role=row[3],
                     timestamp=row[4],
-                    metadata=eval(row[5]) if row[5] else None
+                    metadata=_safe_deserialize(row[5])
                 ))
             return messages
-    
+
     def get_recent_messages(self, user_id: str, limit: int = 20) -> List[Message]:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
@@ -225,7 +272,7 @@ class Database:
                 SELECT * FROM messages WHERE user_id = ?
                 ORDER BY timestamp DESC LIMIT ?
             """, (user_id, limit))
-            
+
             messages = []
             for row in cursor.fetchall():
                 messages.append(Message(
@@ -234,7 +281,7 @@ class Database:
                     content=row[2],
                     role=row[3],
                     timestamp=row[4],
-                    metadata=eval(row[5]) if row[5] else None
+                    metadata=_safe_deserialize(row[5])
                 ))
             return messages[::-1]
     
@@ -251,9 +298,9 @@ class Database:
                 skill.name,
                 skill.description,
                 skill.type,
-                str(skill.trigger_patterns),
-                str([s.model_dump() for s in skill.steps]),
-                str(skill.metadata),
+                json.dumps(skill.trigger_patterns, ensure_ascii=False),
+                json.dumps([s.model_dump() for s in skill.steps], ensure_ascii=False),
+                json.dumps(skill.metadata, ensure_ascii=False),
                 skill.created_at,
                 skill.updated_at
             ))
@@ -267,15 +314,16 @@ class Database:
             
             if row:
                 from src.types import SkillStep
-                steps = [SkillStep(**s) for s in eval(row[5])] if row[5] else []
+                steps_raw = _safe_deserialize(row[5], [])
+                steps = [SkillStep(**s) for s in steps_raw] if steps_raw else []
                 return Skill(
                     id=row[0],
                     name=row[1],
                     description=row[2],
                     type=row[3],
-                    trigger_patterns=eval(row[4]) if row[4] else [],
+                    trigger_patterns=_safe_deserialize(row[4], []),
                     steps=steps,
-                    metadata=eval(row[6]) if row[6] else {},
+                    metadata=_safe_deserialize(row[6], {}),
                     created_at=row[7],
                     updated_at=row[8]
                 )
@@ -289,15 +337,16 @@ class Database:
             skills = []
             for row in cursor.fetchall():
                 from src.types import SkillStep
-                steps = [SkillStep(**s) for s in eval(row[5])] if row[5] else []
+                steps_raw = _safe_deserialize(row[5], [])
+                steps = [SkillStep(**s) for s in steps_raw] if steps_raw else []
                 skills.append(Skill(
                     id=row[0],
                     name=row[1],
                     description=row[2],
                     type=row[3],
-                    trigger_patterns=eval(row[4]) if row[4] else [],
+                    trigger_patterns=_safe_deserialize(row[4], []),
                     steps=steps,
-                    metadata=eval(row[6]) if row[6] else {},
+                    metadata=_safe_deserialize(row[6], {}),
                     created_at=row[7],
                     updated_at=row[8]
                 ))
@@ -315,9 +364,9 @@ class Database:
                 entry.user_id,
                 entry.type,
                 entry.content,
-                str(entry.embedding) if entry.embedding else None,
+                json.dumps(entry.embedding) if entry.embedding else None,
                 entry.timestamp,
-                str(entry.tags) if entry.tags else None
+                json.dumps(entry.tags, ensure_ascii=False) if entry.tags else None
             ))
             conn.commit()
     
@@ -336,9 +385,9 @@ class Database:
                     user_id=row[1],
                     type=row[2],
                     content=row[3],
-                    embedding=eval(row[4]) if row[4] else None,
+                    embedding=_safe_deserialize(row[4]),
                     timestamp=row[5],
-                    tags=eval(row[6]) if row[6] else []
+                    tags=_safe_deserialize(row[6], [])
                 ))
             return entries
     
@@ -373,14 +422,14 @@ class Database:
             
             entries = []
             for row in cursor.fetchall():
-                tags = eval(row[6]) if row[6] else []
+                tags = _safe_deserialize(row[6], [])
                 if tag in tags:  # 精确验证标签是否存在
                     entries.append(MemoryEntry(
                         id=row[0],
                         user_id=row[1],
                         type=row[2],
                         content=row[3],
-                        embedding=eval(row[4]) if row[4] else None,
+                        embedding=_safe_deserialize(row[4]),
                         timestamp=row[5],
                         tags=tags
                     ))
@@ -571,6 +620,134 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             conn.commit()
+
+    # ==================== 技能草稿方法（三闸门学习循环） ====================
+
+    def save_skill_draft(self, draft: dict) -> None:
+        """保存或更新技能草稿"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO skill_drafts (
+                    id, skill_name, description, trigger_patterns, steps,
+                    original_context, original_output, corrected_output,
+                    user_intent, user_id, created_at, status,
+                    review_comments, reviewed_by, reviewed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                draft["id"],
+                draft.get("skill_name", ""),
+                draft.get("description", ""),
+                json.dumps(draft.get("trigger_patterns", []), ensure_ascii=False),
+                json.dumps([s if isinstance(s, dict) else s.model_dump() for s in draft.get("steps", [])], ensure_ascii=False),
+                draft.get("original_context", ""),
+                draft.get("original_output", ""),
+                draft.get("corrected_output", ""),
+                draft.get("user_intent", ""),
+                draft["user_id"],
+                draft.get("created_at", get_timestamp()),
+                draft.get("status", "draft"),
+                draft.get("review_comments"),
+                draft.get("reviewed_by"),
+                draft.get("reviewed_at"),
+            ))
+            conn.commit()
+
+    def get_skill_draft(self, draft_id: str) -> Optional[dict]:
+        """获取单个技能草稿"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM skill_drafts WHERE id = ?", (draft_id,))
+            row = cursor.fetchone()
+            if row:
+                return self._row_to_draft_dict(row)
+            return None
+
+    def get_pending_skill_drafts(self) -> list:
+        """获取所有待审核的技能草稿"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM skill_drafts WHERE status IN ('pending_review', 'draft') ORDER BY created_at DESC"
+            )
+            return [self._row_to_draft_dict(row) for row in cursor.fetchall()]
+
+    def get_skill_drafts_by_user(self, user_id: str, status: str = None) -> list:
+        """获取指定用户的技能草稿"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            if status:
+                cursor.execute(
+                    "SELECT * FROM skill_drafts WHERE user_id = ? AND status = ? ORDER BY created_at DESC",
+                    (user_id, status),
+                )
+            else:
+                cursor.execute(
+                    "SELECT * FROM skill_drafts WHERE user_id = ? ORDER BY created_at DESC",
+                    (user_id,),
+                )
+            return [self._row_to_draft_dict(row) for row in cursor.fetchall()]
+
+    def update_skill_draft_status(self, draft_id: str, status: str,
+                                   reviewer_id: str = None, comments: str = None) -> bool:
+        """更新技能草稿审核状态"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                UPDATE skill_drafts
+                SET status = ?, reviewed_by = ?, review_comments = ?, reviewed_at = ?
+                WHERE id = ?
+            """, (status, reviewer_id, comments, get_timestamp(), draft_id))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_learning_stats(self, user_id: str = None) -> dict:
+        """获取学习统计信息"""
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            if user_id:
+                cursor.execute(
+                    "SELECT status, COUNT(*) FROM skill_drafts WHERE user_id = ? GROUP BY status",
+                    (user_id,),
+                )
+            else:
+                cursor.execute(
+                    "SELECT status, COUNT(*) FROM skill_drafts GROUP BY status"
+                )
+            status_counts = {row[0]: row[1] for row in cursor.fetchall()}
+
+            cursor.execute("SELECT COUNT(*) FROM skills WHERE type = 'learned'")
+            learned_count = cursor.fetchone()[0]
+
+            return {
+                "drafts": status_counts.get("draft", 0),
+                "pending_review": status_counts.get("pending_review", 0),
+                "approved": status_counts.get("approved", 0),
+                "rejected": status_counts.get("rejected", 0),
+                "learned_skills_created": learned_count,
+                "total_corrections_captured": sum(status_counts.values()),
+            }
+
+    @staticmethod
+    def _row_to_draft_dict(row) -> dict:
+        """将数据库行转换为草稿字典"""
+        return {
+            "id": row[0],
+            "skill_name": row[1],
+            "description": row[2],
+            "trigger_patterns": _safe_deserialize(row[3], []),
+            "steps": _safe_deserialize(row[4], []),
+            "original_context": row[5],
+            "original_output": row[6],
+            "corrected_output": row[7],
+            "user_intent": row[8],
+            "user_id": row[9],
+            "created_at": row[10],
+            "status": row[11],
+            "review_comments": row[12],
+            "reviewed_by": row[13],
+            "reviewed_at": row[14],
+        }
 
 
 db = Database()

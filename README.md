@@ -3,6 +3,7 @@
 基于 Hermes Agent 架构的智能办公协同助手，具备长期记忆、技能自动沉淀与跨端执行能力，支持插件化扩展和企业级权限管理。
 
 > **项目遵循 HERMES.md 四大核心原则**：
+>
 > - **Think Before Coding**：执行前先验证理解，生成假设澄清清单
 > - **Simplicity First**：技能复杂度控制，拒绝过度设计
 > - **Surgical Changes**：最小diff原则，精准修改
@@ -228,8 +229,20 @@ MEMORY_STORE_TYPE=simple  # chroma, milvus, faiss, hybrid, simple, redis_hybrid
 # MILVUS_TOKEN=your-milvus-token
 
 # 插件配置
-MODEL_ROUTER_TYPE=ollama  # ollama, openai, anthropic, zhipu, moonshot, multi
+MODEL_ROUTER_TYPE=ollama  # ollama, openai, anthropic, zhipu, moonshot, deepseek, multi
 TOOL_EXECUTOR_TYPE=sandboxed
+MEMORY_STORE_TYPE=simple  # chroma, simple, milvus, faiss, hybrid, redis_hybrid
+
+# DeepSeek 配置（当 MODEL_ROUTER_TYPE=deepseek 时）
+# DEEPSEEK_API_KEY=your-deepseek-api-key
+# DEEPSEEK_DEFAULT_MODEL=deepseek-v4-pro  # deepseek-v4-pro / deepseek-v4-flash
+
+# 认证与安全
+# API_KEY_ENABLED=false  # 设为 true 启用 API Key 认证
+# API_KEYS=your-api-key-1,your-api-key-2  # 逗号分隔的有效 API Key
+# RATE_LIMIT_ENABLED=true
+# RATE_LIMIT_MAX_REQUESTS=60
+# RATE_LIMIT_WINDOW_SECONDS=60
 
 # 飞书配置（可选）
 # FEISHU_APP_ID=your-feishu-app-id
@@ -275,12 +288,12 @@ python start.py
 
 ### 触发方式
 
-| 触发类型 | 说明 | 示例 |
-|----------|------|------|
-| @机器人 | 直接@机器人触发 | `@Hermes-Office-Synergy-Agent 帮我生成一份产品介绍PPT` |
-| 关键词触发 | 包含关键词自动触发 | `生成周报PPT` |
-| 附件触发 | 上传文件自动分析 | 上传需求文档 |
-| 上下文触发 | 基于历史对话理解 | `读取这个文件`、`根据刚才的内容生成PPT` |
+| 触发类型   | 说明               | 示例                                                     |
+| ---------- | ------------------ | -------------------------------------------------------- |
+| @机器人    | 直接@机器人触发    | `@Hermes-Office-Synergy-Agent 帮我生成一份产品介绍PPT` |
+| 关键词触发 | 包含关键词自动触发 | `生成周报PPT`                                          |
+| 附件触发   | 上传文件自动分析   | 上传需求文档                                             |
+| 上下文触发 | 基于历史对话理解   | `读取这个文件`、`根据刚才的内容生成PPT`              |
 
 ### PPT生成工具
 
@@ -320,12 +333,12 @@ python start.py
 
 #### 核心组件
 
-| 组件 | 功能 | 说明 |
-|------|------|------|
-| **TemplateMatcher** | 模板匹配 | 根据内容分析推荐最优模板（麦肯锡、学术、创意、简约等） |
-| **SpecLock** | 规格锁定 | 锁定设计参数（颜色、字体、布局），防止上下文漂移 |
-| **StrategistPlanner** | 策略规划 | 八项确认机制，确保用户需求准确理解 |
-| **QualityGate** | 质量门控 | 自动检查PPT质量（结构、格式、字体安全） |
+| 组件                        | 功能     | 说明                                                   |
+| --------------------------- | -------- | ------------------------------------------------------ |
+| **TemplateMatcher**   | 模板匹配 | 根据内容分析推荐最优模板（麦肯锡、学术、创意、简约等） |
+| **SpecLock**          | 规格锁定 | 锁定设计参数（颜色、字体、布局），防止上下文漂移       |
+| **StrategistPlanner** | 策略规划 | 八项确认机制，确保用户需求准确理解                     |
+| **QualityGate**       | 质量门控 | 自动检查PPT质量（结构、格式、字体安全）                |
 
 #### 设计原则
 
@@ -337,12 +350,12 @@ python start.py
 
 ### 支持的幻灯片类型
 
-| 类型 | 说明 | 示例 |
-|------|------|------|
-| title | 标题页 | 演示稿封面 |
-| bullet | 项目符号页 | 要点列表 |
-| chart | 图表页 | 数据可视化 |
-| content | 内容页 | 详细内容展示 |
+| 类型    | 说明       | 示例         |
+| ------- | ---------- | ------------ |
+| title   | 标题页     | 演示稿封面   |
+| bullet  | 项目符号页 | 要点列表     |
+| chart   | 图表页     | 数据可视化   |
+| content | 内容页     | 详细内容展示 |
 
 ## 飞书配置
 
@@ -356,6 +369,7 @@ python start.py
 ### WebSocket 连接
 
 系统默认使用 **WebSocket 长连接** 方式接收飞书事件，具有以下优势：
+
 - 无需配置公网域名
 - 实时消息推送
 - 更低的延迟
@@ -597,10 +611,12 @@ POST /api/v1/ppt/generate
 系统具备上下文感知能力，能够理解用户的指代性表达：
 
 **支持的指代性词汇：**
+
 - "这个文件"、"那个文件"、"刚才的文件"、"上传的文件"
 - "这份文档"、"那个文档"、"刚刚的文档"
 
 **工作流程：**
+
 1. 检测用户输入中的指代性词汇
 2. 从上下文中提取相关信息（如最近上传的文件）
 3. 根据上下文和意图给出下一步操作建议
@@ -609,56 +625,57 @@ POST /api/v1/ppt/generate
 
 ### 角色定义
 
-| 角色 | 权限范围 |
-|------|----------|
-| `admin` | 全权限（技能、工具、记忆、API、配置） |
+| 角色          | 权限范围                                            |
+| ------------- | --------------------------------------------------- |
+| `admin`     | 全权限（技能、工具、记忆、API、配置）               |
 | `developer` | 技能全权限、工具全权限、记忆读写、API访问、配置查看 |
-| `user` | 技能读写执行、工具执行、记忆读取、API访问 |
-| `guest` | 仅技能读取权限 |
+| `user`      | 技能读写执行、工具执行、记忆读取、API访问           |
+| `guest`     | 仅技能读取权限                                      |
 
 ### 权限类型
 
-| 资源类型 | 权限 |
-|----------|------|
-| 技能 | read, execute, edit, delete, grant |
-| 工具 | execute, configure |
-| 记忆 | read, write, delete, search |
-| API | access |
-| 配置 | view, modify |
+| 资源类型 | 权限                               |
+| -------- | ---------------------------------- |
+| 技能     | read, execute, edit, delete, grant |
+| 工具     | execute, configure                 |
+| 记忆     | read, write, delete, search        |
+| API      | access                             |
+| 配置     | view, modify                       |
 
 ## 支持的 IM 平台
 
-| 平台 | 连接方式 | 状态 |
-|------|---------|------|
-| 飞书 | WebSocket 长连接 | ✅ 支持 |
-| 钉钉 | Webhook | ✅ 支持 |
-| 企业微信 | API | ✅ 支持 |
-| 微信 | API | ✅ 支持 |
-| Slack | WebSocket | ✅ 支持 |
-| Discord | WebSocket | ✅ 支持 |
+| 平台     | 连接方式         | 状态    |
+| -------- | ---------------- | ------- |
+| 飞书     | WebSocket 长连接 | ✅ 支持 |
+| 钉钉     | Webhook          | ✅ 支持 |
+| 企业微信 | API              | ✅ 支持 |
+| 微信     | API              | ✅ 支持 |
+| Slack    | WebSocket        | ✅ 支持 |
+| Discord  | WebSocket        | ✅ 支持 |
 
 ## 支持的模型
 
-| 模型 | 提供商 | 配置方式 |
-|------|--------|---------|
-| GPT-4o / GPT-4 | OpenAI | API Key |
-| Claude 3.5 Sonnet | Anthropic | API Key |
-| Qwen / Llama / Mistral | Ollama | 本地部署 |
-| GLM-4 | 智谱 | API Key |
-| Kimi | Moonshot | API Key |
+| 模型                   | 提供商    | 配置方式 |
+| ---------------------- | --------- | -------- |
+| GPT-4o / GPT-4         | OpenAI    | API Key  |
+| Claude 3.5 Sonnet      | Anthropic | API Key  |
+| Qwen / Llama / Mistral | Ollama    | 本地部署 |
+| GLM-4                  | 智谱      | API Key  |
+| Kimi                   | Moonshot  | API Key  |
+| DeepSeek-V4            | DeepSeek  | API Key  |
 
 ## 记忆存储方案
 
 系统支持多种向量数据库，通过配置文件切换：
 
-| 存储类型 | 配置值 | 适用场景 |
-|----------|--------|----------|
-| Chroma | `chroma` | 开发测试、轻量级部署 |
-| Milvus | `milvus` | 大规模生产环境 |
-| FAISS | `faiss` | 单机高性能场景 |
-| Hybrid | `hybrid` | 混合存储策略 |
-| Simple | `simple` | 开发测试，无需嵌入 |
-| Redis Hybrid | `redis_hybrid` | Redis + 向量库混合 |
+| 存储类型     | 配置值           | 适用场景             |
+| ------------ | ---------------- | -------------------- |
+| Chroma       | `chroma`       | 开发测试、轻量级部署 |
+| Milvus       | `milvus`       | 大规模生产环境       |
+| FAISS        | `faiss`        | 单机高性能场景       |
+| Hybrid       | `hybrid`       | 混合存储策略         |
+| Simple       | `simple`       | 开发测试，无需嵌入   |
+| Redis Hybrid | `redis_hybrid` | Redis + 向量库混合   |
 
 ## 项目结构
 
@@ -686,12 +703,19 @@ POST /api/v1/ppt/generate
 │   │   ├── task_planner.py           # 任务规划
 │   │   ├── demand_parser.py          # 需求解析器（PPT需求提取）
 │   │   ├── im_trigger.py             # IM触发器（多模态触发）
-│   │   ├── ppt_workflow.py          # PPT工作流
+│   │   ├── ppt_workflow.py          # PPT工作流（LangGraph StateGraph）
+│   │   ├── langchain_tools.py        # LangChain工具包装层
+│   │   ├── checkpointer.py           # AsyncSqliteSaver共享单例
 │   │   └── mcp_server.py            # MCP Server（基于官方 SDK）
 │   ├── gateway/
 │   │   ├── feishu_websocket.py       # 飞书WebSocket服务
 │   │   ├── im_adapter.py             # IM适配器管理
-│   │   └── message_router.py         # 消息路由
+│   │   ├── message_router.py         # 消息路由
+│   │   └── message_graph.py          # LangGraph消息路由图
+│   ├── middleware/
+│   │   ├── auth_middleware.py        # API Key认证中间件
+│   │   ├── rate_limit_middleware.py  # 速率限制中间件
+│   │   └── logging_middleware.py     # 请求/响应日志中间件
 │   ├── logging_config.py             # 日志配置（按模块拆分）
 │   ├── exceptions.py                 # 统一异常处理
 │   ├── main.py                       # FastAPI入口
@@ -758,18 +782,21 @@ POST /api/v1/ppt/generate
 负责管理多个IM平台的适配器，支持动态切换和扩展：
 
 **核心功能：**
+
 - 统一消息格式转换：将不同IM平台的消息格式统一为内部格式
 - 适配器生命周期管理：启动、停止、健康检查
 - 消息路由分发：根据消息来源路由到相应的处理器
 
 **支持的IM平台：**
-| 平台 | 适配器类 | 连接方式 |
-|------|----------|----------|
-| 飞书 | `FeishuAdapter` | WebSocket长连接 |
-| 钉钉 | `DingTalkAdapter` | Webhook |
-| 企业微信 | `WeComAdapter` | API轮询 |
+
+| 平台     | 适配器类            | 连接方式        |
+| -------- | ------------------- | --------------- |
+| 飞书     | `FeishuAdapter`   | WebSocket长连接 |
+| 钉钉     | `DingTalkAdapter` | Webhook         |
+| 企业微信 | `WeComAdapter`    | API轮询         |
 
 **使用示例：**
+
 ```python
 from src.gateway.im_adapter import im_adapter_manager
 
@@ -789,6 +816,7 @@ await im_adapter_manager.send_message(
 负责消息的分发和处理：
 
 **核心功能：**
+
 - 消息分类：识别消息类型（文本、图片、文件、事件等）
 - 意图识别：初步判断用户意图
 - 路由策略：根据意图分发到不同的处理模块
@@ -802,6 +830,7 @@ await im_adapter_manager.send_message(
 实现推理-行动循环，支持任务执行反思：
 
 **核心流程：**
+
 1. **思考**：分析当前状态，决定下一步行动
 2. **行动**：调用工具或技能
 3. **观察**：获取执行结果
@@ -809,6 +838,7 @@ await im_adapter_manager.send_message(
 5. **总结**：生成最终回复
 
 **支持的动作类型：**
+
 - `tool_call`: 调用工具
 - `finish`: 完成任务
 - `summarize`: 总结内容
@@ -824,41 +854,46 @@ await im_adapter_manager.send_message(
 实现细粒度意图识别和上下文感知分析：
 
 **核心功能：**
+
 - 细粒度意图分类：区分PPT生成、文件读取、总结等多种意图
 - 上下文感知分析：解析指代性词汇，理解用户真实需求
 - 意图-工具映射：将意图映射到相应的工具调用
 - 下一步行动建议：根据分析结果和上下文给出操作建议
 
 **支持的意图类型：**
-| 意图 | 说明 | 示例 |
-|------|------|------|
-| `ppt_generate_outline` | 生成PPT大纲 | "帮我生成产品介绍大纲" |
-| `ppt_generate` | 生成完整PPT | "生成产品介绍PPT" |
-| `ppt_from_outline` | 从大纲生成PPT | "根据这个大纲生成PPT" |
-| `ppt_from_content` | 从内容生成PPT | "根据文档内容生成PPT" |
-| `summarization` | 文档总结 | "总结这份文档" |
-| `read_file` | 文件读取 | "读取这个文件" |
-| `document_search` | 文档搜索 | "搜索相关文档" |
-| `memory_query` | 记忆查询 | "我之前说了什么" |
-| `question_answering` | 问答 | "什么是人工智能" |
-| `code_generation` | 代码生成 | "写一段Python代码" |
+
+| 意图                     | 说明          | 示例                   |
+| ------------------------ | ------------- | ---------------------- |
+| `ppt_generate_outline` | 生成PPT大纲   | "帮我生成产品介绍大纲" |
+| `ppt_generate`         | 生成完整PPT   | "生成产品介绍PPT"      |
+| `ppt_from_outline`     | 从大纲生成PPT | "根据这个大纲生成PPT"  |
+| `ppt_from_content`     | 从内容生成PPT | "根据文档内容生成PPT"  |
+| `summarization`        | 文档总结      | "总结这份文档"         |
+| `read_file`            | 文件读取      | "读取这个文件"         |
+| `document_search`      | 文档搜索      | "搜索相关文档"         |
+| `memory_query`         | 记忆查询      | "我之前说了什么"       |
+| `question_answering`   | 问答          | "什么是人工智能"       |
+| `code_generation`      | 代码生成      | "写一段Python代码"     |
 
 #### 2.3 需求解析器 (`src/engine/demand_parser.py`)
 
 解析用户PPT生成需求：
 
 **核心功能：**
+
 - 从自然语言提取PPT需求（标题、页数、受众、风格等）
 - 生成需求确认消息
 - 聚合群聊需求
 
 **支持的受众类型：**
+
 - 内部团队
 - 客户
 - 公众/公开演讲
 - 管理层
 
 **支持的风格类型：**
+
 - 正式/商务
 - 简洁/极简
 - 创意/活泼
@@ -868,6 +903,7 @@ await im_adapter_manager.send_message(
 处理IM多模态触发：
 
 **触发类型：**
+
 - **主动触发**：@机器人
 - **被动触发**：关键词匹配
 - **附件触发**：文件上传
@@ -882,6 +918,7 @@ await im_adapter_manager.send_message(
 整合PPT生成与IM发送：
 
 **核心方法：**
+
 - `generate_and_send_ppt()`: 生成PPT并发送给用户
 - `generate_from_outline_and_send()`: 从大纲生成PPT并发送
 - `generate_ppt_only()`: 仅生成PPT（不发送）
@@ -893,6 +930,7 @@ await im_adapter_manager.send_message(
 #### 4.1 插件初始化 (`src/plugins/__init__.py`)
 
 提供插件获取函数：
+
 - `get_im_adapter(im_type=None)`: 获取IM适配器
 - `get_model_router()`: 获取模型路由（统一入口）
 - `get_memory_store()`: 获取记忆存储
@@ -904,6 +942,7 @@ await im_adapter_manager.send_message(
 统一模型路由入口，支持多模型切换：
 
 **支持的模型类型：**
+
 - Ollama（本地部署）
 - OpenAI
 - Anthropic
@@ -916,6 +955,7 @@ await im_adapter_manager.send_message(
 统一工具执行入口，支持沙箱模式：
 
 **核心功能：**
+
 - 工具注册与管理
 - 安全沙箱执行环境
 - 支持的工具：文件读取、PPT生成、文档搜索、记忆搜索等
@@ -929,6 +969,7 @@ await im_adapter_manager.send_message(
 管理技能的注册、执行和权限控制：
 
 **核心特性：**
+
 - 延迟初始化：避免循环依赖
 - 外部技能注册：按需注册外部适配器
 - 技能版本管理：支持版本回滚和变更记录
@@ -941,12 +982,14 @@ await im_adapter_manager.send_message(
 #### 6.1 工具基类 (`src/tools/base.py`)
 
 定义工具接口规范：
+
 - `ToolBase`: 工具基类
 - `ToolRegistry`: 工具注册器
 
 #### 6.2 PPT生成工具 (`src/tools/ppt_generator.py`)
 
 PPT生成核心功能：
+
 - `PPTGeneratorBase`: PPT生成基类
 - `GeneratePPT`: 生成PPT
 - `GeneratePPTFromOutline`: 从大纲生成PPT
@@ -955,12 +998,14 @@ PPT生成核心功能：
 #### 6.3 文件读取工具 (`src/tools/file_reader.py`)
 
 文件读取功能：
+
 - `FeishuFileRead`: 飞书文件读取
 - 支持多种文件格式：docx、xlsx、pptx、pdf等
 
 #### 6.4 文档搜索工具 (`src/plugins/tool_executors.py`)
 
 基于向量数据库的文档搜索：
+
 - `DocumentSearchTool`: 文档搜索工具
 - 支持语义相似度搜索
 - 支持用户隔离搜索
@@ -977,28 +1022,28 @@ PPT生成核心功能：
 
 MCP Server 通过装饰器模式声明式定义工具，支持以下功能：
 
-| 功能 | 说明 |
-|------|------|
-| 工具定义 | 使用 `@mcp.tool()` 装饰器定义工具 |
-| 资源管理 | 使用 `@mcp.resource()` 装饰器定义资源 |
+| 功能     | 说明                                      |
+| -------- | ----------------------------------------- |
+| 工具定义 | 使用 `@mcp.tool()` 装饰器定义工具       |
+| 资源管理 | 使用 `@mcp.resource()` 装饰器定义资源   |
 | 提示模板 | 使用 `@mcp.prompt()` 装饰器定义提示模板 |
-| 传输层 | 支持 Stdio 和 HTTP 两种传输方式 |
-| 协议规范 | 完全符合 MCP 协议规范 |
+| 传输层   | 支持 Stdio 和 HTTP 两种传输方式           |
+| 协议规范 | 完全符合 MCP 协议规范                     |
 
 ### 已注册工具
 
-| 工具名称 | 功能描述 |
-|---------|---------|
-| `document_search` | 文档语义搜索 |
-| `memory_search` | 记忆搜索 |
-| `web_search` | 网页搜索 |
-| `code_execution` | 代码执行 |
-| `file_operations` | 文件操作 |
-| `feishu_file_read` | 飞书文件读取 |
-| `generate_ppt` | PPT生成 |
-| `ppt_template_match` | PPT模板匹配 |
-| `add_to_vector_store` | 添加到向量存储 |
-| `get_user_preferences` | 获取用户偏好 |
+| 工具名称                 | 功能描述       |
+| ------------------------ | -------------- |
+| `document_search`      | 文档语义搜索   |
+| `memory_search`        | 记忆搜索       |
+| `web_search`           | 网页搜索       |
+| `code_execution`       | 代码执行       |
+| `file_operations`      | 文件操作       |
+| `feishu_file_read`     | 飞书文件读取   |
+| `generate_ppt`         | PPT生成        |
+| `ppt_template_match`   | PPT模板匹配    |
+| `add_to_vector_store`  | 添加到向量存储 |
+| `get_user_preferences` | 获取用户偏好   |
 
 ### 使用示例
 
@@ -1037,24 +1082,24 @@ mcp_server = get_mcp_server()
 
 ### 核心组件
 
-| 组件 | 说明 |
-|------|------|
-| `VectorStore` | 向量存储（基于 Chroma + LangChain） |
-| `BM25Index` | BM25 关键词索引（SQLite 持久化） |
-| `AdvancedRetrieval` | 高级检索管道 |
-| `Reranker` | 重排序器（Linear、BM25、CrossEncoder） |
-| `DocumentLoader` | 文档加载与预处理 |
-| `VersionManager` | 文档版本管理 |
+| 组件                  | 说明                                   |
+| --------------------- | -------------------------------------- |
+| `VectorStore`       | 向量存储（基于 Chroma + LangChain）    |
+| `BM25Index`         | BM25 关键词索引（SQLite 持久化）       |
+| `AdvancedRetrieval` | 高级检索管道                           |
+| `Reranker`          | 重排序器（Linear、BM25、CrossEncoder） |
+| `DocumentLoader`    | 文档加载与预处理                       |
+| `VersionManager`    | 文档版本管理                           |
 
 ### 检索策略
 
-| 策略 | 说明 |
-|------|------|
-| 向量相似度搜索 | 基于语义相似度的检索 |
-| BM25 关键词搜索 | 基于关键词匹配的检索 |
-| 混合检索 | 向量 + BM25 加权融合 |
-| 重排序 | CrossEncoder 等模型重新排序结果 |
-| 查询扩展 | 扩展查询词提升召回率 |
+| 策略            | 说明                            |
+| --------------- | ------------------------------- |
+| 向量相似度搜索  | 基于语义相似度的检索            |
+| BM25 关键词搜索 | 基于关键词匹配的检索            |
+| 混合检索        | 向量 + BM25 加权融合            |
+| 重排序          | CrossEncoder 等模型重新排序结果 |
+| 查询扩展        | 扩展查询词提升召回率            |
 
 ### 使用示例
 
@@ -1083,12 +1128,12 @@ results = vector_store.search(
 
 日志按模块和级别拆分：
 
-| 日志文件 | 内容 |
-|----------|------|
-| `api.log` | API请求日志，包含请求ID、用户ID |
-| `model.log` | 模型调用日志，包含耗时、令牌数 |
-| `im.log` | IM消息日志，包含消息路由、推送 |
-| `engine.log` | 引擎日志，包含技能执行、学习循环 |
+| 日志文件        | 内容                                  |
+| --------------- | ------------------------------------- |
+| `api.log`     | API请求日志，包含请求ID、用户ID       |
+| `model.log`   | 模型调用日志，包含耗时、令牌数        |
+| `im.log`      | IM消息日志，包含消息路由、推送        |
+| `engine.log`  | 引擎日志，包含技能执行、学习循环      |
 | `gateway.log` | 网关日志，包含WebSocket连接、事件处理 |
 
 日志格式包含：请求ID、用户ID、时间戳、模块、级别、消息、堆栈信息。
@@ -1115,6 +1160,7 @@ python test_mcp_server.py
 ### Q: 飞书消息发送后未收到回复
 
 A: 请检查：
+
 1. Ollama 服务是否运行：`ollama serve`
 2. 飞书 APP_ID 和 APP_SECRET 是否正确配置
 3. 飞书应用是否已添加 `im.message.receive_v1` 事件订阅
@@ -1122,6 +1168,7 @@ A: 请检查：
 ### Q: 模型调用失败（404 错误）
 
 A: 请确保 Ollama 服务正在运行：
+
 ```bash
 ollama serve
 ```
@@ -1129,6 +1176,7 @@ ollama serve
 ### Q: OpenAI API密钥无效（401 错误）
 
 A: 推荐使用Ollama避免API密钥问题：
+
 1. 在 `.env` 中设置 `MODEL_ROUTER_TYPE=ollama`
 2. 确保 `OLLAMA_HOST=http://localhost:11434` 正确配置
 3. 启动Ollama服务并拉取模型
@@ -1136,6 +1184,7 @@ A: 推荐使用Ollama避免API密钥问题：
 ### Q: PPT生成后未发送
 
 A: 请检查：
+
 1. IM适配器配置是否正确
 2. `get_im_adapter()` 函数调用是否正确
 3. 飞书API权限是否完整
@@ -1147,6 +1196,7 @@ A: 学习循环默认启用，用户提交反馈后立即触发技能提炼流�
 ### Q: 如何设置用户角色
 
 A: 使用管理员账号调用权限接口：
+
 ```bash
 POST /api/v1/users/{user_id}/role?role=user&admin_id=admin
 ```
@@ -1154,6 +1204,7 @@ POST /api/v1/users/{user_id}/role?role=user&admin_id=admin
 ### Q: 如何验证审计日志完整性
 
 A: 调用审计接口验证日志哈希链：
+
 ```bash
 POST /api/v1/audit/verify
 ```
@@ -1161,6 +1212,7 @@ POST /api/v1/audit/verify
 ### Q: 文档搜索功能如何使用
 
 A: 文档搜索功能已实现，基于向量数据库进行语义搜索：
+
 ```bash
 GET /api/v1/document/search?query=关键词&limit=5&user_id=user123
 ```
@@ -1176,33 +1228,35 @@ MIT License
 **Bug修复：**
 
 1. **文件上传内容解析错误**：修复了飞书文件上传后返回内容与文件不符的问题
+
    - 问题原因：`feishu_file_read` 工具返回的嵌套结构未正确解析（`result["result"]["content"]` 而非 `result["content"]`）
    - 修复位置：`src/gateway/message_router.py` 中的 `_handle_document_analysis` 和 `_handle_ppt_generation` 方法
-
 2. **file_v3格式文件读取失败**：修复了飞书新版 file_v3 格式文件无法读取的问题
+
    - 问题原因：缺少 `message_id` 参数，新版飞书API要求必须提供消息ID才能下载文件
    - 修复位置：在调用 `feishu_file_read` 工具时添加了完整的参数（`file_key`、`message_id`、`user_id`）
-
 3. **ReAct引擎崩溃**：修复了 `action_type` 变量未定义导致的 UnboundLocalError
+
    - 问题原因：`action_type` 在异常处理前未定义，导致异常发生时无法访问该变量
    - 修复位置：`src/engine/react_engine.py`，将变量定义提前到动作执行之前
-
 4. **元数据传递缺失**：修复了文档分析时无法获取当前消息元数据的问题
+
    - 问题原因：`_handle_intent` 方法未传递 `metadata` 参数给处理器
    - 修复位置：修改了所有 handler 方法签名，添加 `metadata` 参数支持
 
 **功能改进：**
 
 1. **文档分析流程优化**：优化了文件上传后的处理流程
+
    - 优先从当前消息元数据获取文件信息
    - 直接调用工具读取文件内容而非依赖历史消息
    - 支持 PDF、DOCX 等多种文件格式的内容提取
-
 2. **日志系统增强**：增强了各模块的日志记录
+
    - 按模块拆分日志文件（api.log、engine.log、gateway.log、tool.log）
    - 添加了详细的请求上下文追踪
-
 3. **错误处理增强**：改进了工具调用失败时的错误处理
+
    - 添加了更详细的错误日志
    - 增强了异常捕获和恢复机制
 
@@ -1213,34 +1267,36 @@ MIT License
 **Bug修复：**
 
 1. **异步方法声明缺失**：修复了多个方法缺少 `async` 声明导致的协程调用错误
+
    - `ReActEngine.run()` 方法添加 `async` 声明
    - `_handle_with_react()` 方法添加 `async` 声明
    - 所有 handler 方法（`_handle_summarization`、`_handle_question_answering` 等）添加 `async` 声明
-
 2. **start_time 变量未定义**：修复了 `elapsed_ms` 计算始终为0的问题
+
    - 在 `run()` 方法开始处定义 `start_time = datetime.now()`
-
 3. **API 不兼容**：修复了 `call_model()` 方法不存在的问题
-   - 在 `ModelRouterBase` 基类中添加了 `call_model()` 方法定义
 
+   - 在 `ModelRouterBase` 基类中添加了 `call_model()` 方法定义
 4. **缺少 await 调用**：修复了所有异步调用缺少 `await` 的问题
+
    - 为 `react_engine.run()` 调用添加 `await`
    - 为 `model_router.call_model()` 调用添加 `await`
-
 5. **工具执行阻塞事件循环**：优化了 `_execute_tool()` 方法
+
    - 将方法改为异步（`async def`）
    - 使用 `loop.run_in_executor()` 将同步工具执行转移到线程池
-
 6. **导入路径错误**：修复了 PPT 工具无法加载的问题
+
    - 确保使用正确的导入路径 `from src.tools.ppt_tools import ...`
 
 **功能改进：**
 
 1. **异步架构优化**：全面优化了系统的异步处理能力
+
    - 所有模型调用、工具执行、消息路由均改为异步
    - 使用线程池避免阻塞事件循环
-
 2. **Ollama 配置增强**：完善了 Ollama 模型配置支持
+
    - 添加完整的 Ollama 配置参数（模型名称、最大token、温度、重试次数、超时时间）
    - 支持通过 `.env` 文件配置
 
@@ -1251,13 +1307,14 @@ MIT License
 **新功能：**
 
 1. **MCP Server（基于官方 Python MCP SDK）**：实现了标准的工具服务器
+
    - 使用官方 MCP SDK (`mcp`) 实现
    - 装饰器模式声明式定义工具
    - 支持 10+ 工具：文档搜索、记忆搜索、网页搜索、代码执行、文件操作等
    - 支持 Stdio 和 HTTP 传输方式
    - 完全符合 MCP 协议规范
-
 2. **RAG 增强系统**：实现了高级检索系统
+
    - BM25 关键词索引（SQLite 持久化）
    - 高级检索管道（过滤器 + 重排序）
    - 多种重排序策略：Linear、BM25、CrossEncoder、Hybrid
@@ -1267,14 +1324,15 @@ MIT License
 **功能改进：**
 
 1. **测试覆盖**：新增 MCP Server 测试用例
+
    - MCP Server 实例测试
    - 工具注册测试
    - 工具调用测试
-
 2. **测试脚本**：新增 MCP Server 测试脚本
-   - `test_mcp_server.py` 提供完整的功能演示
 
+   - `test_mcp_server.py` 提供完整的功能演示
 3. **错误处理**：增强 MCP Server 错误处理
+
    - 依赖模块缺失时的优雅降级
    - 工具调用异常捕获和日志记录
    - MCP SDK 未安装时的友好提示

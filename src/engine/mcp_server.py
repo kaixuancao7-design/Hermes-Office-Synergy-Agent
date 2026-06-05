@@ -365,12 +365,67 @@ if HAS_MCP_SDK:
         else:
             mcp.run(transport="stdio")
 
+
+    async def start_http_server(port: int = 8000) -> bool:
+        """非阻塞启动 MCP HTTP 服务器（后台任务）
+
+        可在 FastAPI startup_event 中调用，与主应用共存于同一进程。
+
+        Args:
+            port: HTTP 监听端口
+
+        Returns:
+            True 如果启动成功，False 如果失败
+        """
+        try:
+            import uvicorn
+
+            config = uvicorn.Config(
+                mcp.app,
+                host="0.0.0.0",
+                port=port,
+                log_level="info",
+                access_log=False,
+            )
+            server = uvicorn.Server(config)
+
+            # 保存引用以便 shutdown 时关闭
+            global _mcp_server_instance
+            _mcp_server_instance = server
+
+            logger.info(f"[MCP] HTTP server starting on port {port}")
+            await server.serve()
+            return True
+        except Exception as e:
+            logger.error(f"[MCP] HTTP server failed to start: {e}")
+            return False
+
+
+    async def stop_http_server():
+        """停止 MCP HTTP 服务器"""
+        global _mcp_server_instance
+        if _mcp_server_instance is not None:
+            logger.info("[MCP] Shutting down HTTP server")
+            _mcp_server_instance.should_exit = True
+            _mcp_server_instance = None
+
+
+    _mcp_server_instance = None
+
+
 else:
     mcp = None
 
     def run_server(transport: str = "stdio"):
         logger.error("MCP SDK 未安装，无法启动服务器")
         raise ImportError("MCP SDK 未安装，请运行 pip install mcp")
+
+    async def start_http_server(port: int = 8000) -> bool:
+        logger.warning("MCP SDK 未安装，无法启动 MCP HTTP 服务器")
+        return False
+
+    async def stop_http_server():
+        pass
 
 
 if __name__ == "__main__":

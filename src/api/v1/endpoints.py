@@ -339,28 +339,6 @@ async def get_skill_change_logs(skill_id: str):
 
 # ==================== 技能权限控制接口 ====================
 
-@router.post("/users/{user_id}/role")
-async def set_user_role(user_id: str, role: str, admin_id: str = "admin"):
-    """设置用户角色（需要管理员权限）"""
-    success = skill_manager.set_user_role(admin_id, user_id, role)
-    if not success:
-        raise ValidationException(
-            message="设置角色失败",
-            detail=f"管理员 {admin_id} 无权设置角色或角色类型无效",
-            context={"admin_id": admin_id, "user_id": user_id, "role": role}
-        )
-    return {"status": "success", "user_id": user_id, "role": role}
-
-
-@router.get("/users/{user_id}/role")
-async def get_user_role(user_id: str):
-    """获取用户角色"""
-    role = skill_manager.skill_permission_manager.get_user_role(user_id)
-    if not role:
-        return {"user_id": user_id, "role": "guest"}
-    return {"user_id": user_id, "role": role}
-
-
 @router.post("/skills/{skill_id}/permissions")
 async def grant_permission(skill_id: str, permission_data: Dict[str, Any]):
     """授予用户技能权限"""

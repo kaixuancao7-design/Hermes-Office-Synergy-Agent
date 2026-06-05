@@ -48,9 +48,8 @@ class LearnedSkillsManager:
             return None
     
     def _get_draft(self, draft_id: str) -> Optional[Dict[str, Any]]:
-        """获取草稿（简化实现）"""
-        # 在实际实现中，这里应该从数据库或其他存储中获取草稿
-        return None
+        """从数据库获取技能草稿"""
+        return db.get_skill_draft(draft_id)
 
 
 # 全局实例
