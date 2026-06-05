@@ -70,10 +70,12 @@ class SkillAutoPatcher:
     async def find_related_skill(self, query_context: str) -> Optional[Skill]:
         """在 learned 技能中查找与纠正上下文相关的技能
 
-        使用触发词匹配进行初筛，选择最匹配的。
+        Tier 1: 使用 SkillSummary 进行轻量级初筛
+        Tier 2: 确认匹配后按需加载完整 Skill
         """
-        all_skills = db.get_all_skills()
-        learned = [s for s in all_skills if s.type == "learned"]
+        # Tier 1: 使用摘要进行轻量级匹配
+        all_summaries = db.get_skills_summaries()
+        learned = [s for s in all_summaries if s.type == "learned"]
 
         if not learned:
             return None
@@ -82,21 +84,24 @@ class SkillAutoPatcher:
         learned = learned[:self.MAX_SKILLS_TO_CHECK]
 
         best_score = 0.0
-        best_skill = None
+        best_summary = None
 
-        for skill in learned:
-            score = self._calculate_relevance(skill, query_context)
+        for summary in learned:
+            score = self._calculate_relevance(summary, query_context)
             if score > best_score and score >= self.MIN_RELEVANCE_SCORE:
                 best_score = score
-                best_skill = skill
+                best_summary = summary
 
-        if best_skill:
-            logger.info(f"[AUTO_PATCH] Found related skill: {best_skill.name}"
+        if best_summary:
+            logger.info(f"[AUTO_PATCH] Found related skill: {best_summary.name}"
                          f" | score={best_score:.2f}")
-        return best_skill
+            # Tier 2: 按需加载完整 Skill
+            return db.get_skill(best_summary.id)
 
-    def _calculate_relevance(self, skill: Skill, context: str) -> float:
-        """计算技能与上下文的相关性分数
+        return None
+
+    def _calculate_relevance(self, skill, context: str) -> float:
+        """计算技能与上下文的相关性分数（兼容 Skill 和 SkillSummary）
 
         使用触发模式匹配率 + 名称/描述重叠度。
         """

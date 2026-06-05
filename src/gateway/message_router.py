@@ -22,6 +22,7 @@ class MessageRouter:
         self.use_react_mode = True  # 启用 ReAct 模式
         self._load_persisted_sessions()
         self._graph = None  # 延迟初始化 LangGraph 消息图
+        self._pending_skill_suggestion = None  # 渐进式披露：接近匹配的技能建议
         logger.info("[INIT] MessageRouter 初始化完成")
     
     async def _call_model_with_fallback(
@@ -110,43 +111,81 @@ class MessageRouter:
                 return ""
 
             # =================================================================
-            # 技能预匹配：在意图识别之前检查是否有高置信度技能匹配
-            # 如果匹配到技能（score ≥ 0.5），直接执行技能的步骤链，
-            # 跳过意图识别 → 路由 → 处理器的常规流程
+            # 技能预匹配：Tier 1 轻量级匹配 → Tier 2 按需加载 → 执行
+            # 支持三层渐进式披露：
+            #   Layer 1 (score ≥ 0.5): 自动执行技能 + 显示披露头/步骤进度/归因页脚
+            #   Layer 2 (0.3 ≤ score < 0.5): 接近匹配 → 建议使用技能
+            #   Layer 3 (score < 0.3): 静默跳过，走正常意图识别流程
+            #
+            # Token 优化: Tier 1 匹配使用 SkillSummary（~500 chars/skill），
+            #   仅在确认匹配后通过 load_full_skill() 加载完整 Skill 对象
             # =================================================================
-            matched_skill = trigger_matcher.find_relevant_skill(message.content, user_id)
-            if matched_skill:
+            matched_summary, near_misses = trigger_matcher.find_relevant_skill_with_near_misses(
+                message.content, user_id
+            )
+
+            if matched_summary:
                 score = trigger_matcher._calculate_match_score(
-                    matched_skill, message.content.lower()
+                    matched_summary, message.content.lower()
                 )
                 if score >= skill_executor.SKILL_MATCH_THRESHOLD:
                     logger.info(
-                        f"[SKILL_PREMATCH] Executing skill directly | "
-                        f"skill={matched_skill.name} | score={score:.2f} | "
-                        f"type={matched_skill.type}"
+                        f"[SKILL_PREMATCH] Tier 1 matched, loading Tier 2 | "
+                        f"skill={matched_summary.name} | score={score:.2f} | "
+                        f"type={matched_summary.type}"
                     )
-                    try:
-                        result = await skill_executor.execute_skill(
-                            matched_skill, message.content, user_id,
-                            metadata=message.metadata,
+
+                    # Tier 2: 按需加载完整 Skill（仅在确认匹配后）
+                    full_skill = trigger_matcher.load_full_skill(matched_summary.id)
+                    if full_skill is None:
+                        logger.warning(
+                            f"[SKILL_PREMATCH] Tier 2 load failed for {matched_summary.id}, "
+                            f"falling through to normal routing"
                         )
-                        response = result.response
-                        # 记录技能使用（供 Curator 评分）
-                        db.record_skill_usage(matched_skill.id, user_id)
-                        # 保存响应和日志
-                        elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
-                        log_event(logger, "message_processed", trace_id=trace_id,
-                                 user_id=user_id, intent="skill_prematch",
-                                 mode="Skill", response_length=len(response),
-                                 elapsed_ms=elapsed_ms)
-                        self._save_response_to_db(user_id, response, group_id, group_name, "skill_prematch")
-                        return response
-                    except Exception as e:
-                        logger.error(
-                            f"[SKILL_PREMATCH] Skill execution failed, "
-                            f"falling through to normal routing | error={str(e)}"
-                        )
-                        # 执行失败时降级到正常流程（不阻塞用户请求）
+                    else:
+                        try:
+                            result = await skill_executor.execute_skill(
+                                full_skill, message.content, user_id,
+                                metadata=message.metadata,
+                                match_score=score,
+                            )
+
+                            # 渐进式披露：拼接披露头 + 步骤进度 + LLM回复 + 归因页脚
+                            step_log = "\n".join(result.step_progress) if result.step_progress else ""
+                            footer = skill_executor.build_footer(
+                                full_skill.name, full_skill.type, score
+                            )
+                            response = (
+                                f"{result.disclosure}\n"
+                                f"{step_log}\n\n"
+                                f"{result.response}"
+                                f"{footer}"
+                            )
+
+                            # 记录技能使用（供 Curator 评分）
+                            db.record_skill_usage(full_skill.id, user_id)
+                            # 保存响应和日志
+                            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+                            log_event(logger, "message_processed", trace_id=trace_id,
+                                     user_id=user_id, intent="skill_prematch",
+                                     mode="Skill", response_length=len(response),
+                                     elapsed_ms=elapsed_ms)
+                            self._save_response_to_db(user_id, response, group_id, group_name, "skill_prematch")
+                            return response
+                        except Exception as e:
+                            logger.error(
+                                f"[SKILL_PREMATCH] Skill execution failed, "
+                                f"falling through to normal routing | error={str(e)}"
+                            )
+                            # 执行失败时降级到正常流程（不阻塞用户请求）
+
+            # 接近匹配建议：score 在 0.3-0.5 之间，提示用户但不自动执行
+            if near_misses and not matched_summary:
+                self._pending_skill_suggestion = skill_executor.build_near_miss_suggestion(
+                    near_misses
+                )
+            else:
+                self._pending_skill_suggestion = None
 
             # 意图识别
             metadata = message.metadata or {}
@@ -171,6 +210,11 @@ class MessageRouter:
                 asyncio.create_task(self._auto_generate_skill_if_complex(user_id))
             else:
                 response = await self._handle_intent(user_id, intent, message.content, message.metadata)
+
+            # 附加接近匹配的技能建议（渐进式披露 Layer 2）
+            if self._pending_skill_suggestion:
+                response += self._pending_skill_suggestion
+                self._pending_skill_suggestion = None
 
             # 保存响应
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
@@ -411,47 +455,54 @@ class MessageRouter:
         return f"任务完成！\n步骤：\n{chr(10).join(f'{i+1}. {s.description}: {s.result}' for i, s in enumerate(task.steps))}"
     
     async def _handle_skill_request(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
-        """处理技能请求 — 查找匹配技能并执行其步骤链
+        """处理技能请求 — Tier 1 匹配 → Tier 2 加载 → 执行步骤链
 
         优先使用 SkillStepExecutor 执行完整的技能工作流（工具调用 + LLM 语义动作）。
-        如果技能管理器未找到技能，降级使用 TriggerMatcher 直接匹配。
+        如果技能管理器未找到技能，降级使用 TriggerMatcher 直接匹配（Tier 1 摘要匹配）。
+        匹配成功后通过 Tier 2 按需加载完整 Skill 对象。
         如果仍未找到，降级到 ReAct 引擎进行自由推理。
         """
         logger.info(f"[SKILL_HANDLER] 开始技能请求处理: user_id={user_id}")
 
         # 方式 1: 通过插件系统的技能管理器查找
         skill_manager = get_skill_manager()
-        skill = None
+        summary = None
 
         if skill_manager:
             try:
-                skill = skill_manager.find_relevant_skill(context)
+                summary = skill_manager.find_relevant_skill(context)
             except AttributeError:
                 # HybridSkillManager 没有 find_relevant_skill 方法
                 pass
 
-        # 方式 2: 通过 TriggerMatcher 直接匹配（更可靠）
-        if skill is None:
-            skill = trigger_matcher.find_relevant_skill(context, user_id)
+        # 方式 2: 通过 TriggerMatcher Tier 1 轻量级匹配
+        if summary is None:
+            summary = trigger_matcher.find_relevant_skill(context, user_id)
 
-        # 执行匹配到的技能
-        if skill:
-            logger.info(
-                f"[SKILL_HANDLER] Found skill, executing | "
-                f"skill={skill.name} | type={skill.type} | steps={len(skill.steps)}"
-            )
-            try:
-                result = await skill_executor.execute_skill(
-                    skill, context, user_id, metadata=metadata,
+        # Tier 2: 按需加载完整 Skill 并执行
+        if summary:
+            full_skill = trigger_matcher.load_full_skill(summary.id)
+            if full_skill:
+                logger.info(
+                    f"[SKILL_HANDLER] T1 matched, T2 loaded | "
+                    f"skill={full_skill.name} | type={full_skill.type} | "
+                    f"steps={len(full_skill.steps)}"
                 )
-                # 记录技能使用
-                db.record_skill_usage(skill.id, user_id)
-                return result.response
-            except Exception as e:
-                logger.error(
-                    f"[SKILL_HANDLER] Skill execution failed, "
-                    f"falling back to ReAct | error={str(e)}"
-                )
+                try:
+                    result = await skill_executor.execute_skill(
+                        full_skill, context, user_id, metadata=metadata,
+                        match_score=trigger_matcher._calculate_match_score(
+                            summary, context.lower()
+                        ),
+                    )
+                    # 记录技能使用
+                    db.record_skill_usage(full_skill.id, user_id)
+                    return result.response
+                except Exception as e:
+                    logger.error(
+                        f"[SKILL_HANDLER] Skill execution failed, "
+                        f"falling back to ReAct | error={str(e)}"
+                    )
 
         logger.warning("[SKILL_HANDLER] 未找到相关技能，降级到ReAct模式")
         return await react_engine.run(user_id, f"查找与以下内容相关的技能：{context}")

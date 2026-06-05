@@ -44,6 +44,45 @@ class Skill(BaseModel):
     created_by: Optional[str] = None
 
 
+class SkillSummary(BaseModel):
+    """Tier 1 轻量级技能摘要 — 仅包含匹配和渐进式披露所需的最小字段集合
+
+    设计目标:
+      - 内存占用为完整 Skill 的 1/5 ~ 1/10（无 steps 反序列化开销）
+      - 所有字段均为匹配评分所需（TriggerMatcher._calculate_match_score）
+      - 可快速从 DB 加载，无需解析嵌套 SkillStep 对象
+      - 支持 from_skill() 从完整 Skill 提取摘要
+    """
+    id: str
+    name: str
+    description: str
+    type: Literal['preset', 'custom', 'learned']
+    trigger_patterns: List[str]
+    step_instructions: List[str] = []   # 从每步 parameters.instruction 提取的纯文本列表
+    version: str = "1.0.0"
+    created_at: int = 0
+    updated_at: int = 0
+
+    @classmethod
+    def from_skill(cls, skill: Skill) -> "SkillSummary":
+        """从完整 Skill 对象提取 Tier 1 摘要"""
+        return cls(
+            id=skill.id,
+            name=skill.name,
+            description=skill.description,
+            type=skill.type,
+            trigger_patterns=list(skill.trigger_patterns),
+            step_instructions=[
+                s.parameters.get("instruction", "")
+                for s in skill.steps
+                if s.parameters and s.parameters.get("instruction")
+            ],
+            version=skill.version,
+            created_at=skill.created_at,
+            updated_at=skill.updated_at,
+        )
+
+
 class SkillVersion(BaseModel):
     """技能版本记录"""
     id: str

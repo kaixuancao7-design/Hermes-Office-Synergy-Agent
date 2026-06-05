@@ -32,10 +32,14 @@ logger = get_logger("engine")
 
 @dataclass
 class SkillExecutionResult:
-    """技能执行结果"""
+    """技能执行结果（含渐进式披露信息）"""
     response: str                          # 面向用户的最终回复
     skill_id: str                          # 执行的技能 ID
     skill_name: str                        # 技能名称
+    skill_type: str = ""                   # 技能类型（preset/custom/learned）
+    match_score: float = 0.0               # 匹配置信度
+    disclosure: str = ""                   # 预执行披露头（🔧 使用技能「xxx」...）
+    step_progress: List[str] = field(default_factory=list)  # 逐步执行进度
     trace: Optional[ExecutionTrace] = None # 执行轨迹（供自学习管道使用）
     steps_executed: int = 0                # 成功执行的步骤数
     steps_failed: int = 0                  # 失败的步骤数
@@ -60,8 +64,105 @@ class SkillStepExecutor:
     # 单步超时（秒）
     STEP_TIMEOUT = 60
 
+    # 技能类型中文标签
+    TYPE_LABELS = {"preset": "预设", "custom": "自定义", "learned": "学习"}
+
     def __init__(self):
         self._tool_executor = None
+
+    # =========================================================================
+    # 渐进式披露：向用户展示技能执行过程
+    # =========================================================================
+
+    def build_disclosure(self, skill: Skill, score: float) -> str:
+        """生成预执行披露头 — 告知用户匹配到了哪个技能"""
+        type_label = self.TYPE_LABELS.get(skill.type, skill.type)
+        return (
+            f"🔧 使用技能「{skill.name}」({type_label}) — 共 {len(skill.steps)} 步\n"
+            f"   置信度: {score*100:.0f}% | 版本: {skill.version}"
+        )
+
+    @staticmethod
+    def build_footer(skill_name: str, skill_type: str, score: float) -> str:
+        """生成执行后归因页脚 — 告知用户技能执行完成并提供控制选项"""
+        type_labels = {"preset": "预设", "custom": "自定义", "learned": "学习"}
+        type_label = type_labels.get(skill_type, skill_type)
+        return (
+            f"\n\n────────────────────\n"
+            f"⚡ 技能: {skill_name} | 类型: {type_label} | "
+            f"置信度: {score*100:.0f}%\n"
+            f"💡 回复「不用技能」可直接对话 | 回复「技能列表」查看所有可用技能"
+        )
+
+    @staticmethod
+    def build_near_miss_suggestion(near_misses) -> str:
+        """为接近匹配（0.3-0.5 分）的技能生成建议文本"""
+        if not near_misses:
+            return ""
+        skill, score = near_misses[0]
+        desc = skill.description[:80] + ("..." if len(skill.description) > 80 else "")
+        return (
+            f"\n\n💡 您的问题可能适合使用「{skill.name}」技能"
+            f"（{desc}）。\n"
+            f"   回复「使用技能」即可调用该技能。"
+        )
+
+    def _load_reference_docs(self, skill: Skill) -> Dict[str, str]:
+        """Tier 3: 按需加载技能参考文档
+
+        从 skill.metadata.references 中读取文档路径列表，
+        在技能执行前加载到内存中，供 LLM 步骤作为领域知识参考。
+
+        skill.metadata 格式:
+          {
+            "references": [
+              "docs/accounting_standards.md",
+              "docs/financial_templates.json"
+            ]
+          }
+
+        Returns:
+            {filepath: content} 字典，加载失败的文档不包含在内
+        """
+        refs = skill.metadata.get("references", [])
+        if not refs:
+            return {}
+
+        # 确保 references 是列表
+        if not isinstance(refs, list):
+            return {}
+
+        ref_docs = {}
+        for ref_path in refs:
+            if not isinstance(ref_path, str):
+                continue
+            try:
+                with open(ref_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                ref_docs[ref_path] = content
+                logger.info(
+                    f"[SKILL_EXEC:T3] Loaded reference doc | "
+                    f"skill={skill.name} | path={ref_path} | "
+                    f"size={len(content)} chars"
+                )
+            except FileNotFoundError:
+                logger.warning(
+                    f"[SKILL_EXEC:T3] Reference not found | "
+                    f"skill={skill.name} | path={ref_path}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[SKILL_EXEC:T3] Cannot load reference | "
+                    f"skill={skill.name} | path={ref_path} | error={str(e)}"
+                )
+
+        if ref_docs:
+            logger.info(
+                f"[SKILL_EXEC:T3] Loaded {len(ref_docs)}/{len(refs)} reference docs "
+                f"for skill={skill.name}"
+            )
+
+        return ref_docs
 
     def _get_tool_executor(self):
         """懒加载工具执行器，优先使用插件系统，失败则尝试直接实例化"""
@@ -95,6 +196,7 @@ class SkillStepExecutor:
         query: str,
         user_id: str,
         metadata: Optional[Dict[str, Any]] = None,
+        match_score: float = 0.0,
     ) -> SkillExecutionResult:
         """执行技能的全部步骤并生成最终回复
 
@@ -103,22 +205,37 @@ class SkillStepExecutor:
             query: 用户原始查询
             user_id: 用户 ID
             metadata: 附加元数据（file_key, message_id 等）
+            match_score: 技能匹配置信度（用于渐进式披露）
 
         Returns:
-            SkillExecutionResult: 包含最终回复和执行轨迹
+            SkillExecutionResult: 包含最终回复、披露信息和执行轨迹
         """
         start_time = time.time()
+        total_steps = len(skill.steps)
         logger.info(
             f"[SKILL_EXEC] Starting skill execution | skill={skill.name} | "
-            f"steps={len(skill.steps)} | user_id={user_id}"
+            f"steps={total_steps} | user_id={user_id} | score={match_score:.2f}"
         )
+
+        # 生成预执行披露头
+        disclosure = self.build_disclosure(skill, match_score or 1.0)
+
+        # Tier 3: 按需加载参考文档（技能 metadata.references 中指定的文档路径）
+        ref_docs = self._load_reference_docs(skill)
 
         # 累积上下文（初始值为用户查询）
         context = query
+        if ref_docs:
+            ref_summary = "\n\n".join(
+                f"### 参考文档: {path}\n{content[:2000]}"
+                for path, content in ref_docs.items()
+            )
+            context += f"\n\n## 参考文档（Tier 3 按需加载）:\n{ref_summary}"
 
         # 执行轨迹记录
         trace_records: List[ToolCallRecord] = []
         step_results: List[Dict[str, Any]] = []
+        step_progress: List[str] = []
         steps_executed = 0
         steps_failed = 0
 
@@ -150,6 +267,14 @@ class SkillStepExecutor:
                 elapsed_ms = (time.time() - step_start) * 1000
                 steps_executed += 1
 
+                # 渐进式披露：记录步骤执行进度
+                step_desc = step.description or step.action
+                result_len = len(result_text)
+                step_progress.append(
+                    f"✅ 步骤 {i+1}/{total_steps}: {step_desc} "
+                    f"— 完成 ({result_len} 字符)"
+                )
+
                 # 追加到累积上下文
                 context += f"\n\n[Step {i+1}: {action}]\n{result_text}"
 
@@ -158,7 +283,7 @@ class SkillStepExecutor:
                     "action": action,
                     "success": True,
                     "elapsed_ms": elapsed_ms,
-                    "result_length": len(result_text),
+                    "result_length": result_len,
                 })
 
                 trace_records.append(ToolCallRecord(
@@ -188,6 +313,10 @@ class SkillStepExecutor:
                 elapsed_ms = (time.time() - step_start) * 1000
                 steps_failed += 1
                 error_msg = f"步骤执行超时（>{self.STEP_TIMEOUT}s）"
+                step_desc = step.description or step.action
+                step_progress.append(
+                    f"⏱️ 步骤 {i+1}/{total_steps}: {step_desc} — 超时"
+                )
                 context += f"\n\n[Step {i+1}: {action} - 失败]\n{error_msg}"
                 step_results.append({
                     "step_id": step_id, "action": action,
@@ -199,6 +328,10 @@ class SkillStepExecutor:
                 elapsed_ms = (time.time() - step_start) * 1000
                 steps_failed += 1
                 error_msg = str(e)
+                step_desc = step.description or step.action
+                step_progress.append(
+                    f"❌ 步骤 {i+1}/{total_steps}: {step_desc} — 失败"
+                )
                 context += f"\n\n[Step {i+1}: {action} - 失败]\n{error_msg}"
                 step_results.append({
                     "step_id": step_id, "action": action,
@@ -223,6 +356,7 @@ class SkillStepExecutor:
             skill=skill,
             steps_executed=steps_executed,
             steps_failed=steps_failed,
+            step_progress=step_progress,
         )
 
         # 构建执行轨迹
@@ -241,6 +375,10 @@ class SkillStepExecutor:
             response=final_response,
             skill_id=skill.id,
             skill_name=skill.name,
+            skill_type=skill.type,
+            match_score=match_score or 1.0,
+            disclosure=disclosure,
+            step_progress=step_progress,
             trace=trace,
             steps_executed=steps_executed,
             steps_failed=steps_failed,
@@ -477,10 +615,12 @@ class SkillStepExecutor:
         skill: Skill,
         steps_executed: int = 0,
         steps_failed: int = 0,
+        step_progress: List[str] = None,
     ) -> str:
         """基于所有步骤的累积上下文生成面向用户的最终回复
 
         遵循 react_engine.py:467-478 的相同模式。
+        包含步骤执行进度，让 LLM 了解完整的执行过程。
         """
         logger.info(
             f"[SKILL_EXEC:FINAL] Generating final response | "
@@ -494,9 +634,15 @@ class SkillStepExecutor:
                 f"以下回复基于 {steps_executed} 个成功步骤的结果）"
             )
 
+        # 构建步骤进度摘要
+        step_summary = ""
+        if step_progress:
+            step_summary = "## 步骤执行记录:\n" + "\n".join(step_progress) + "\n\n"
+
         prompt = (
             f"你是一个企业办公助手。你按照「{skill.name}」技能的工作流程执行了以下步骤。\n"
             f"技能描述: {skill.description}\n\n"
+            f"{step_summary}"
             f"## 执行过程与结果:\n{context}\n\n"
             f"## 用户原始问题: {query}\n"
             f"{status_note}\n"

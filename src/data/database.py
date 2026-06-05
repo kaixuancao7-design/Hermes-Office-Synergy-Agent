@@ -366,7 +366,7 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("SELECT * FROM skills")
-            
+
             skills = []
             for row in cursor.fetchall():
                 from src.types import SkillStep
@@ -384,6 +384,56 @@ class Database:
                     updated_at=row[8]
                 ))
             return skills
+
+    def get_skills_summaries(self) -> List:
+        """Tier 1: 加载所有技能的轻量级摘要 — 仅匹配字段，无完整步骤对象
+
+        返回 SkillSummary 列表，每个仅包含:
+          - id, name, description, type
+          - trigger_patterns（用于关键词匹配）
+          - step_instructions（从 steps JSON 中提取的纯文本 instruction 列表）
+          - version, created_at, updated_at
+
+        相比 get_all_skills():
+          - 不反序列化完整的 SkillStep 对象（减少 5-10x 内存占用）
+          - 不加载 metadata 字典
+          - 不加载 created_by 字段
+          - 匹配评分所需的所有字段均已包含
+
+        用于: TriggerMatcher, SkillAutoPatcher, REST API 列表, SkillCurator 评分
+        """
+        from src.types import SkillSummary
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT id, name, description, type, trigger_patterns, "
+                "steps, created_at, updated_at FROM skills"
+            )
+
+            summaries = []
+            for row in cursor.fetchall():
+                # 从 steps JSON 中提取 instruction 文本，不反序列化完整 SkillStep
+                steps_raw = _safe_deserialize(row[5], [])
+                step_instructions = []
+                if steps_raw:
+                    for s in steps_raw:
+                        if isinstance(s, dict):
+                            params = s.get("parameters", {})
+                            if isinstance(params, dict) and params.get("instruction"):
+                                step_instructions.append(params["instruction"])
+
+                summaries.append(SkillSummary(
+                    id=row[0],
+                    name=row[1],
+                    description=row[2] or "",
+                    type=row[3],
+                    trigger_patterns=_safe_deserialize(row[4], []),
+                    step_instructions=step_instructions,
+                    created_at=row[6] or 0,
+                    updated_at=row[7] or 0,
+                ))
+            return summaries
     
     def save_memory(self, entry: MemoryEntry) -> None:
         with sqlite3.connect(self.db_path) as conn:

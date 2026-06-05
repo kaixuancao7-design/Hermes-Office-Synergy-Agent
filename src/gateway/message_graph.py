@@ -348,35 +348,54 @@ class MessageGraph:
         return state
 
     async def _handle_skill_node(self, state: RouteState) -> RouteState:
-        """HandleSkill节点 — 执行预匹配到的技能步骤链"""
+        """HandleSkill节点 — Tier 2 按需加载 + 执行技能步骤链（含渐进式披露）"""
         from src.data.database import db
+        from src.skills.triggers import trigger_matcher
 
-        skill = state.get("matched_skill")
+        summary = state.get("matched_skill")  # Tier 1: SkillSummary
         user_id = state["user_id"]
         content = state["content"]
         metadata = state.get("metadata")
+        match_score = state.get("intent_confidence", 0.0)
 
-        if skill is None:
+        if summary is None:
             logger.warning("[MSG_SKILL] No matched_skill in state, falling back to direct handler")
             state["response"] = "技能匹配数据丢失，请重试。"
             return state
 
+        # Tier 2: 按需加载完整 Skill（仅在确认匹配后）
+        full_skill = trigger_matcher.load_full_skill(summary.id)
+        if full_skill is None:
+            logger.warning(f"[MSG_SKILL] Tier 2 load failed for {summary.id}")
+            state["response"] = f"技能「{summary.name}」加载失败，请稍后重试。"
+            return state
+
         logger.info(
-            f"[MSG_SKILL] Executing skill | skill={skill.name} | "
-            f"steps={len(skill.steps)} | type={skill.type}"
+            f"[MSG_SKILL] T1 matched, T2 loaded | skill={full_skill.name} | "
+            f"steps={len(full_skill.steps)} | type={full_skill.type} | score={match_score:.2f}"
         )
 
         try:
             result = await skill_executor.execute_skill(
-                skill, content, user_id, metadata=metadata,
+                full_skill, content, user_id, metadata=metadata, match_score=match_score,
             )
-            state["response"] = result.response
+
+            # 渐进式披露：拼接披露头 + 步骤进度 + LLM回复 + 归因页脚
+            step_log = "\n".join(result.step_progress) if result.step_progress else ""
+            footer = skill_executor.build_footer(full_skill.name, full_skill.type, match_score)
+            state["response"] = (
+                f"{result.disclosure}\n"
+                f"{step_log}\n\n"
+                f"{result.response}"
+                f"{footer}"
+            )
+
             # 记录技能使用（供 Curator 评分）
-            db.record_skill_usage(skill.id, user_id)
+            db.record_skill_usage(full_skill.id, user_id)
         except Exception as e:
             logger.error(f"[MSG_SKILL] Skill execution failed | error={str(e)}")
             state["response"] = (
-                f"执行技能「{skill.name}」时出现错误，已切换到通用模式处理您的请求。\n\n"
+                f"执行技能「{full_skill.name}」时出现错误，已切换到通用模式处理您的请求。\n\n"
                 f"错误详情: {str(e)[:200]}"
             )
 
