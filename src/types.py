@@ -25,6 +25,8 @@ class Message(BaseModel):
 class SkillStep(BaseModel):
     id: str
     action: str
+    # 步骤类型：tool=工具调用, llm=LLM语义动作。None=未标注，由执行器推断（向后兼容旧技能）
+    type: Optional[Literal["tool", "llm"]] = None
     parameters: Dict[str, Any]
     next_step_id: Optional[str] = None
     condition: Optional[str] = None

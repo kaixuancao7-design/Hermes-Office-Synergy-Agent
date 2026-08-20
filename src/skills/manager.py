@@ -136,6 +136,39 @@ class SkillManager:
         self._ensure_internal_skills()
         db.save_skill(skill)
 
+    def migrate_legacy_step_types(self) -> tuple:
+        """一次性迁移：给所有缺少 type 字段的步骤推断并写入 "tool"/"llm"。
+
+        幂等：已有 type 的步骤跳过。
+
+        Returns:
+            (迁移的技能数, 迁移的步骤数)
+        """
+        self._ensure_internal_skills()
+        from src.engine.skill_executor import skill_executor
+
+        all_skills = db.get_all_skills()
+        migrated_skills = 0
+        migrated_steps = 0
+
+        for skill in all_skills:
+            changed = False
+            for step in skill.steps:
+                if step.type is not None:
+                    continue
+                step.type = "tool" if skill_executor._is_tool_action(step.action) else "llm"
+                migrated_steps += 1
+                changed = True
+            if changed:
+                db.save_skill(skill)
+                migrated_skills += 1
+
+        logger.info(
+            f"[MIGRATE] step types migrated: "
+            f"{migrated_skills} skills, {migrated_steps} steps"
+        )
+        return migrated_skills, migrated_steps
+
     def delete_skill(self, user_id: str, skill_id: str) -> bool:
         """删除技能（需要检查权限）"""
         self._ensure_internal_skills()

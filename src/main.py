@@ -195,6 +195,20 @@ async def startup_event():
     except Exception as e:
         logger.warning(f"[STARTUP] SKILL.md sync skipped: {e}")
 
+    # 一次性迁移：给旧技能步骤补充 type 字段（改造 3.6）
+    # 幂等：已有 type 的步骤跳过；异常只记录 warning，不阻断启动
+    try:
+        from src.skills.skill_md import skill_md_manager
+        db_skills, db_steps = skill_manager.migrate_legacy_step_types()
+        md_files, md_steps = skill_md_manager.migrate_md_files_add_type()
+        logger.info(
+            f"[STARTUP] Migrated step types: "
+            f"DB({db_skills} skills, {db_steps} steps), "
+            f"MD({md_files} files, {md_steps} steps)"
+        )
+    except Exception as e:
+        logger.warning(f"[STARTUP] Step type migration skipped: {e}")
+
     # 启动后台调度器 + Curator 周期性维护
     try:
         from src.engine.scheduler import scheduler as bg_scheduler

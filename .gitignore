@@ -41,6 +41,11 @@ __pycache__/
 *.swp
 *.swo
 *~
+.trae/
+.trae/documents/
+/trae-cn/
+
+
 
 # 操作系统文件
 .DS_Store

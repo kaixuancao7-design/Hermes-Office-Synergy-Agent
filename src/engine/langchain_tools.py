@@ -303,6 +303,106 @@ def get_all_tool_descriptions() -> str:
 
 
 # ============================================================================
+# 主流 Agent 生态对齐 —— OpenAI / Anthropic / MCP 工具描述导出
+# 改造 1 + 2：复用 Pydantic schema 生成 JSON Schema，输出三种格式
+# ============================================================================
+
+def _clean_pydantic_schema_to_json_schema(schema_cls) -> dict:
+    """将 Pydantic 模型转为干净的 JSON Schema 对象。
+
+    去除 Pydantic 内部字段（title/$defs/definitions），
+    将 Optional 字段产生的 anyOf:[{type:X},{type:"null"}] 折叠为 {type:X}。
+
+    Returns:
+        {type:"object", properties:{...}, required:[...]}
+    """
+    raw = schema_cls.model_json_schema()
+
+    # 去除 Pydantic 内部顶层字段
+    for key in ("title", "$defs", "definitions"):
+        raw.pop(key, None)
+
+    properties = raw.get("properties", {})
+    cleaned_props: Dict[str, Any] = {}
+
+    for name, prop in properties.items():
+        # 折叠 anyOf:[{type:X},{type:"null"}] → {type:X}
+        if isinstance(prop, dict) and "anyOf" in prop:
+            branches = prop["anyOf"]
+            non_null = next(
+                (b for b in branches if b.get("type") != "null"), None
+            )
+            if non_null is not None:
+                # 保留 description、default 等元数据
+                merged = dict(non_null)
+                if "description" in prop:
+                    merged["description"] = prop["description"]
+                if "default" in prop:
+                    merged["default"] = prop["default"]
+                cleaned_props[name] = merged
+                continue
+        # 去除子层级的 title（Pydantic 会给每个属性加 title）
+        if isinstance(prop, dict) and "title" in prop and prop.get("title") == name:
+            prop = {k: v for k, v in prop.items() if k != "title"}
+        cleaned_props[name] = prop
+
+    raw["properties"] = cleaned_props
+    # required 保持 Pydantic 给出的（已排除有 default 的字段）
+    raw.setdefault("required", [])
+    raw["type"] = "object"
+    return raw
+
+
+def get_tool_schemas_openai(tool_ids: Optional[List[str]] = None) -> List[dict]:
+    """返回 OpenAI/Anthropic function-calling 格式工具定义列表。
+
+    每项: {"name":..., "description":..., "parameters": {type:"object", properties:{}, required:[]}}
+
+    Args:
+        tool_ids: 需要的工具ID列表。None 时返回所有已定义工具。
+
+    Returns:
+        OpenAI tools 参数可直接消费的字典列表
+    """
+    if tool_ids is None:
+        tool_ids = list(TOOL_DEFINITIONS.keys())
+
+    schemas: List[dict] = []
+    for tool_id in tool_ids:
+        if tool_id not in TOOL_DEFINITIONS:
+            continue
+        info = TOOL_DEFINITIONS[tool_id]
+        schemas.append({
+            "name": info["name"],
+            "description": info["description"],
+            "parameters": _clean_pydantic_schema_to_json_schema(info["schema"]),
+        })
+    return schemas
+
+
+def get_tool_descriptors_mcp(tool_ids: Optional[List[str]] = None) -> List[dict]:
+    """返回 MCP 兼容工具描述符列表。
+
+    每项: {"name":..., "description":..., "arguments": {type:"object", properties:{}, required:[]}}
+
+    与 OpenAI 格式同源，仅外层键名 parameters → arguments（符合 MCP 规范）。
+
+    Args:
+        tool_ids: 需要的工具ID列表。None 时返回所有已定义工具。
+
+    Returns:
+        MCP tools/list 响应可用的描述符列表
+    """
+    openai_schemas = get_tool_schemas_openai(tool_ids)
+    mcp_descriptors: List[dict] = []
+    for item in openai_schemas:
+        mcp_item = dict(item)
+        mcp_item["arguments"] = mcp_item.pop("parameters")
+        mcp_descriptors.append(mcp_item)
+    return mcp_descriptors
+
+
+# ============================================================================
 # ReAct 系统提示词 —— 从 prompts/react_system_prompt.txt 加载
 # ============================================================================
 

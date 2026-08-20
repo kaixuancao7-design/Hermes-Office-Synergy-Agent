@@ -69,6 +69,7 @@ class SkillMarkdownManager:
                 f"### Step {i}: {step.action}",
                 "",
                 f"- **Action**: {step.action}",
+                f"- **Type**: {step.type or 'auto'}",
                 f"- **Parameters**:",
                 params_lines or "  - (none)",
             ])
@@ -177,6 +178,42 @@ class SkillMarkdownManager:
             if f.endswith('.md')
         ]
 
+    def migrate_md_files_add_type(self) -> tuple:
+        """一次性迁移：扫描 base_dir 下所有 SKILL.md，给步骤推断并写入 Type 行。
+
+        幂等：已有 type 的步骤跳过（序列化输出非 auto 即视为已迁移）。
+
+        Returns:
+            (迁移的文件数, 迁移的步骤数)
+        """
+        from src.engine.skill_executor import skill_executor
+
+        migrated_files = 0
+        migrated_steps = 0
+
+        for filepath in self.list_skill_files():
+            skill = self.read_skill_md(filepath)
+            if not skill or not skill.steps:
+                continue
+
+            changed = False
+            for step in skill.steps:
+                if step.type is not None:
+                    continue
+                step.type = "tool" if skill_executor._is_tool_action(step.action) else "llm"
+                migrated_steps += 1
+                changed = True
+
+            if changed:
+                self.write_skill_md(skill)
+                migrated_files += 1
+
+        logger.info(
+            f"[SKILL_MD] Migrated type lines: "
+            f"{migrated_files} files, {migrated_steps} steps"
+        )
+        return migrated_files, migrated_steps
+
     # ========================================================================
     # 内部解析器
     # ========================================================================
@@ -263,6 +300,12 @@ class SkillMarkdownManager:
             if action_match:
                 action = action_match.group(1).strip()
 
+            # 提取 Type（向后兼容：缺失或 auto 视为未标注，由执行器推断）
+            type_match = re.search(r'\*\*Type\*\*:\s*(\w+)', block)
+            step_type = type_match.group(1).strip() if type_match else None
+            if step_type == "auto":
+                step_type = None
+
             # 提取 Parameters
             param_matches = re.findall(r'`(\w+)`:\s*(.+)', block)
             for key, val in param_matches:
@@ -282,6 +325,7 @@ class SkillMarkdownManager:
                 steps.append(SkillStep(
                     id=generate_id(),
                     action=action,
+                    type=step_type,
                     parameters=parameters,
                     next_step_id=next_step_id,
                     condition=condition,

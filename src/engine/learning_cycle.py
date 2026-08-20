@@ -119,11 +119,13 @@ class LearningCycle:
                 {
                     "id": generate_id(),
                     "action": "analyze_input",
+                    "type": "llm",
                     "parameters": {"instruction": f"分析用户输入: {context[:200]}"},
                 },
                 {
                     "id": generate_id(),
                     "action": "apply_correction",
+                    "type": "llm",
                     "parameters": {
                         "instruction": "应用已学习的纠正模式",
                         "corrections": differences,
@@ -238,6 +240,7 @@ class LearningCycle:
                 SkillStep(
                     id=generate_id(),
                     action="auto_process",
+                    type="llm",
                     parameters={"instruction": task_description},
                 ),
             ],

@@ -201,6 +201,7 @@ class SkillAutoGenerator:
             SkillStep(
                 id=generate_id(),
                 action=s.get("action", "execute"),
+                type=s.get("type"),
                 parameters=s.get("parameters", {}),
             )
             for s in skill_def.get("steps", [])

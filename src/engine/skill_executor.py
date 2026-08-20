@@ -255,7 +255,11 @@ class SkillStepExecutor:
 
             try:
                 # 判断 action 是工具调用还是语义 LLM 动作
-                if self._is_tool_action(action):
+                # 优先使用 step.type（显式标注）；None 时回退到 _is_tool_action 推断（向后兼容旧技能）
+                step_type = step.type
+                if step_type is None:
+                    step_type = "tool" if self._is_tool_action(action) else "llm"
+                if step_type == "tool":
                     result_text = await self._execute_tool_step(
                         step, context, user_id, metadata
                     )

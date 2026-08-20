@@ -204,6 +204,7 @@ class SkillAutoPatcher:
             SkillStep(
                 id=generate_id(),
                 action=s.get("action", "execute"),
+                type=s.get("type"),
                 parameters=s.get("parameters", {}),
             )
             for s in updated_steps_raw
