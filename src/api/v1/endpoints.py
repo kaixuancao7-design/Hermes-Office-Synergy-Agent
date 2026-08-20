@@ -587,7 +587,7 @@ async def get_user_permissions_detail(user_id: str):
 
 
 @router.post("/permissions/check/skill")
-async def check_skill_permission(skill_id: str, user_id: str, permission: str):
+async def check_skill_permission_v2(skill_id: str, user_id: str, permission: str):
     """检查技能权限"""
     result = permission_service.check_skill_permission(user_id, skill_id, permission)
     return {

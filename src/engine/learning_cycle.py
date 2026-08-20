@@ -148,7 +148,7 @@ class LearningCycle:
 
             # 自动验证：如果差异明确且上下文清晰，直接提升为 pending_review
             confidence = self._estimate_confidence(differences, context)
-            if confidence >= 0.6:
+            if confidence >= 0.7:
                 draft.status = "pending_review"
                 logger.info(f"[LEARN:G2] 草稿自动提升为待审核 | confidence={confidence:.2f}")
             else:

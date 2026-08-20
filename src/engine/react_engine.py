@@ -383,21 +383,67 @@ class ReActEngine:
     # ========================================================================
 
     def _decide_tool_call(self, query: str, context: str, available_tools: List[str]) -> Optional[str]:
-        """基于中文关键词匹配决定调用哪个工具（最后回退路径）。"""
+        """基于中文关键词匹配决定调用哪个工具（最后回退路径）。
+
+        采用打分制：每个工具的关键词按权重分类
+          - primary: 强信号词（命中 +2 分）
+          - secondary: 弱/歧义词（命中 +1 分）
+        多工具同时命中时取最高分；得分 < 阈值（2）视为不可靠，不回退调用，
+        交回上层（_decide_next_action 会进入 final_response 分支）。
+        """
         query_lower = query.lower()
+
+        # 关键词按强度分级 — 弱/歧义词降权避免误匹配
         tool_keywords = {
-            "feishu_file_read": ["文件", "文档", "读取", "内容"],
-            "web_search": ["搜索", "查找", "信息", "新闻", "最新"],
-            "memory_search": ["记得", "历史", "之前", "查找"],
-            "document_search": ["文档", "资料", "文件"],
-            "code_execution": ["运行", "执行", "代码"],
-            "vector_migration": ["迁移", "升级"],
+            "feishu_file_read": {
+                "primary": ["读取文件", "文件内容", "读取文档"],   # 强信号
+                "secondary": ["文件", "文档", "读取", "内容"],
+            },
+            "web_search": {
+                "primary": ["搜索一下", "搜索", "联网搜索", "网搜"],
+                "secondary": ["查找", "信息", "新闻", "最新"],
+            },
+            "memory_search": {
+                "primary": ["还记得", "记得", "之前聊过"],
+                "secondary": ["历史", "之前", "查找"],
+            },
+            "document_search": {
+                "primary": ["搜文档", "找资料", "查资料"],
+                "secondary": ["资料"],
+            },
+            "code_execution": {
+                "primary": ["运行代码", "执行代码", "跑一下代码"],
+                "secondary": ["运行", "执行", "代码"],
+            },
+            "vector_migration": {
+                "primary": ["向量迁移", "向量升级"],
+                "secondary": ["迁移", "升级"],
+            },
         }
-        for tool_id, keywords in tool_keywords.items():
-            if tool_id in available_tools and any(kw in query_lower for kw in keywords):
-                logger.debug(f"[ReAct_KEYWORD] 匹配到工具 | tool={tool_id}")
-                return tool_id
-        logger.debug("[ReAct_KEYWORD] 未匹配到任何工具")
+
+        threshold = 2  # 至少需要一个强信号词或两个弱信号词
+        best_tool: Optional[str] = None
+        best_score = 0
+
+        for tool_id, levels in tool_keywords.items():
+            if tool_id not in available_tools:
+                continue
+            score = 0
+            if any(kw in query_lower for kw in levels["primary"]):
+                score += 2
+            if any(kw in query_lower for kw in levels["secondary"]):
+                score += 1
+
+            if score > best_score:
+                best_score = score
+                best_tool = tool_id
+                logger.debug(f"[ReAct_KEYWORD] 候选 | tool={tool_id} | score={score}")
+
+        if best_tool and best_score >= threshold:
+            logger.debug(f"[ReAct_KEYWORD] 匹配到工具 | tool={best_tool} | score={best_score}")
+            return best_tool
+
+        logger.debug(f"[ReAct_KEYWORD] 未匹配到任何工具 | best_score={best_score} < threshold={threshold}")
         return None
 
     def _build_params_for_tool(

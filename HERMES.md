@@ -109,7 +109,7 @@
 
 **在项目中的实现**：
 
-- `tests/test_agent_self_verification.py` 包含完整的自验证用例库
+- `tests/test_skill_autolearn.py` 包含完整的技能自学习用例库
 - 学习循环三闸门确保技能质量：假设澄清 → 复杂度检查 → 测试验证
 
 ---
@@ -485,8 +485,8 @@ main (稳定版本)
 # 运行所有测试
 python -m pytest tests/ -v
 
-# 运行自验证测试
-python -m pytest tests/test_agent_self_verification.py -v
+# 运行技能自学习测试
+python -m pytest tests/test_skill_autolearn.py -v
 
 # 验证审计日志完整性
 curl -X POST http://localhost:3000/api/v1/audit/verify

@@ -841,14 +841,22 @@ class MessageRouter:
             logger.warning(f"[AUTO_PATCH] Auto-patch check failed: {e}")
     
     def _should_use_react(self, intent: Intent) -> bool:
-        """判断是否应该使用 ReAct 模式"""
-        # 需要复杂推理的意图类型使用 ReAct
-        # document_analysis 有独立handler，不在此列表中
+        """判断是否应该使用 ReAct 模式
+
+        可触发 ReAct 的意图在执行后才能调用 _auto_generate_skill_if_complex，
+        因此需要自动技能生成的意图（summarization、creative_writing、
+        document_analysis、skill_request 等）也需纳入此列表。
+        """
         react_intents = [
             "question_answering",
             "task_execution",
             "code_generation",
-            "unknown"  # 未知意图使用 ReAct 进行探索
+            "unknown",  # 未知意图使用 ReAct 进行探索
+            # 以下意图虽有独立 handler，但需要 ReAct 执行轨迹来触发自动技能生成
+            "summarization",
+            "creative_writing",
+            "document_analysis",
+            "skill_request",
         ]
         # 置信度低于0.8时使用ReAct进行深度推理
         return intent.type in react_intents and intent.confidence < 0.8
