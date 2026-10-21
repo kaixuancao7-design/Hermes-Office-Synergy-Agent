@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     # 插件配置
     IM_ADAPTER_TYPE: str = "feishu"  # feishu, dingtalk, wecom, slack, discord
     MODEL_ROUTER_TYPE: str = "ollama"  # ollama, openai, anthropic, zhipu, moonshot, deepseek, multi
-    MEMORY_STORE_TYPE: str = "simple"  # chroma, simple, milvus, faiss, hybrid, redis_hybrid
+    MEMORY_STORE_TYPE: str = "simple"  # simple, in_memory, redis, redis_hybrid
     SKILL_MANAGER_TYPE: str = "hybrid"  # database, file, hybrid
     EMBEDDING_SERVICE_TYPE: str = "default"  # default, openai, ollama, sentence_transformer, zhipu, moonshot
     
@@ -94,6 +94,7 @@ class Settings(BaseSettings):
 
     # MCP Server 配置
     MCP_SERVER_ENABLED: bool = False   # 设为 True 启用 MCP HTTP 子服务
+    MCP_SERVER_HOST: str = "127.0.0.1"
     MCP_SERVER_PORT: int = 8000        # MCP Server HTTP 端口
 
     # 速率限制配置

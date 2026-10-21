@@ -1,91 +1,54 @@
-"""记忆管理器模块"""
-from typing import Dict, Any, Optional, List
-from src.logging_config import get_logger
+"""Memory and user-profile services sharing the configured store and SQLite database."""
 from src.plugins import get_memory_store
-from src.types import MemoryEntry
+from src.types import MemoryEntry, UserProfile
+from src.data.database import db
 from src.utils import generate_id, get_timestamp
-
-logger = get_logger("engine")
 
 
 class MemoryManager:
-    """记忆管理器"""
-    
-    def __init__(self):
-        pass
-    
-    def store_memory(self, user_id: str, content: str, memory_type: str = "short") -> bool:
-        """存储记忆"""
-        memory_store = get_memory_store()
-        if not memory_store:
-            logger.warning("记忆存储插件不可用")
+    def store_memory(self, user_id, content, memory_type="short"):
+        store = get_memory_store()
+        if store is None:
             return False
-        
-        try:
-            memory_entry = MemoryEntry(
-                id=generate_id(),
-                user_id=user_id,
-                type=memory_type,
-                content=content,
-                timestamp=get_timestamp(),
-                tags=[memory_type]
-            )
-            
-            memory_store.store(f"{user_id}_{memory_type}_{get_timestamp()}", memory_entry)
-            logger.debug(f"记忆存储成功: user_id={user_id}, type={memory_type}")
-            return True
-        
-        except Exception as e:
-            logger.error(f"记忆存储失败: {str(e)}")
-            return False
-    
-    def retrieve_memory(self, user_id: str, query: str, limit: int = 5) -> List[MemoryEntry]:
-        """检索记忆"""
-        memory_store = get_memory_store()
-        if not memory_store:
-            logger.warning("记忆存储插件不可用")
+        entry = MemoryEntry(id=generate_id(), user_id=user_id, type=memory_type, content=content,
+            timestamp=get_timestamp(), tags=[memory_type])
+        return store.add_memory(user_id, entry) if hasattr(store, "add_memory") else store.store(f"memory:{user_id}:{entry.id}", entry.model_dump())
+
+    def retrieve_memory(self, user_id, query, limit=5):
+        store = get_memory_store()
+        return store.search_memory(user_id, query, limit) if store and hasattr(store, "search_memory") else []
+
+    def search_long_term_memory(self, user_id, query, limit=5):
+        store = get_memory_store()
+        if store is None:
             return []
-        
-        try:
-            results = memory_store.search_memory(user_id, query, limit)
-            logger.debug(f"记忆检索完成: user_id={user_id}, results={len(results)}")
-            return results
-        
-        except Exception as e:
-            logger.error(f"记忆检索失败: {str(e)}")
-            return []
-    
-    def delete_memory(self, user_id: str, memory_id: str) -> bool:
-        """删除记忆"""
-        memory_store = get_memory_store()
-        if not memory_store:
-            logger.warning("记忆存储插件不可用")
-            return False
-        
-        try:
-            result = memory_store.delete(f"{user_id}_{memory_id}")
-            logger.debug(f"记忆删除: user_id={user_id}, memory_id={memory_id}, result={result}")
-            return result
-        
-        except Exception as e:
-            logger.error(f"记忆删除失败: {str(e)}")
-            return False
-    
-    def get_user_memories(self, user_id: str, memory_type: Optional[str] = None) -> List[MemoryEntry]:
-        """获取用户记忆列表"""
-        memory_store = get_memory_store()
-        if not memory_store:
-            logger.warning("记忆存储插件不可用")
-            return []
-        
-        try:
-            # 简化实现：实际应该根据类型筛选
-            return []
-        
-        except Exception as e:
-            logger.error(f"获取记忆列表失败: {str(e)}")
-            return []
+        if store.get_memory_type() == "simple":
+            return store.search_memory(user_id, query, limit, memory_type="long")
+        return [entry for entry in self.retrieve_memory(user_id, query, 100) if entry.type == "long"][:limit]
+
+    def delete_memory(self, user_id, memory_id):
+        store = get_memory_store()
+        return store.delete_memory(user_id, memory_id) if store and hasattr(store, "delete_memory") else False
+
+    def get_user_memories(self, user_id, memory_type=None):
+        store = get_memory_store()
+        return store.get_user_memories(user_id, memory_type) if store and hasattr(store, "get_user_memories") else []
+
+    def get_user_profile(self, user_id):
+        return db.get_user(user_id)
+
+    def update_user_profile(self, user_id, updates):
+        allowed = {"name", "writing_style", "preferences"}
+        if not updates or set(updates) - allowed:
+            raise ValueError("Only name, writing_style and preferences may be updated")
+        profile = db.get_user(user_id)
+        if profile is None:
+            profile = UserProfile(id=user_id, name=user_id, role=db.get_user_role(user_id) or "guest",
+                writing_style="", preferences={}, created_at=get_timestamp(), updated_at=get_timestamp())
+        data = {**profile.model_dump(), **updates, "updated_at": get_timestamp()}
+        profile = UserProfile.model_validate(data)
+        db.save_user(profile)
+        return profile
 
 
-# 全局实例
 memory_manager = MemoryManager()

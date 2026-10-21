@@ -1,6 +1,5 @@
 """MCP Server - 基于官方 Python MCP SDK 的工具服务器"""
 
-import os
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -26,7 +25,7 @@ async def _execute_guarded(tool_id, parameters):
 
 
 if HAS_MCP_SDK:
-    mcp = FastMCP("HermesAgent")
+    mcp = FastMCP("HermesAgent", stateless_http=True, json_response=True)
 
 
     @mcp.tool()
@@ -40,9 +39,11 @@ if HAS_MCP_SDK:
         try:
             from src.data.vector_store import vector_store
 
-            filter_dict = None
-            if user_id:
-                filter_dict = {"user_id": user_id}
+            from src.tools.runtime import current_user
+            user_id = current_user.get()
+            if not user_id:
+                return {"success": False, "error": "Authenticated identity required"}
+            filter_dict = {"user_id": user_id}
 
             results = vector_store.search(
                 query=query,
@@ -80,6 +81,10 @@ if HAS_MCP_SDK:
         try:
             from src.engine.memory_manager import memory_manager
 
+            from src.tools.runtime import current_user
+            user_id = current_user.get()
+            if not user_id:
+                return {"success": False, "error": "Authenticated identity required"}
             results = memory_manager.search_long_term_memory(user_id, query, limit)
 
             return {
@@ -147,28 +152,8 @@ if HAS_MCP_SDK:
     ) -> Dict[str, Any]:
         """飞书文件读取工具"""
 
-        try:
-            from src.plugins.im_adapters import get_im_adapter
-
-            adapter = get_im_adapter()
-            if not adapter:
-                return {"success": False, "error": "飞书适配器未初始化"}
-
-            result = adapter.download_file(file_key, message_id=message_id)
-
-            if result.get("success"):
-                return {
-                    "success": True,
-                    "content": result.get("content", ""),
-                    "file_name": result.get("file_name", ""),
-                    "file_path": result.get("file_path", "")
-                }
-            else:
-                return {"success": False, "error": result.get("error", "下载失败")}
-
-        except Exception as e:
-            logger.error(f"飞书文件读取失败: {str(e)}")
-            return {"success": False, "error": str(e)}
+        return await _execute_guarded("feishu_file_read", {
+            "file_key": file_key, "message_id": message_id})
 
 
     @mcp.tool()
@@ -179,23 +164,7 @@ if HAS_MCP_SDK:
     ) -> Dict[str, Any]:
         """PPT生成工具"""
 
-        try:
-            from tools.ppt_generator import GeneratePPT
-
-            generator = GeneratePPT()
-
-            params = {
-                "title": title,
-                "slides": slides,
-                "output_path": output_path
-            }
-
-            result = generator.execute(params)
-
-            return result
-        except Exception as e:
-            logger.error(f"PPT生成失败: {str(e)}")
-            return {"success": False, "error": str(e)}
+        return await _execute_guarded("generate_ppt", {"title": title, "slides": slides})
 
 
     @mcp.tool()
@@ -205,15 +174,8 @@ if HAS_MCP_SDK:
     ) -> Dict[str, Any]:
         """PPT模板匹配工具"""
 
-        try:
-            from src.services.template_matcher import template_matcher
-
-            result = template_matcher.match_template(content, template_type)
-
-            return result
-        except Exception as e:
-            logger.error(f"模板匹配失败: {str(e)}")
-            return {"success": False, "error": str(e)}
+        return await _execute_guarded("ppt_template_match", {
+            "content": content, "style_hint": template_type})
 
 
     @mcp.tool()
@@ -226,7 +188,11 @@ if HAS_MCP_SDK:
         try:
             from src.data.vector_store import vector_store
 
-            vector_store.add_large_document(content, metadata)
+            from src.tools.runtime import current_user
+            user_id = current_user.get()
+            if not user_id:
+                return {"success": False, "error": "Authenticated identity required"}
+            vector_store.add_large_document(content, {**metadata, "user_id": user_id})
 
             return {
                 "success": True,
@@ -242,23 +208,13 @@ if HAS_MCP_SDK:
         """获取用户偏好设置"""
 
         try:
-            from src.plugins.memory_stores import get_memory_store
-
-            memory_store = get_memory_store()
-            if not memory_store:
-                return {"success": False, "error": "记忆存储未初始化"}
-
-            results = memory_store.search_memory(user_id, "user_preferences", limit=1)
-
-            if results:
-                return {
-                    "success": True,
-                    "preferences": results[0].content
-                }
-            return {
-                "success": True,
-                "preferences": {}
-            }
+            from src.tools.runtime import current_user
+            user_id = current_user.get()
+            if not user_id:
+                return {"success": False, "error": "Authenticated identity required"}
+            from src.engine.memory_manager import memory_manager
+            profile = memory_manager.get_user_profile(user_id)
+            return {"success": True, "preferences": profile.preferences if profile else {}}
         except Exception as e:
             logger.error(f"获取用户偏好失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -271,7 +227,11 @@ if HAS_MCP_SDK:
         try:
             from src.data.vector_store import vector_store
 
-            results = vector_store.search(query=doc_id, k=1)
+            from src.tools.runtime import current_user
+            user_id = current_user.get()
+            if not user_id:
+                return ""
+            results = vector_store.search(query=doc_id, k=1, filter={"user_id": user_id})
 
             if results:
                 return results[0].get("content", "")
@@ -297,69 +257,80 @@ if HAS_MCP_SDK:
     ```"""
 
 
+    def create_http_app():
+        """Build the SDK transport, preserving its lifespan and binding a trusted identity."""
+        from starlette.responses import JSONResponse
+        from src.config import settings
+        from src.tools.runtime import current_user
+        import json
+
+        app = mcp.streamable_http_app()
+
+        async def authenticated_app(scope, receive, send):
+            if scope["type"] != "http":
+                return await app(scope, receive, send)
+            headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            key = headers.get(b"x-api-key", b"").decode("utf-8", errors="replace")
+            try:
+                users = json.loads(settings.API_KEY_USERS)
+                user = users.get(key) if isinstance(users, dict) and key else None
+            except (ValueError, TypeError):
+                user = None
+            if not isinstance(user, str) or not user.strip():
+                return await JSONResponse({"error": "A mapped API key is required"}, status_code=401)(scope, receive, send)
+            token = current_user.set(user)
+            try:
+                await app(scope, receive, send)
+            finally:
+                current_user.reset(token)
+
+        return authenticated_app
+
+
     def run_server(transport: str = "stdio"):
-        """运行 MCP Server
-
-        Args:
-            transport: 传输方式 ("stdio" 或 "http")
-        """
-        logger.info(f"启动 MCP Server，传输方式: {transport}")
-
         if transport == "http":
             import uvicorn
-            from mcp.server.sse import SSEServer
-
-            sse_server = SSEServer(mcp.app)
-            uvicorn.run(sse_server, host="0.0.0.0", port=8000)
-        else:
+            from src.config import settings
+            uvicorn.run(create_http_app(), host=settings.MCP_SERVER_HOST, port=settings.MCP_SERVER_PORT)
+        elif transport == "stdio":
             mcp.run(transport="stdio")
+        else:
+            raise ValueError("Supported transports: stdio, http")
 
 
     async def start_http_server(port: int = 8000) -> bool:
-        """非阻塞启动 MCP HTTP 服务器（后台任务）
-
-        可在 FastAPI startup_event 中调用，与主应用共存于同一进程。
-
-        Args:
-            port: HTTP 监听端口
-
-        Returns:
-            True 如果启动成功，False 如果失败
-        """
+        import asyncio
+        global _mcp_server_instance, _mcp_server_task
+        if _mcp_server_instance is not None:
+            return False
         try:
             import uvicorn
-
-            config = uvicorn.Config(
-                mcp.app,
-                host="0.0.0.0",
-                port=port,
-                log_level="info",
-                access_log=False,
-            )
-            server = uvicorn.Server(config)
-
-            # 保存引用以便 shutdown 时关闭
-            global _mcp_server_instance
+            from src.config import settings
+            server = uvicorn.Server(uvicorn.Config(create_http_app(),
+                host=settings.MCP_SERVER_HOST, port=port, log_level="info", access_log=False))
             _mcp_server_instance = server
-
-            logger.info(f"[MCP] HTTP server starting on port {port}")
+            _mcp_server_task = asyncio.current_task()
             await server.serve()
-            return True
-        except Exception as e:
-            logger.error(f"[MCP] HTTP server failed to start: {e}")
+            return bool(server.started)
+        except Exception:
+            logger.exception("MCP HTTP server failed")
             return False
+        finally:
+            _mcp_server_instance = None
+            _mcp_server_task = None
 
 
     async def stop_http_server():
-        """停止 MCP HTTP 服务器"""
-        global _mcp_server_instance
+        import asyncio
         if _mcp_server_instance is not None:
-            logger.info("[MCP] Shutting down HTTP server")
             _mcp_server_instance.should_exit = True
-            _mcp_server_instance = None
+            task = _mcp_server_task
+            if task is not None and task is not asyncio.current_task():
+                await asyncio.shield(task)
 
 
     _mcp_server_instance = None
+    _mcp_server_task = None
 
 
 else:

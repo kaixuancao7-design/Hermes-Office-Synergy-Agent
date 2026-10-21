@@ -192,7 +192,10 @@ async def update_user_profile(user_id: str, updates: Dict[str, Any], actor: str 
             context={"user_id": user_id}
         )
     
-    memory_manager.update_user_profile(user_id, updates)
+    try:
+        memory_manager.update_user_profile(user_id, updates)
+    except ValueError as exc:
+        raise ValidationException(message="用户资料参数无效", detail=str(exc))
     return {"status": "success"}
 
 
@@ -610,8 +613,10 @@ async def grant_department_permission(permission_data: Dict[str, Any], actor: st
 
 
 @router.get("/users/{user_id}/permissions/detail")
-async def get_user_permissions_detail(user_id: str):
+async def get_user_permissions_detail(user_id: str, actor: str = Depends(authenticated_user)):
     """获取用户的所有权限详情"""
+    if actor != user_id:
+        require_admin(actor)
     permissions = permission_service.get_user_permissions(user_id)
     return {"user_id": user_id, "permissions": permissions}
 

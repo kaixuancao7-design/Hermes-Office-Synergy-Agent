@@ -225,6 +225,10 @@ class Database:
                     conn.execute(f"ALTER TABLE skills ADD COLUMN {name} {definition}")
             if "metadata" not in {row[1] for row in conn.execute("PRAGMA table_info(skill_drafts)")}:
                 conn.execute("ALTER TABLE skill_drafts ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
+            memory_columns = {row[1] for row in conn.execute("PRAGMA table_info(memory)")}
+            for name, default in (("group_id", "default"), ("group_name", "默认会话")):
+                if name not in memory_columns:
+                    conn.execute(f"ALTER TABLE memory ADD COLUMN {name} TEXT NOT NULL DEFAULT '{default}'")
             conn.execute("CREATE TABLE IF NOT EXISTS learning_sources (source_key TEXT PRIMARY KEY, draft_id TEXT NOT NULL)")
             conn.execute("CREATE TABLE IF NOT EXISTS skill_publications (draft_id TEXT PRIMARY KEY, skill_id TEXT NOT NULL)")
             # Old generated files may already have been imported without review.
@@ -429,8 +433,8 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO memory (
-                    id, user_id, type, content, embedding, timestamp, tags
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    id, user_id, type, content, embedding, timestamp, tags, group_id, group_name
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 entry.id,
                 entry.user_id,
@@ -438,7 +442,8 @@ class Database:
                 entry.content,
                 json.dumps(entry.embedding) if entry.embedding else None,
                 entry.timestamp,
-                json.dumps(entry.tags, ensure_ascii=False) if entry.tags else None
+                json.dumps(entry.tags, ensure_ascii=False) if entry.tags else None,
+                entry.group_id, entry.group_name
             ))
             conn.commit()
     
@@ -459,7 +464,7 @@ class Database:
                     content=row[3],
                     embedding=_safe_deserialize(row[4]),
                     timestamp=row[5],
-                    tags=_safe_deserialize(row[6], [])
+                    tags=_safe_deserialize(row[6], []), group_id=row[7], group_name=row[8]
                 ))
             return entries
     
@@ -503,7 +508,7 @@ class Database:
                         content=row[3],
                         embedding=_safe_deserialize(row[4]),
                         timestamp=row[5],
-                        tags=tags
+                        tags=tags, group_id=row[7], group_name=row[8]
                     ))
             return entries
     
@@ -650,8 +655,12 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT 1 FROM permissions
-                WHERE user_id = ? AND resource_type = ? AND resource_id = ? AND permission = ?
-            """, (user_id, resource_type, resource_id, permission))
+                WHERE resource_type = ? AND resource_id = ? AND permission = ?
+                AND ((COALESCE(scope_type, 'user') = 'user' AND user_id = ?)
+                  OR (scope_type = 'department' AND scope_value IN
+                      (SELECT department FROM user_roles WHERE user_id = ? AND department <> ''))
+                  OR scope_type = 'all')
+            """, (resource_type, resource_id, permission, user_id, user_id))
             return cursor.fetchone() is not None
 
     def revoke_permissions(self, user_id: str, resource_type: str = None,
@@ -678,8 +687,12 @@ class Database:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT resource_type, resource_id, permission, scope_type, scope_value
-                FROM permissions WHERE user_id = ?
-            """, (user_id,))
+                FROM permissions
+                WHERE (COALESCE(scope_type, 'user') = 'user' AND user_id = ?)
+                   OR (scope_type = 'department' AND scope_value IN
+                       (SELECT department FROM user_roles WHERE user_id = ? AND department <> ''))
+                   OR scope_type = 'all'
+            """, (user_id, user_id))
             return [
                 {"resource_type": r[0], "resource_id": r[1],
                  "permission": r[2], "scope_type": r[3], "scope_value": r[4]}

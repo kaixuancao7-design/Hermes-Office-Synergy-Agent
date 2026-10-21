@@ -291,6 +291,9 @@ class MessageGraph:
         if state.get("is_file_upload"):
             return state  # 文件上传跳过技能匹配，走正常文档分析流程
 
+        from src.engine.ppt_workflow import ppt_workflow
+        if await ppt_workflow.is_awaiting_confirmation(state["user_id"]):
+            return state
         query = state["content"]
         user_id = state.get("user_id", "unknown")
 
@@ -317,6 +320,11 @@ class MessageGraph:
         如果 skill_prematch 已经匹配到技能（intent_type="skill_execute"），
         则跳过意图识别，直接保留技能匹配结果。
         """
+        from src.engine.ppt_workflow import ppt_workflow
+        if await ppt_workflow.is_awaiting_confirmation(state["user_id"]):
+            state.update(intent_type="ppt_generation", intent_confidence=1.0,
+                         use_react=False, mode="Direct", matched_skill=None)
+            return state
         # 技能预匹配已命中 → 跳过意图识别
         if state.get("intent_type") == "skill_execute":
             logger.info(
@@ -407,12 +415,12 @@ class MessageGraph:
         content = state["content"]
         metadata = state.get("metadata", {})
 
-        if ppt_workflow.is_awaiting_confirmation(user_id):
+        if await ppt_workflow.is_awaiting_confirmation(user_id):
             logger.info("[MSG_PPT] 继续工作流")
-            response, _ = ppt_workflow.continue_workflow(user_id, content)
+            response, _ = await ppt_workflow.continue_workflow(user_id, content)
         else:
             document_content = self.router._extract_document_content(user_id, metadata)
-            response, _ = ppt_workflow.start_workflow(
+            response, _ = await ppt_workflow.start_workflow(
                 user_id=user_id,
                 intent_type=state["intent_type"],
                 content=content,

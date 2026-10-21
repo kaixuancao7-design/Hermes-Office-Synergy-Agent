@@ -110,6 +110,11 @@ class MessageRouter:
                 logger.debug(f"[GROUP_FILTER] 群消息未提及机器人，忽略 | user_id={user_id}")
                 return ""
 
+            if await ppt_workflow.is_awaiting_confirmation(user_id):
+                response, _ = await ppt_workflow.continue_workflow(user_id, message.content)
+                self._save_response_to_db(user_id, response, group_id, group_name, "ppt_generation")
+                return response
+
             # =================================================================
             # 技能预匹配：Tier 1 轻量级匹配 → Tier 2 按需加载 → 执行
             # 支持三层渐进式披露：
@@ -627,14 +632,14 @@ class MessageRouter:
 
         metadata = metadata or {}
 
-        if ppt_workflow.is_awaiting_confirmation(user_id):
+        if await ppt_workflow.is_awaiting_confirmation(user_id):
             logger.info("[PPT_HANDLER] 检测到等待确认状态，继续工作流")
-            response, ctx = ppt_workflow.continue_workflow(user_id, context)
+            response, ctx = await ppt_workflow.continue_workflow(user_id, context)
             self._clear_ppt_workflow_context(user_id)
             return response
 
         document_content = self._extract_document_content(user_id, metadata)
-        response, ctx = ppt_workflow.start_workflow(
+        response, ctx = await ppt_workflow.start_workflow(
             user_id=user_id, intent_type=intent.type,
             content=context, document_content=document_content,
         )

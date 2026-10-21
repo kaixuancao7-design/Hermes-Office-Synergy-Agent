@@ -13,7 +13,7 @@
 
 LangGraph 特性:
   - interrupt() 实现 human-in-the-loop（用户确认）
-  - MemorySaver checkpoints 自动持久化状态（阶段4迁移到SqliteSaver）
+  - AsyncSqliteSaver checkpoints 持久化状态
   - 条件边实现确认回环，每次回环触发新的 interrupt()
 """
 
@@ -22,7 +22,6 @@ from typing import Dict, Any, List, Optional, Tuple, TypedDict
 from src.logging_config import get_logger
 from src.services.template_matcher import template_matcher
 from src.engine.quality_gate import QualityGate
-from src.engine.strategist_planner import StrategistPlanner
 from src.tools.ppt_generator import PPTGeneratorBase
 
 logger = get_logger("engine.ppt_workflow")
@@ -52,6 +51,7 @@ class PPTState(TypedDict, total=False):
     user_response: str
     show_details: bool
     invalid_response: str
+    cancelled: bool
 
 
 # ============================================================================
@@ -65,7 +65,6 @@ class PPTWorkflow:
         self._contexts: Dict[str, bool] = {}
         self._generator = PPTGeneratorBase()
         self._quality_gate = QualityGate(strict_mode=False)
-        self._planner = StrategistPlanner()
         self._graph = self._build_graph()
         logger.info("[PPT_WORKFLOW] LangGraph PPT工作流初始化完成")
 
@@ -93,7 +92,7 @@ class PPTWorkflow:
             graph.add_conditional_edges(
                 "confirm",
                 self._route_after_confirm,
-                {"generate": "generate", "confirm": "confirm"},
+                {"generate": "generate", "confirm": "confirm", "end": END},
             )
 
             graph.add_edge("generate", "quality_check")
@@ -169,7 +168,9 @@ class PPTWorkflow:
 
         # 构建提示消息
         if state.get("show_details"):
-            prompt = self._planner.build_confirmation_message()
+            source = state.get("content") or state.get("document_content", "")
+            slides = self._generate_slides_from_content(source)
+            prompt = self._build_planning_response(state) + f"\n预计生成 {len(slides)} 页（含封面和结束页）。"
             state["show_details"] = False
         elif state.get("invalid_response"):
             prompt = (
@@ -192,6 +193,10 @@ class PPTWorkflow:
             state["awaiting_confirmation"] = False
             state["final_message"] = "正在生成PPT..."
             logger.info("[PPT_WORKFLOW] 用户确认，进入生成阶段")
+        elif decision_lower in ("否", "取消", "no", "n", "cancel", "停止"):
+            state["awaiting_confirmation"] = False
+            state["cancelled"] = True
+            state["final_message"] = "已取消PPT生成。"
         else:
             state["awaiting_confirmation"] = True
             if decision_lower in ("详细", "custom", "设置", "details", "more"):
@@ -279,6 +284,8 @@ class PPTWorkflow:
 
     def _route_after_confirm(self, state: PPTState) -> str:
         """确认后的路由: 生成 或 回环重新确认"""
+        if state.get("cancelled"):
+            return "end"
         if state.get("awaiting_confirmation", False):
             return "confirm"
         return "generate"
@@ -291,7 +298,7 @@ class PPTWorkflow:
     # 公开API — 与 message_router.py 完全兼容
     # ========================================================================
 
-    def start_workflow(
+    async def start_workflow(
         self,
         user_id: str,
         intent_type: str,
@@ -322,16 +329,17 @@ class PPTWorkflow:
             "user_response": "",
             "show_details": False,
             "invalid_response": "",
+            "cancelled": False,
         }
 
         logger.info(f"[PPT_WORKFLOW] 启动: user_id={user_id}, intent={intent_type}")
 
         config = {"configurable": {"thread_id": f"ppt_{user_id}"}}
-        result = self._graph.invoke(initial_state, config)
+        result = await self._graph.ainvoke(initial_state, config)
 
-        return result.get("final_message", ""), result
+        return self._response(result), result
 
-    def continue_workflow(
+    async def continue_workflow(
         self,
         user_id: str,
         user_response: str,
@@ -348,9 +356,9 @@ class PPTWorkflow:
         logger.info(f"[PPT_WORKFLOW] 继续: user_id={user_id}, response={user_response}")
 
         config = {"configurable": {"thread_id": f"ppt_{user_id}"}}
-        result = self._graph.invoke(Command(resume=user_response), config)
+        result = await self._graph.ainvoke(Command(resume=user_response), config)
 
-        final_message = result.get("final_message", "")
+        final_message = self._response(result)
 
         # 完成后清理
         if not result.get("awaiting_confirmation", False):
@@ -359,38 +367,40 @@ class PPTWorkflow:
 
         return final_message, result
 
-    def is_awaiting_confirmation(self, user_id: str) -> bool:
+    async def is_awaiting_confirmation(self, user_id: str) -> bool:
         """检查用户是否在 confirm 节点的 interrupt() 处等待"""
         if self._graph is None:
             return False
 
         try:
             config = {"configurable": {"thread_id": f"ppt_{user_id}"}}
-            state = self._graph.get_state(config)
+            state = await self._graph.aget_state(config)
             if state is None:
                 return False
             return state.next == ("confirm",) if state.next else False
         except Exception:
             return False
 
-    def get_context(self, user_id: str) -> Optional[Dict[str, Any]]:
+    async def get_context(self, user_id: str) -> Optional[Dict[str, Any]]:
         """获取工作流当前状态"""
         if self._graph is None:
             return None
         try:
             config = {"configurable": {"thread_id": f"ppt_{user_id}"}}
-            state = self._graph.get_state(config)
+            state = await self._graph.aget_state(config)
             return dict(state.values) if (state and state.values) else None
         except Exception:
             return None
 
-    def get_state(self, user_id: str) -> str:
+    async def get_state(self, user_id: str) -> str:
         """获取工作流状态字符串"""
-        if self.is_awaiting_confirmation(user_id):
+        if await self.is_awaiting_confirmation(user_id):
             return "awaiting_confirmation"
-        ctx = self.get_context(user_id)
+        ctx = await self.get_context(user_id)
         if not ctx:
             return "idle"
+        if ctx.get("cancelled"):
+            return "cancelled"
         if ctx.get("error_message"):
             return "failed"
         if ctx.get("output_path"):
@@ -400,6 +410,13 @@ class PPTWorkflow:
     # ========================================================================
     # 内部辅助
     # ========================================================================
+
+    @staticmethod
+    def _response(result):
+        interrupts = result.get("__interrupt__", ())
+        if interrupts:
+            return str(interrupts[0].value)
+        return result.get("final_message", "")
 
     def _build_planning_response(self, state: PPTState) -> str:
         lines = ["**PPT生成准备中...**\n"]
@@ -428,7 +445,7 @@ class PPTWorkflow:
             lines.append("")
 
         lines.append("是否使用以上设置生成PPT？\n")
-        lines.append("回复 `是` 继续，或回复 `详细` 进行自定义设置。")
+        lines.append("回复 `是` 继续，`详细` 查看设置，或回复 `取消` 结束。")
         return "\n".join(lines)
 
     def _generate_slides_from_content(self, content: str) -> List[Dict[str, Any]]:

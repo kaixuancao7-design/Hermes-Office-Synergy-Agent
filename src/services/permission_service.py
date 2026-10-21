@@ -121,6 +121,14 @@ class PermissionService:
             logger.warning(f"用户 {grantor_id} 无权授予技能权限")
             return False
 
+        if permission not in ROLE_PERMISSIONS['admin']['skill'] or not skill_id or not user_id:
+            return False
+        if not isinstance(scope_type, str) or scope_type not in {'user', 'department', 'all'}:
+            return False
+        if scope_type != 'user' and grantor_role != 'admin':
+            return False
+        if scope_type == 'department' and (not isinstance(scope_value, str) or not scope_value.strip()):
+            return False
         perm_id = generate_id()
         db.grant_permission(perm_id, "skill", skill_id, user_id, permission, grantor_id, scope_type, scope_value)
         logger.info(f"已授予技能权限: {grantor_id} → {user_id}, skill={skill_id}, permission={permission}")
@@ -179,6 +187,13 @@ class PermissionService:
         if grantor_role != "admin":
             return False
 
+        if not isinstance(resource_type, str) or not isinstance(permissions, list):
+            return False
+        allowed = ROLE_PERMISSIONS['admin'].get(resource_type, [])
+        if not resource_id or not isinstance(department, str) or not department.strip() or not permissions:
+            return False
+        if any(perm not in allowed for perm in permissions):
+            return False
         for perm in permissions:
             perm_id = generate_id()
             db.grant_permission(perm_id, resource_type, resource_id, department, perm, grantor_id, "department", department)

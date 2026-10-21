@@ -1,24 +1,6 @@
 # Hermes Office Synergy Agent
 
-## 2026-10-21 缺陷修复说明
-
-自动学习生命周期修复：生成与修补均只产生待审核草稿，不写入正式技能目录、不直接覆盖已发布技能；发布必须经过管理员审核和结构验证。按来源轨迹去重，拒绝失败轨迹，学习任务使用当前请求的独立轨迹。数据库迁移保留技能版本和创建者；使用统计仅在实际执行后记录，归档技能停止自动匹配，新技能按创建时间计算闲置期。纠正数据会明确传入执行提示词。结构验证不等同于真实业务验收，正式发布仍需管理员审核；默认 ReAct 最多执行 8 个推理步骤、6 次工具调用，使 5 次成功调用的学习阈值可达。旧版自动生成但无审核凭据的磁盘技能将被隔离，不会因重启自动发布。
-
-Tools/Skills 契约修复：统一工具构造、参数校验和错误结果；技能执行绑定当前用户并检查权限，支持显式步骤引用、条件和跳转；SKILL.md 使用完整结构化数据保存技能，兼容旧格式。参考文档限制在项目知识目录内。Python 代码执行改为 Docker 隔离（无网络、资源限制），Docker 不可用时明确失败，不降级为宿主执行；镜像通过 `SANDBOX_CONTAINER_IMAGE` 配置，需预先准备。目录白名单支持 JSON 数组或逗号分隔路径。MCP 的代码与文件工具复用受控执行器，没有服务端认证身份时拒绝执行，不接受请求自行指定管理员。
-
-技能参数支持完整值引用，例如 `${generate-outline.outline}` 和 `${match-template.templates.0.id}`，保留列表与对象类型。`condition` 支持布尔值和步骤结果比较；`next_step_id` 实际跳转且受执行次数限制。步骤失败默认停止，只有显式 `on_error: continue` 才继续。Docker 默认镜像只含标准库，数据分析或图表需要预先准备包含 pandas/matplotlib 等依赖的镜像。编辑新格式 SKILL.md 时请修改 `Skill Data` JSON 块；该块保存完整、带类型的技能定义。
-
-后续隐患修复：限制用户资料和记忆接口跨用户访问、限制适配器注册权限、落实权限撤销的数据库删除、修正飞书消息过早去重及跨线程事件调度，将检查点连接延迟到服务事件循环创建并在关闭时释放，并将测试临时目录放入项目内。飞书消息只有在回复发送成功后才标记完成；失败后可重新投递；已生成的回复会持久化缓存，重发时复用回复，避免再次执行工具。用户限流通过延迟处理保留，不丢弃已接收的超频消息。认证失败的 401 属于正常拒绝，不应通过关闭鉴权消除。
-
-本次修复范围：API 操作者身份绑定、工具授权校验、文件目录边界、审计服务接口、角色查询、技能实际执行及测试数据库隔离。
-
-- 受保护的操作必须使用绑定用户的 API Key；新增 `API_KEY_USERS` JSON 配置，例如 `{"your-secret-key":"alice"}`。操作者身份由服务端解析，客户端提供的管理员身份不再生效。启用认证但未配置有效 Key 时拒绝访问。
-- 工具授权统一仅限管理员，不再依赖客户端提供的危险等级标记。
-- 文件访问按真实目录边界校验，拒绝同名前缀目录及符号链接越界。
-- 补齐审计查询、导出、完整性校验及技能操作记录；审计导出限制在 `output` 目录。
-- 技能执行接口调用实际执行器并检查执行权限；角色查询分别读取角色和部门。
-- 测试使用临时数据库和工作目录，避免写入运行数据；验证命令：`python -m pytest tests/ -q`。
-
+最新修复、配置变更及验证结果见[更新日志](#更新日志)。
 
 基于 Hermes Agent 架构的智能办公协同助手，具备长期记忆、技能自动沉淀与跨端执行能力，支持插件化扩展和企业级权限管理。
 
@@ -257,16 +239,12 @@ HOST=0.0.0.0
 LOG_LEVEL=DEBUG
 
 # 记忆存储配置（使用simple避免嵌入问题）
-MEMORY_STORE_TYPE=simple  # chroma, milvus, faiss, hybrid, simple, redis_hybrid
-
-# Milvus配置（当MEMORY_STORE_TYPE=milvus时）
-# MILVUS_URI=http://localhost:19530
-# MILVUS_TOKEN=your-milvus-token
+MEMORY_STORE_TYPE=simple  # simple, in_memory, redis, redis_hybrid
 
 # 插件配置
 MODEL_ROUTER_TYPE=ollama  # ollama, openai, anthropic, zhipu, moonshot, deepseek, multi
 TOOL_EXECUTOR_TYPE=sandboxed
-MEMORY_STORE_TYPE=simple  # chroma, simple, milvus, faiss, hybrid, redis_hybrid
+MEMORY_STORE_TYPE=simple  # simple, in_memory, redis, redis_hybrid
 
 # DeepSeek 配置（当 MODEL_ROUTER_TYPE=deepseek 时）
 # DEEPSEEK_API_KEY=your-deepseek-api-key
@@ -275,13 +253,15 @@ MEMORY_STORE_TYPE=simple  # chroma, simple, milvus, faiss, hybrid, redis_hybrid
 # 认证与安全
 # API_KEY_ENABLED=false  # 设为 true 启用 API Key 认证
 # API_KEYS=your-api-key-1,your-api-key-2  # 逗号分隔的有效 API Key
+# API_KEY_USERS={"your-secret-key":"alice"}  # 受保护操作需要绑定用户
 # RATE_LIMIT_ENABLED=true
 # RATE_LIMIT_MAX_REQUESTS=60
 # RATE_LIMIT_WINDOW_SECONDS=60
 
 # MCP Server 配置
 # MCP_SERVER_ENABLED=false  # 设为 true 启用 MCP HTTP 子服务
-# MCP_SERVER_PORT=8000      # MCP Server HTTP 端口
+# MCP_SERVER_HOST=127.0.0.1 # MCP HTTP 默认仅监听本机
+# MCP_SERVER_PORT=8000      # MCP Server HTTP 端口，路径 /mcp
 
 # 飞书配置（可选）
 # FEISHU_APP_ID=your-feishu-app-id
@@ -808,16 +788,18 @@ POST /api/v1/ppt/generate
 
 ## 记忆存储方案
 
-系统支持多种向量数据库，通过配置文件切换：
+`MEMORY_STORE_TYPE` 选择记忆插件，与文档向量库配置分开。当前注册的类型如下：
 
-| 存储类型     | 配置值           | 适用场景             |
-| ------------ | ---------------- | -------------------- |
-| Chroma       | `chroma`       | 开发测试、轻量级部署 |
-| Milvus       | `milvus`       | 大规模生产环境       |
-| FAISS        | `faiss`        | 单机高性能场景       |
-| Hybrid       | `hybrid`       | 混合存储策略         |
-| Simple       | `simple`       | 开发测试，无需嵌入   |
-| Redis Hybrid | `redis_hybrid` | Redis + 向量库混合   |
+| 配置值 | 实现与适用范围 |
+| ------ | -------------- |
+| `simple` | 默认，SQLite 持久化；支持用户隔离、类型筛选、关键词检索、删除和会话字段，无需 Redis 或嵌入模型 |
+| `in_memory` | 进程内键值存储，重启丢失，不提供完整记忆检索接口 |
+| `redis` | Redis 键值存储，需独立服务，不提供完整记忆检索接口 |
+| `redis_hybrid` | 旧版 Redis 混合插件，长期持久化与检索尚不完整，不建议用作默认配置 |
+
+`chroma`、`milvus`、`faiss`、`hybrid` 未注册为记忆插件，不能用于此配置。
+用户资料通过 SQLite 保存；资料更新只允许姓名、写作风格和偏好，不能通过资料接口修改角色。
+交互式 PPT 的状态另由 SQLite 检查点持久化：回复 `是` 生成、`详细` 查看设置、`取消` 结束；服务重启后可继续待确认流程。
 
 ## 项目结构
 
@@ -1360,8 +1342,15 @@ run_server(transport="stdio")   # 或 transport="http"
 
 ```env
 MCP_SERVER_ENABLED=true
+MCP_SERVER_HOST=127.0.0.1
 MCP_SERVER_PORT=8000
+API_KEY_USERS={"your-secret-key":"alice"}
 ```
+
+HTTP 使用 Streamable HTTP，客户端地址为 `http://127.0.0.1:8000/mcp`，请求必须带 `X-API-Key: your-secret-key`。
+MCP HTTP 始终校验 `API_KEY_USERS` 映射，不依赖主 API 的 `API_KEY_ENABLED` 开关；仅配置 `API_KEYS` 不足以绑定身份。
+工具和文档资源按服务端认证用户隔离，传入其他 `user_id` 不会切换身份。代码、文件操作仍需通过工具权限检查。
+服务使用无状态 HTTP 会话，关闭时等待 SDK 生命周期清理。Stdio 调用不自动获得用户身份，受保护工具在缺少身份时拒绝执行。
 
 FastAPI 启动时自动在后台启动 MCP HTTP Server（非阻塞）：
 
@@ -1521,6 +1510,55 @@ GET /api/v1/document/search?query=关键词&limit=5&user_id=user123
 MIT License
 
 ## 更新日志
+
+### 未发布（2026-10-21）
+
+**默认记忆、交互式 PPT、MCP HTTP 与部门权限修复：**
+
+- `simple` 注册为 SQLite 持久化记忆存储，支持用户隔离、记忆增删查及用户资料；修复内存存储方法被同名字段覆盖的问题。
+- 交互式 PPT 使用异步图调用和状态查询，支持确认、取消、继续以及从持久化检查点恢复。
+- MCP HTTP 改用 SDK 的 Streamable HTTP ASGI 接口，提供 `/mcp` 端点并管理会话生命周期；HTTP 请求通过 API Key 用户映射绑定身份，启动与关闭使用同一应用工厂。记忆和文档查询绑定认证用户，偏好读取用户资料；PPT、模板与飞书文件读取复用受控工具执行器。
+- 权限检查结合用户授权、当前所属部门授权及全局范围授权；部门变更后重新计算有效权限，保留角色本身授予的权限。部门和全局授权仅管理员可授予，非法权限批次在写入前拒绝；权限详情接口限制本人或管理员访问。
+
+**自动学习机制修复：**
+
+- 自动生成与自动修补仅保存草稿，不写入正式技能目录、不直接覆盖已发布技能；发布须经过管理员审核和结构验证。
+- 审核状态、技能发布及版本历史在同一数据库事务中更新；重复批准不会重复发布，存储失败会回滚，过期修补草稿不能覆盖新版本。
+- 按用户和来源轨迹去重，拒绝失败轨迹；修补仅关联当前用户有编辑权限的技能，并保留步骤 ID、条件和跳转关系。
+- ReAct 执行轨迹按请求隔离，后台学习使用当前请求的独立快照，避免并发串用用户数据。默认上限调整为 8 个推理步骤、6 次工具调用，使 5 次成功调用的学习阈值可达。
+- 数据库启动时增量迁移，持久化技能版本、创建者及草稿元数据；历史上已经丢失的版本和创建者信息无法自动恢复。
+- 使用统计仅在实际执行后记录一次，按真实结果统计成功或失败；匹配不计为执行，归档技能停止匹配与执行，新技能按创建时间计算闲置期。
+- 纠正数据明确传入执行提示词；重复反馈去重；补齐草稿验证、列表查询及访问权限。结构验证不等同于真实业务验收，发布仍需管理员审核。
+- 启动时隔离无审核凭据或被修改的 learned 技能文件；旧版未经审核便导入的自动生成技能也会被标记隔离。
+
+**Tools / Skills 执行修复：**
+
+- 统一工具注册、构造、参数校验及错误结果，修复 PPT 工具构造参数不兼容、内容生成工具同步调用异步模型等问题。
+- 补齐技能步骤描述及执行轨迹类型；修复失败被计作成功的问题。步骤失败默认停止，仅显式配置 `on_error: continue` 时继续，备用工具按定义执行。
+- 支持实际条件判断、`next_step_id` 跳转及执行次数限制；参数可通过 `${generate-outline.outline}`、`${match-template.templates.0.id}` 等完整值引用传递列表与对象。
+- 修复数据分析和图表预设中的占位代码与缺失参数，接通 PPT 大纲、模板、内容、文件生成和真实文件质检流程。
+- SKILL.md 保存完整结构化技能数据，保留 ID、元数据、参数类型、多行内容及步骤关系，兼容读取旧格式；编辑新格式时应修改 `Skill Data` JSON 块。
+- 补齐技能更新、权限查询、持久化版本历史和回滚；参考文档限制在项目知识目录内，并增加读取大小限制。
+
+**安全与服务修复：**
+
+- API 操作者由服务端 API Key 用户映射确定，客户端传入的管理员身份不再生效；受保护操作需设置 `API_KEY_ENABLED=true` 和 `API_KEY_USERS`，例如 `{"your-secret-key":"alice"}`。认证开启但无有效 Key 时拒绝访问。
+- 限制跨用户资料、记忆及草稿访问，适配器注册仅限管理员；工具授权统一要求管理员身份，权限撤销实际删除指定数据库记录。
+- 文件访问按真实目录层级检查，拒绝同名前缀目录和符号链接越界；修复目录白名单被按字符遍历的问题，配置支持 JSON 数组或逗号分隔路径。
+- Python 代码只在受限 Docker 容器中执行，禁用网络并限制资源，Docker 不可用时明确失败，不降级为宿主执行。镜像由 `SANDBOX_CONTAINER_IMAGE` 配置并需预先准备；默认镜像只含标准库，数据分析和图表需准备含 pandas、matplotlib 等依赖的镜像。
+- MCP 代码与文件工具复用受控执行器，缺少服务端认证身份时拒绝执行。
+- 补齐审计查询、导出、哈希链完整性校验及技能操作记录，日志持久化，导出路径限制在 `output` 目录。
+- 修复角色查询返回类型和技能执行接口仅返回描述的问题；异步检查点连接延迟到服务事件循环创建，并在关闭时释放。
+- 飞书回调切回服务事件循环；回复发送成功后才标记消息完成。失败待发回复持久化缓存，重新投递时复用回复，避免重复执行工具；用户限流通过延迟处理保留。
+
+**验证与升级说明：**
+
+- 测试使用项目内临时目录和隔离数据库，不写入运行数据；`python -m pytest tests/ -q`：**48 项通过**，语法检查及 `git diff --check` 通过。
+- 覆盖审核绕过、权限拒绝、事务回滚、并发轨迹、跨连接去重、数据库迁移、统计与归档，以及真实工具类和 PPT 预设流程；新增默认记忆重开、用户隔离、部门变更、PPT 确认/取消/恢复、MCP HTTP 协议和关闭生命周期回归。模型和消息发送使用模拟实现，PPT 文件实际生成并读取，MCP 通过内存 ASGI 客户端验证。
+- Docker 守护进程检查超时，尚未完成真实容器执行验证；未发送真实飞书消息，未完成真实模型与飞书的端到端验证。
+- 重启服务后加载代码并执行数据库迁移；HTTP 401 表示正常的鉴权拒绝，不应通过关闭鉴权消除。
+
+---
 
 ### v1.2.0 (2026-06-05)
 

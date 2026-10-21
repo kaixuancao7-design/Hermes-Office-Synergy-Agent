@@ -1,5 +1,6 @@
 """记忆存储插件实现"""
 from typing import Dict, Any, Optional, List
+from contextlib import contextmanager
 from src.plugins.base import MemoryBase
 from src.config import settings
 from src.logging_config import get_logger
@@ -13,23 +14,127 @@ class InMemoryStore(MemoryBase):
     """内存记忆存储"""
     
     def __init__(self):
-        self.store: Dict[str, Any] = {}
+        self._values: Dict[str, Any] = {}
     
     def store(self, key: str, value: Any) -> bool:
-        self.store[key] = value
+        self._values[key] = value
         return True
     
     def retrieve(self, key: str) -> Optional[Any]:
-        return self.store.get(key)
+        return self._values.get(key)
     
     def delete(self, key: str) -> bool:
-        if key in self.store:
-            del self.store[key]
+        if key in self._values:
+            del self._values[key]
             return True
         return False
     
     def get_memory_type(self) -> str:
         return "in_memory"
+
+
+class SimpleMemoryStore(MemoryBase):
+    """SQLite-backed memory with user-scoped entries and general key/value storage."""
+    def __init__(self, database=None):
+        from src.data.database import db
+        self.db = database or db
+        with self._connection() as conn:
+            conn.execute("CREATE TABLE IF NOT EXISTS memory_key_values (key TEXT PRIMARY KEY, payload TEXT NOT NULL, kind TEXT NOT NULL)")
+
+    @contextmanager
+    def _connection(self):
+        import sqlite3
+        conn = sqlite3.connect(self.db.db_path)
+        try:
+            with conn:
+                yield conn
+        finally:
+            conn.close()
+
+    def store(self, key, value):
+        import json
+        entry = value if isinstance(value, MemoryEntry) else None
+        if isinstance(value, dict) and {"id", "user_id", "type", "content", "timestamp", "tags"} <= value.keys():
+            entry = MemoryEntry.model_validate(value)
+        payload = json.dumps(entry.model_dump() if entry else value, ensure_ascii=False)
+        with self._connection() as conn:
+            conn.execute("INSERT OR REPLACE INTO memory_key_values VALUES (?, ?, ?)",
+                         (key, payload, "memory" if entry else "value"))
+            if entry:
+                conn.execute("""INSERT INTO memory (id,user_id,type,content,embedding,timestamp,tags,group_id,group_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET type=excluded.type,content=excluded.content,
+                        embedding=excluded.embedding,timestamp=excluded.timestamp,tags=excluded.tags,
+                        group_id=excluded.group_id,group_name=excluded.group_name
+                    WHERE memory.user_id=excluded.user_id""", (entry.id, entry.user_id, entry.type,
+                    entry.content, json.dumps(entry.embedding), entry.timestamp, json.dumps(entry.tags, ensure_ascii=False),
+                    entry.group_id, entry.group_name))
+                owner = conn.execute("SELECT user_id FROM memory WHERE id=?", (entry.id,)).fetchone()
+                if owner[0] != entry.user_id:
+                    raise PermissionError("Memory ID belongs to another user")
+        return True
+
+    def retrieve(self, key):
+        import json
+        with self._connection() as conn:
+            row = conn.execute("SELECT payload,kind FROM memory_key_values WHERE key=?", (key,)).fetchone()
+        if row is None:
+            return None
+        value = json.loads(row[0])
+        return MemoryEntry.model_validate(value) if row[1] == "memory" else value
+
+    def delete(self, key):
+        with self._connection() as conn:
+            value = self.retrieve(key)
+            if isinstance(value, MemoryEntry):
+                return self.delete_memory(value.user_id, value.id)
+            return conn.execute("DELETE FROM memory_key_values WHERE key=?", (key,)).rowcount > 0
+
+    def add_memory(self, user_id, entry):
+        entry = MemoryEntry.model_validate(entry)
+        if entry.user_id != user_id:
+            raise PermissionError("Memory user does not match the current user")
+        return self.store(f"memory:{user_id}:{entry.id}", entry)
+
+    @staticmethod
+    def _entry(row):
+        from src.data.database import _safe_deserialize
+        return MemoryEntry(id=row[0], user_id=row[1], type=row[2], content=row[3],
+            embedding=_safe_deserialize(row[4]), timestamp=row[5],
+            tags=_safe_deserialize(row[6], []), group_id=row[7], group_name=row[8])
+
+    def get_user_memories(self, user_id, memory_type=None):
+        with self._connection() as conn:
+            rows = conn.execute("SELECT id,user_id,type,content,embedding,timestamp,tags,group_id,group_name FROM memory WHERE user_id=?" +
+                (" AND type=?" if memory_type else "") + " ORDER BY timestamp DESC,id", (user_id, memory_type) if memory_type else (user_id,)).fetchall()
+        return [self._entry(row) for row in rows]
+
+    def search_memory(self, user_id, query, limit=5, memory_type=None):
+        if not user_id or not query.strip():
+            return []
+        terms = query.casefold().split()
+        entries = self.get_user_memories(user_id, memory_type)
+        scored = [(sum(entry.content.casefold().count(term) for term in terms), entry) for entry in entries]
+        scored = [(score, entry) for score, entry in scored if score > 0]
+        scored.sort(key=lambda item: (item[0], item[1].timestamp), reverse=True)
+        return [entry for _, entry in scored[:max(0, min(limit, 100))]]
+
+    def delete_memory(self, user_id, memory_id):
+        import json
+        with self._connection() as conn:
+            changed = conn.execute("DELETE FROM memory WHERE user_id=? AND id=?", (user_id, memory_id)).rowcount
+            for key, payload in conn.execute("SELECT key,payload FROM memory_key_values WHERE kind='memory'").fetchall():
+                value = json.loads(payload)
+                if value.get("id") == memory_id and value.get("user_id") == user_id:
+                    conn.execute("DELETE FROM memory_key_values WHERE key=?", (key,))
+        return changed > 0
+
+    def get_memory_count(self, user_id):
+        with self._connection() as conn:
+            return conn.execute("SELECT COUNT(*) FROM memory WHERE user_id=?", (user_id,)).fetchone()[0]
+
+    def get_memory_type(self):
+        return "simple"
 
 
 class RedisStore(MemoryBase):
@@ -202,6 +307,7 @@ class HybridMemoryStore(MemoryBase):
 
 # 记忆存储注册表
 MEMORY_STORE_REGISTRY = {
+    "simple": SimpleMemoryStore,
     "in_memory": InMemoryStore,
     "redis": RedisStore,
     "redis_hybrid": HybridMemoryStore
