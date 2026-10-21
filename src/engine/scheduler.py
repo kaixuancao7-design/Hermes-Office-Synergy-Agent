@@ -84,11 +84,14 @@ class BackgroundScheduler:
     async def stop(self):
         """停止所有任务"""
         self._running = False
+        tasks = list(self._tasks.values())
         for name, task in self._tasks.items():
             if not task.done():
                 task.cancel()
                 logger.debug(f"[SCHEDULER] Cancelled task: {name}")
         self._tasks.clear()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
         logger.info("[SCHEDULER] Background scheduler stopped")
 
     @property

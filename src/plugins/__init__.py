@@ -29,63 +29,61 @@ tool_executor: Optional[ToolExecutorBase] = None
 mcp_server = None
 
 
+component_status: Dict[str, str] = {}
+
+
 def init_plugins(config: Dict[str, Any] = None) -> bool:
-    """初始化所有插件"""
-    global im_adapter, model_router, memory_store, skill_manager, tool_executor, mcp_server
-    
-    try:
-        # 检测并执行向量数据迁移（在初始化记忆存储之前）
-        _check_vector_migration()
-        
-        # 初始化 MCP Server（基于官方 Python MCP SDK）
-        _init_mcp_server()
-        
-        # 初始化IM适配器
-        im_adapter_type = config.get("im_adapter", settings.IM_ADAPTER_TYPE) if config else settings.IM_ADAPTER_TYPE
-        if im_adapter_type in IM_ADAPTER_REGISTRY:
-            im_adapter = IM_ADAPTER_REGISTRY[im_adapter_type]()
-            logger.info(f"初始化IM适配器: {im_adapter_type}")
-        else:
-            logger.warning(f"未找到IM适配器类型: {im_adapter_type}")
-        
-        # 初始化模型路由
-        model_router_type = config.get("model_router", settings.MODEL_ROUTER_TYPE) if config else settings.MODEL_ROUTER_TYPE
-        if model_router_type in MODEL_ROUTER_REGISTRY:
-            model_router = MODEL_ROUTER_REGISTRY[model_router_type]()
-            logger.info(f"初始化模型路由: {model_router_type}")
-        else:
-            logger.warning(f"未找到模型路由类型: {model_router_type}")
-        
-        # 初始化记忆存储
-        memory_store_type = config.get("memory_store", settings.MEMORY_STORE_TYPE) if config else settings.MEMORY_STORE_TYPE
-        if memory_store_type in MEMORY_STORE_REGISTRY:
-            memory_store = MEMORY_STORE_REGISTRY[memory_store_type]()
-            logger.info(f"初始化记忆存储: {memory_store_type}")
-        else:
-            logger.warning(f"未找到记忆存储类型: {memory_store_type}")
-        
-        # 初始化技能管理器
-        skill_manager_type = config.get("skill_manager", settings.SKILL_MANAGER_TYPE) if config else settings.SKILL_MANAGER_TYPE
-        if skill_manager_type in SKILL_MANAGER_REGISTRY:
-            skill_manager = SKILL_MANAGER_REGISTRY[skill_manager_type]()
-            logger.info(f"初始化技能管理器: {skill_manager_type}")
-        else:
-            logger.warning(f"未找到技能管理器类型: {skill_manager_type}")
-        
-        # 初始化工具执行器
-        tool_executor_type = config.get("tool_executor", settings.TOOL_EXECUTOR_TYPE) if config else settings.TOOL_EXECUTOR_TYPE
-        if tool_executor_type in TOOL_EXECUTOR_REGISTRY:
-            tool_executor = TOOL_EXECUTOR_REGISTRY[tool_executor_type]()
-            logger.info(f"初始化工具执行器: {tool_executor_type}")
-        else:
-            logger.warning(f"未找到工具执行器类型: {tool_executor_type}")
-        
-        logger.info("所有插件初始化完成")
-        return True
-    
-    except Exception as e:
-        logger.error(f"插件初始化失败: {str(e)}")
-        return False
+    """Initialize required office components; IM remains an optional integration.
+
+    Status values contain no configuration or exception text and may be published
+    by readiness probes. Construction checks local initialization, not remote health.
+    """
+    component_status.clear()
+    _check_vector_migration()
+    _init_mcp_server()
+    required_ok = True
+    definitions = (
+        ("model_router", MODEL_ROUTER_REGISTRY, settings.MODEL_ROUTER_TYPE, True),
+        ("memory_store", MEMORY_STORE_REGISTRY, settings.MEMORY_STORE_TYPE, True),
+        ("skill_manager", SKILL_MANAGER_REGISTRY, settings.SKILL_MANAGER_TYPE, True),
+        ("tool_executor", TOOL_EXECUTOR_REGISTRY, settings.TOOL_EXECUTOR_TYPE, True),
+        ("im_adapter", IM_ADAPTER_REGISTRY, settings.IM_ADAPTER_TYPE, False),
+    )
+    for name, _, _, _ in definitions:
+        globals()[name] = None
+    for name, registry, default, required in definitions:
+        plugin_type = (config or {}).get(name, default)
+        try:
+            if plugin_type not in registry:
+                raise ValueError(f"Unknown plugin type for {name}")
+            globals()[name] = registry[plugin_type]()
+            component_status[name] = "ready"
+        except Exception:
+            component_status[name] = "failed"
+            logger.exception("Plugin initialization failed: %s", name)
+            if required:
+                required_ok = False
+                break
+    return required_ok
+
+
+async def close_plugins():
+    """Release initialized plugins, including a partially completed startup."""
+    import inspect
+    for name in ("im_adapter", "tool_executor", "skill_manager", "memory_store", "model_router"):
+        instance = globals()[name]
+        globals()[name] = None
+        if instance is None:
+            continue
+        close = getattr(instance, "close", None) or getattr(instance, "stop", None)
+        if close:
+            try:
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:
+                logger.exception("Plugin cleanup failed: %s", name)
+    component_status.clear()
 
 
 def get_im_adapter(im_type: Optional[str] = None) -> Optional[IMAdapterBase]:

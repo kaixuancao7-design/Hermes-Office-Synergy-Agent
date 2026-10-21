@@ -89,7 +89,7 @@ def tool_schema(tool_class):
     schema = getattr(tool_class, "schema", None)
     if schema is not None:
         return schema
-    from src.engine.langchain_tools import (DocumentSearchInput, MemorySearchInput, WebSearchInput,
+    from src.tools.schemas import (DocumentSearchInput, MemorySearchInput, WebSearchInput,
         CodeExecutionInput, FileOperationsInput, FeishuFileReadInput)
     return {"DocumentSearchTool": DocumentSearchInput, "MemorySearchTool": MemorySearchInput,
             "WebSearchTool": WebSearchInput, "CodeExecutionTool": CodeExecutionInput,

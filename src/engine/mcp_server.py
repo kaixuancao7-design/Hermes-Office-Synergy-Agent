@@ -36,38 +36,7 @@ if HAS_MCP_SDK:
     ) -> Dict[str, Any]:
         """文档语义搜索工具"""
 
-        try:
-            from src.data.vector_store import vector_store
-
-            from src.tools.runtime import current_user
-            user_id = current_user.get()
-            if not user_id:
-                return {"success": False, "error": "Authenticated identity required"}
-            filter_dict = {"user_id": user_id}
-
-            results = vector_store.search(
-                query=query,
-                k=limit,
-                filter=filter_dict,
-                use_advanced=True
-            )
-
-            logger.info(f"文档搜索完成: query='{query}', 找到 {len(results)} 条结果")
-
-            return {
-                "success": True,
-                "result": results,
-                "message": f"搜索完成，找到 {len(results)} 条相关文档",
-                "query": query,
-                "limit": limit
-            }
-        except Exception as e:
-            logger.error(f"文档搜索失败: {str(e)}")
-            return {
-                "success": False,
-                "result": [],
-                "message": f"搜索失败: {str(e)}"
-            }
+        return await _execute_guarded("document_search", {"query": query, "limit": limit})
 
 
     @mcp.tool()
@@ -78,49 +47,14 @@ if HAS_MCP_SDK:
     ) -> Dict[str, Any]:
         """记忆搜索工具"""
 
-        try:
-            from src.engine.memory_manager import memory_manager
-
-            from src.tools.runtime import current_user
-            user_id = current_user.get()
-            if not user_id:
-                return {"success": False, "error": "Authenticated identity required"}
-            results = memory_manager.search_long_term_memory(user_id, query, limit)
-
-            return {
-                "success": True,
-                "result": [r.model_dump() for r in results]
-            }
-        except Exception as e:
-            logger.error(f"记忆搜索失败: {str(e)}")
-            return {"success": False, "error": str(e)}
+        return await _execute_guarded("memory_search", {"query": query, "limit": limit})
 
 
     @mcp.tool()
     async def web_search(query: str) -> Dict[str, Any]:
         """网页搜索工具"""
 
-        try:
-            results = [
-                {
-                    "title": f"搜索结果1: {query}",
-                    "url": "https://example.com/result1",
-                    "summary": f"关于 '{query}' 的搜索结果摘要..."
-                },
-                {
-                    "title": f"搜索结果2: {query}",
-                    "url": "https://example.com/result2",
-                    "summary": f"更多关于 '{query}' 的内容..."
-                }
-            ]
-
-            return {
-                "success": True,
-                "result": results
-            }
-        except Exception as e:
-            logger.error(f"网页搜索失败: {str(e)}")
-            return {"success": False, "error": str(e)}
+        return await _execute_guarded("web_search", {"query": query})
 
 
     @mcp.tool()

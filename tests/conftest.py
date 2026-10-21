@@ -42,6 +42,10 @@ def clean_database(test_database):
 
 def pytest_sessionfinish(session, exitstatus):
     os.chdir(_original_cwd)
+    # Imported application modules may own file handlers in the isolated workspace.
+    # Windows cannot remove those files until the handlers are closed.
+    import logging
+    logging.shutdown()
     import gc
     gc.collect()
     _test_workspace.cleanup()

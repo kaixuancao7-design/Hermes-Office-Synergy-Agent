@@ -358,7 +358,7 @@ class SkillStepExecutor:
         被视为语义 LLM 动作。
         """
         # 优先使用硬编码列表（覆盖所有标准工具，不受插件初始化状态影响）
-        if action in self._KNOWN_TOOL_IDS:
+        if action.startswith("mcp__") or action in self._KNOWN_TOOL_IDS:
             return True
 
         # 补充检查运行时工具执行器（覆盖动态注册的工具）
@@ -398,7 +398,7 @@ class SkillStepExecutor:
             raise ValueError(f"Unknown tool: {step.action}")
         params = self._build_tool_params(step, context, user_id, metadata, outputs)
         params = authorize_tool(step.action, params)
-        schema = tool_schema(executor.tools[step.action])
+        schema = None if step.action.startswith("mcp__") else tool_schema(executor.tools[step.action])
         if schema is not None:
             required = [name for name, field in schema.model_fields.items() if field.is_required()]
             missing = [name for name in required if name not in params or params[name] in (None, "")]
@@ -464,6 +464,8 @@ class SkillStepExecutor:
 
         # 注入用户 ID
         params["user_id"] = user_id
+        if step.action.startswith("mcp__"):
+            return params
 
         if metadata:
             for key in ("path", "file_key", "message_id", "file_name"):

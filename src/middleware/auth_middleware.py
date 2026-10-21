@@ -17,7 +17,7 @@ from src.logging_config import get_logger
 logger = get_logger("api")
 
 # 无需认证的公共路径
-PUBLIC_PATHS = {"/health", "/", "/docs", "/openapi.json", "/favicon.ico", "/redoc"}
+PUBLIC_PATHS = {"/health", "/ready", "/", "/docs", "/openapi.json", "/favicon.ico", "/redoc"}
 
 
 class APIKeyMiddleware(BaseHTTPMiddleware):

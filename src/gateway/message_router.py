@@ -16,15 +16,24 @@ from src.engine.skill_executor import skill_executor
 logger = get_logger("gateway")
 
 
+from src.services.file_context import FileContextService
+from src.services.presentation_messages import PresentationMessageService
+
+
 class MessageRouter:
     def __init__(self):
         self.sessions: Dict[str, Dict[str, Session]] = {}  # user_id -> group_id -> Session
         self.use_react_mode = True  # 启用 ReAct 模式
-        self._load_persisted_sessions()
+        self._sessions_loaded = False
         self._graph = None  # 延迟初始化 LangGraph 消息图
-        self._pending_skill_suggestion = None  # 渐进式披露：接近匹配的技能建议
+        self._graph_initialization_attempted = False
         logger.info("[INIT] MessageRouter 初始化完成")
     
+    def initialize(self):
+        if not self._sessions_loaded:
+            self._load_persisted_sessions()
+            self._sessions_loaded = True
+
     async def _call_model_with_fallback(
         self, user_id: str, task_type: str, complexity: str,
         primary_prompt: str, fallback_prompt: str = None
@@ -58,21 +67,46 @@ class MessageRouter:
         return await react_engine.run(user_id, fallback_prompt)
 
     async def route(self, message: Message) -> str:
-        """路由消息 — 优先使用 LangGraph 消息图，失败回退到手写管道"""
+        """Claim once; only choose the manual pipeline before execution starts."""
+        from src.data.request_store import RequestStore
+        store = RequestStore(db.db_path)
+        key, fingerprint = store.identity(message)
+        status, saved = store.claim(key, fingerprint)
+        if status == "conflict":
+            return "消息标识已用于其他内容，请使用新的消息标识。"
+        if status == "completed":
+            return saved or ""
+        if status != "new":
+            return saved or f"请求正在处理或执行结果尚未确认，请核查后再操作。参考号：{key[:16]}"
+        try:
+            response = await self._route_once(message)
+            store.finish(key, response)
+            return response
+        except Exception as exc:
+            stage = getattr(exc, "stage", "execution")
+            logger.exception("Message failed without replay | request=%s | stage=%s", key[:16], stage)
+            response = f"请求处理失败，部分操作可能已完成，已停止自动重试。请核查执行结果。参考号：{key[:16]}"
+            store.finish(key, response, "failed", stage)
+            return response
+
+    async def _route_once(self, message: Message) -> str:
+        if hasattr(self, "_sessions_loaded"):
+            self.initialize()
         # 延迟初始化 LangGraph 消息图
-        if self._graph is None:
+        if self._graph is None and not self._graph_initialization_attempted:
+            self._graph_initialization_attempted = True
             try:
                 from src.gateway.message_graph import MessageGraph
-                self._graph = MessageGraph(self)
+                graph = MessageGraph(self)
+                if graph._graph is None:
+                    raise RuntimeError("Message graph could not be built")
+                self._graph = graph
                 logger.info("[ROUTER] LangGraph消息图已启用")
             except Exception as e:
                 logger.warning(f"[ROUTER] LangGraph消息图不可用: {str(e)}，使用手写管道")
 
         if self._graph is not None:
-            try:
-                return await self._graph.route(message)
-            except Exception as e:
-                logger.error(f"[ROUTER] LangGraph消息图异常: {str(e)}，回退到手写管道")
+            return await self._graph.route(message)
 
         # 回退：原始手写管道
         return await self._route_manual(message)
@@ -125,7 +159,8 @@ class MessageRouter:
             # Token 优化: Tier 1 匹配使用 SkillSummary（~500 chars/skill），
             #   仅在确认匹配后通过 load_full_skill() 加载完整 Skill 对象
             # =================================================================
-            matched_summary, near_misses = trigger_matcher.find_relevant_skill_with_near_misses(
+            is_file_upload = bool(metadata.get("file_key") or metadata.get("file_name"))
+            matched_summary, near_misses = (None, []) if is_file_upload else trigger_matcher.find_relevant_skill_with_near_misses(
                 message.content, user_id
             )
 
@@ -177,18 +212,17 @@ class MessageRouter:
                             return response
                         except Exception as e:
                             logger.error(
-                                f"[SKILL_PREMATCH] Skill execution failed, "
-                                f"falling through to normal routing | error={str(e)}"
+                                f"[SKILL_PREMATCH] Skill execution failed; replay stopped | error={str(e)}"
                             )
-                            # 执行失败时降级到正常流程（不阻塞用户请求）
+                            raise
 
             # 接近匹配建议：score 在 0.3-0.5 之间，提示用户但不自动执行
             if near_misses and not matched_summary:
-                self._pending_skill_suggestion = skill_executor.build_near_miss_suggestion(
+                pending_skill_suggestion = skill_executor.build_near_miss_suggestion(
                     near_misses
                 )
             else:
-                self._pending_skill_suggestion = None
+                pending_skill_suggestion = None
 
             # 意图识别
             metadata = message.metadata or {}
@@ -212,9 +246,9 @@ class MessageRouter:
                 response = await self._handle_intent(user_id, intent, message.content, message.metadata)
 
             # 附加接近匹配的技能建议（渐进式披露 Layer 2）
-            if self._pending_skill_suggestion:
-                response += self._pending_skill_suggestion
-                self._pending_skill_suggestion = None
+            if pending_skill_suggestion:
+                response += pending_skill_suggestion
+                pending_skill_suggestion = None
 
             # 保存响应
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
@@ -226,7 +260,7 @@ class MessageRouter:
 
         except Exception as e:
             logger.error(f"[ROUTER_ERROR] trace_id={trace_id} | error={str(e)}", exc_info=True)
-            return "处理请求时出现错误，请稍后重试。"
+            raise
         finally:
             clear_request_context()
     
@@ -351,73 +385,13 @@ class MessageRouter:
         return await self._call_model_with_fallback(user_id, "summarization", "simple", prompt)
     
     def _get_recent_file_content(self, user_id: str) -> str:
-        """获取最近上传的文件内容"""
-        from src.data.vector_store import rag_manager
-        
-        try:
-            # 搜索最近添加的文档（基于时间戳或元数据）
-            # 使用特殊查询词搜索最近上传的文件
-            results = rag_manager.query("__recent_upload__", k=3)
-            
-            if results:
-                # 按时间排序，获取最新的
-                sorted_results = sorted(results, 
-                                      key=lambda x: x.get("metadata", {}).get("timestamp", 0),
-                                      reverse=True)
-                # 合并内容
-                contents = []
-                for result in sorted_results[:2]:  # 最多取2个最近的文件
-                    content = result.get("content", "")
-                    if content and len(content) > 50:  # 确保是有效内容
-                        contents.append(content)
-                
-                if contents:
-                    return "\n\n---\n\n".join(contents)
-        
-        except Exception as e:
-            logger.error(f"获取最近文件内容失败: {str(e)}")
-        
-        # 如果向量库中没有找到，尝试从最近消息中提取文件内容
-        return self._extract_file_content_from_messages(user_id)
+        return FileContextService(db, get_tool_executor)._get_recent_file_content(user_id)
     
     def _extract_file_content_from_messages(self, user_id: str) -> str:
-        """从最近消息中提取文件内容"""
-        recent_messages = db.get_recent_messages(user_id, 10)
-        
-        # 查找助手回复中包含文件内容的消息（通常文件上传后助手会回复文件内容）
-        file_contents = []
-        for msg in recent_messages:
-            if msg.role == "assistant" and msg.content:
-                content = msg.content.strip()
-                # 检查是否是文件内容（不是简单的"收到文件"回复）
-                if len(content) > 100 and not content.startswith("{"):
-                    file_contents.append(content)
-        
-        if file_contents:
-            return "\n\n---\n\n".join(file_contents[:2])
-        
-        return ""
+        return FileContextService(db, get_tool_executor)._extract_file_content_from_messages(user_id)
     
     def _extract_valid_text(self, messages) -> str:
-        """从消息列表中提取有效文本内容"""
-        def is_valid_text(content):
-            if not content or not content.strip():
-                return False
-            # 检查是否是文件上传的JSON格式
-            content = content.strip()
-            if content.startswith('{') and content.endswith('}'):
-                # 可能是文件上传消息，检查是否包含file_key
-                try:
-                    import json
-                    data = json.loads(content)
-                    if 'file_key' in data or 'file_name' in data:
-                        return False
-                except:
-                    pass
-            return True
-        
-        valid_messages = [m for m in messages if is_valid_text(m.content)]
-        return "\n".join(m.content for m in valid_messages)
+        return FileContextService(db, get_tool_executor)._extract_valid_text(messages)
     
     async def _handle_question_answering(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
         logger.info(f"[QA_HANDLER] 开始问答处理: user_id={user_id}")
@@ -470,7 +444,7 @@ class MessageRouter:
 
         if skill_manager:
             try:
-                summary = skill_manager.find_relevant_skill(context)
+                summary = skill_manager.find_relevant_skill(context, user_id)
             except AttributeError:
                 # HybridSkillManager 没有 find_relevant_skill 方法
                 pass
@@ -498,9 +472,9 @@ class MessageRouter:
                     return result.response
                 except Exception as e:
                     logger.error(
-                        f"[SKILL_HANDLER] Skill execution failed, "
-                        f"falling back to ReAct | error={str(e)}"
+                        f"[SKILL_HANDLER] Skill execution failed; replay stopped | error={str(e)}"
                     )
+                    raise
 
         logger.warning("[SKILL_HANDLER] 未找到相关技能，降级到ReAct模式")
         return await react_engine.run(user_id, f"查找与以下内容相关的技能：{context}")
@@ -626,75 +600,16 @@ class MessageRouter:
             user_id, "creative_writing", "medium", prompt, fallback_prompt=fallback
         )
     
-    async def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str, metadata: dict = None) -> str:
-        """处理PPT生成相关意图 - 使用LangGraph PPT工作流"""
-        logger.info(f"[PPT_HANDLER] 开始PPT生产: user_id={user_id}, intent={intent.type}")
-
-        metadata = metadata or {}
-
-        if await ppt_workflow.is_awaiting_confirmation(user_id):
-            logger.info("[PPT_HANDLER] 检测到等待确认状态，继续工作流")
-            response, ctx = await ppt_workflow.continue_workflow(user_id, context)
-            self._clear_ppt_workflow_context(user_id)
-            return response
-
-        document_content = self._extract_document_content(user_id, metadata)
-        response, ctx = await ppt_workflow.start_workflow(
-            user_id=user_id, intent_type=intent.type,
-            content=context, document_content=document_content,
-        )
-        self._clear_ppt_workflow_context(user_id)
-        return response
+    async def _handle_ppt_generation(self, user_id: str, intent: Intent, context: str, metadata: dict=None):
+        handler = PresentationMessageService(ppt_workflow, FileContextService(db, get_tool_executor))
+        return await handler._handle_ppt_generation(user_id, intent, context, metadata)
 
     def _extract_document_content(self, user_id: str, metadata: dict) -> str:
-        """提取文档内容"""
-        from src.data.database import db
-
-        file_key = metadata.get("file_key")
-        file_message_id = metadata.get("message_id", "")
-
-        if not file_key:
-            recent_messages = db.get_recent_messages(user_id, 5)
-            for msg in recent_messages:
-                if msg.metadata and msg.role == "user":
-                    file_key = msg.metadata.get("file_key")
-                    if file_key:
-                        file_message_id = msg.metadata.get("message_id", "") or msg.id or ""
-                        break
-
-        if file_key:
-            tool_executor = get_tool_executor()
-            if tool_executor:
-                try:
-                    result = tool_executor.execute("feishu_file_read", {
-                        "file_key": file_key,
-                        "message_id": file_message_id,
-                        "user_id": user_id
-                    })
-                    if result.get("success") and result.get("result", {}).get("content"):
-                        return result["result"]["content"]
-                except Exception as e:
-                    logger.error(f"[PPT_HANDLER] 文件读取异常: {str(e)}")
-
-        recent_messages = db.get_recent_messages(user_id, 20)
-        valid_messages = [
-            m for m in recent_messages
-            if m.content and m.content.strip()
-            and not (m.content.strip().startswith('{') and m.content.strip().endswith('}'))
-        ]
-        file_contents = [m.content for m in valid_messages if m.role == "assistant"]
-        if not file_contents:
-            file_contents = [m.content for m in valid_messages]
-
-        return "\n".join(file_contents)
+        return FileContextService(db, get_tool_executor)._extract_document_content(user_id, metadata)
 
     def _clear_ppt_workflow_context(self, user_id: str):
-        """清除PPT工作流上下文（LangGraph 版本由 checkpointer 自动管理）"""
-        # LangGraph StateGraph 通过 checkpointer 管理状态，无需手动清理内存
-        # 保留 _contexts 兼容：移除活跃用户标记
-        if hasattr(ppt_workflow, '_contexts') and user_id in ppt_workflow._contexts:
-            ppt_workflow._contexts.pop(user_id, None)
-            logger.debug(f"[PPT_HANDLER] 清除工作流上下文: user_id={user_id}")
+        handler = PresentationMessageService(ppt_workflow, FileContextService(db, get_tool_executor))
+        return handler._clear_ppt_workflow_context(user_id)
     
     async def _handle_unknown(self, user_id: str, context: str) -> str:
         logger.info(f"[UNKNOWN_HANDLER] 开始处理未知意图: user_id={user_id}")
@@ -872,8 +787,7 @@ class MessageRouter:
             return response
         except Exception as e:
             logger.error(f"ReAct engine failed: {str(e)}")
-            # 降级到普通处理
-            return await self._handle_unknown(user_id, query)
+            raise
 
 
 message_router = MessageRouter()

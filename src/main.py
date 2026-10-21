@@ -1,38 +1,41 @@
 import uvicorn
 import asyncio
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 # 先导入配置和日志模块
 from src.config import settings
 from src.logging_config import setup_logging, get_logger
 
-# 初始化日志系统（必须在其他模块导入之前执行）
-# 解析日志输出目标
-log_outputs = [o.strip() for o in settings.LOG_OUTPUTS.split(",") if o.strip()]
+def configure_logging():
+    # 显式启动时配置日志，导入应用模块不创建文件处理器。
+    # 解析日志输出目标
+    log_outputs = [o.strip() for o in settings.LOG_OUTPUTS.split(",") if o.strip()]
 
-setup_logging(
-    log_level=settings.LOG_LEVEL,
-    log_dir=settings.LOG_DIR,
-    max_file_size=settings.LOG_MAX_FILE_SIZE,
-    backup_count=settings.LOG_BACKUP_COUNT,
-    outputs=log_outputs,
-    modules={
-        "api": "INFO",
-        "model": "INFO",
-        "im": "DEBUG",
-        "memory": "DEBUG",
-        "skill": "INFO",
-        "tool": "DEBUG",
-        "engine": "DEBUG",
-        "gateway": "DEBUG",
-        "services": "INFO"
-    }
-)
+    setup_logging(
+        log_level=settings.LOG_LEVEL,
+        log_dir=settings.LOG_DIR,
+        max_file_size=settings.LOG_MAX_FILE_SIZE,
+        backup_count=settings.LOG_BACKUP_COUNT,
+        outputs=log_outputs,
+        modules={
+            "api": "INFO",
+            "model": "INFO",
+            "im": "DEBUG",
+            "memory": "DEBUG",
+            "skill": "INFO",
+            "tool": "DEBUG",
+            "engine": "DEBUG",
+            "gateway": "DEBUG",
+            "services": "INFO"
+        }
+    )
+
 
 logger = get_logger("gateway")
 
-# 日志系统初始化完成后，再导入其他模块
+# 导入应用依赖；实际资源在 startup_event 中初始化。
 from src.api.v1.endpoints import router as v1_router
 from src.utils import ensure_directory
 from src.data.database import db
@@ -43,21 +46,41 @@ from src.errors import EXCEPTION_HANDLERS
 from src.middleware.logging_middleware import RequestLoggingMiddleware, ResponseLoggingMiddleware
 from src.middleware.auth_middleware import APIKeyMiddleware
 from src.middleware.rate_limit_middleware import RateLimitMiddleware
-from src.plugins import init_plugins
+from src.plugins import init_plugins, close_plugins, component_status
 
 app = FastAPI(title="Hermes Office Synergy Agent", version="1.0.0")
+app.state.ready = False
+app.state.background_tasks = {}
+app.state.integrations = {}
+
+
+def track_background(name, coroutine):
+    app.state.integrations[name] = "starting"
+    task = asyncio.create_task(coroutine, name=name)
+    app.state.background_tasks[name] = task
+
+    def completed(done):
+        if done.cancelled():
+            app.state.integrations[name] = "stopped"
+        else:
+            error = done.exception()
+            app.state.integrations[name] = "failed" if error or done.result() is False else "stopped"
+            if error:
+                logger.error("Background service failed: %s", name, exc_info=(type(error), error, error.__traceback__))
+    task.add_done_callback(completed)
+    return task
 
 # 注册异常处理器
 for exception_type, handler in EXCEPTION_HANDLERS.items():
     app.add_exception_handler(exception_type, handler)
 
 # 注册中间件（FastAPI 按添加顺序的逆序执行 request 阶段）
-# 执行顺序（request →）：RateLimit → Auth → RequestLogging → ResponseLogging → Handler
-# 执行顺序（← response）：Handler → ResponseLogging → RequestLogging → Auth → RateLimit
-app.add_middleware(RateLimitMiddleware)
+# 请求：CORS → RequestLogging → ResponseLogging → RateLimit(IP) → Auth → Handler
+# 日志覆盖 401/429；限流覆盖未认证请求；CORS 在外层处理预检和拒绝响应。
 app.add_middleware(APIKeyMiddleware)
-app.add_middleware(RequestLoggingMiddleware)
+app.add_middleware(RateLimitMiddleware)
 app.add_middleware(ResponseLoggingMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -149,15 +172,32 @@ async def start_feishu_websocket():
     if settings.FEISHU_APP_ID and settings.FEISHU_APP_SECRET:
         logger.info("尝试启动飞书 WebSocket 长连接服务...")
         try:
-            await feishu_websocket_service.start()
+            return await feishu_websocket_service.start()
         except Exception as e:
             logger.error(f"飞书 WebSocket 服务启动失败: {str(e)}")
             import traceback
             logger.error(f"详细错误: {traceback.format_exc()}")
+            return False
 
 
 @app.on_event("startup")
 async def startup_event():
+    app.state.ready = False
+    try:
+        await initialize_services()
+        app.state.ready = True
+    except BaseException:
+        await shutdown_event()
+        raise
+
+
+async def initialize_services():
+    configure_logging()
+    db.initialize()
+    from src.services.audit_log_service import audit_log_service
+    from src.gateway.message_router import message_router
+    audit_log_service.initialize()
+    message_router.initialize()
     ensure_directory("./data")
     ensure_directory("./logs")
     ensure_directory("./workspace")
@@ -168,18 +208,22 @@ async def startup_event():
     # 初始化插件系统（必须在其他服务启动之前）
     if not init_plugins():
         logger.error("插件系统初始化失败")
-        return
+        raise RuntimeError("Required plugin initialization failed")
 
     register_im_adapters()
 
+    from src.engine.mcp_client import mcp_client_manager
+    await mcp_client_manager.refresh()
+
     # 启动飞书 WebSocket 长连接服务（后台运行）- 仅在插件初始化成功后启动
-    asyncio.create_task(start_feishu_websocket())
+    if settings.FEISHU_APP_ID and settings.FEISHU_APP_SECRET:
+        track_background("feishu", start_feishu_websocket())
 
     # MCP Server HTTP (optional, background)
     if settings.MCP_SERVER_ENABLED:
         from src.engine.mcp_server import start_http_server
         logger.info(f"[MCP] MCP Server HTTP starting (port={settings.MCP_SERVER_PORT})")
-        asyncio.create_task(start_http_server(port=settings.MCP_SERVER_PORT))
+        track_background("mcp_http", start_http_server(port=settings.MCP_SERVER_PORT))
 
     # SKILL.md 文件同步：导入文件系统中已有的技能文件
     try:
@@ -236,21 +280,34 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    # MCP Server shutdown
-    if settings.MCP_SERVER_ENABLED:
-        from src.engine.mcp_server import stop_http_server
-        await stop_http_server()
-
-    # 停止后台调度器
-    try:
-        from src.engine.scheduler import scheduler as bg_scheduler
-        await bg_scheduler.stop()
-    except Exception:
-        pass
-
-    feishu_websocket_service.stop()
+    app.state.ready = False
+    from src.engine.mcp_client import mcp_client_manager
+    from src.engine.mcp_server import stop_http_server
+    from src.engine.scheduler import scheduler as bg_scheduler
     from src.engine.checkpointer import close_checkpointer
-    await close_checkpointer()
+
+    async def cleanup(name, operation):
+        try:
+            await operation()
+        except Exception:
+            logger.exception("Service cleanup failed: %s", name)
+
+    await cleanup("mcp_client", mcp_client_manager.close)
+    await cleanup("mcp_http", stop_http_server)
+    await cleanup("scheduler", bg_scheduler.stop)
+    try:
+        feishu_websocket_service.stop()
+    except Exception:
+        logger.exception("Feishu cleanup failed")
+    tasks = list(app.state.background_tasks.values())
+    for task in tasks:
+        if not task.done():
+            task.cancel()
+    if tasks:
+        await asyncio.gather(*tasks, return_exceptions=True)
+    app.state.background_tasks.clear()
+    await cleanup("checkpointer", close_checkpointer)
+    await cleanup("plugins", close_plugins)
     logger.info("Hermes Office Synergy Agent shutting down")
 
 
@@ -262,6 +319,28 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.get("/ready")
+async def readiness_check():
+    components = dict(component_status)
+    integrations = dict(app.state.integrations)
+    # Long-lived background tasks are only marked running when their service
+    # reports that it has started, rather than when create_task() returns.
+    if "feishu" in integrations and integrations["feishu"] == "starting" and feishu_websocket_service.is_running:
+        integrations["feishu"] = "running"
+    if "mcp_http" in integrations and integrations["mcp_http"] == "starting":
+        from src.engine import mcp_server
+        server = getattr(mcp_server, "_mcp_server_instance", None)
+        if server is not None and server.started:
+            integrations["mcp_http"] = "running"
+    ready = app.state.ready and all(components.get(name) == "ready" for name in
+        ("model_router", "memory_store", "skill_manager", "tool_executor"))
+    degraded = any(value not in ("ready", "running") for value in (*components.values(), *integrations.values()))
+    return JSONResponse(status_code=200 if ready else 503, content={
+        "status": ("degraded" if degraded else "ready") if ready else "not_ready",
+        "components": components, "integrations": integrations,
+    })
 
 
 if __name__ == "__main__":

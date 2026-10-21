@@ -22,8 +22,6 @@ class PPTGeneratorBase:
 
     def __init__(self):
         self.output_dir = "output/ppt"
-        import os
-        os.makedirs(self.output_dir, exist_ok=True)
 
     def _parse_color(self, color_str: str) -> RGBColor:
         """解析颜色字符串为RGBColor"""
@@ -58,6 +56,8 @@ class PPTGeneratorBase:
         """
         try:
             # 创建演示文稿
+            import os
+            os.makedirs(self.output_dir, exist_ok=True)
             prs = Presentation()
             
             # 添加封面页

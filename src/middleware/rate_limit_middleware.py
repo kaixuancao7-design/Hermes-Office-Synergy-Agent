@@ -1,6 +1,6 @@
 """滑动窗口速率限制中间件
 
-使用基于 IP + 用户 ID 的滑动窗口算法限制请求频率。
+使用基于客户端 IP 的滑动窗口算法限制请求频率，覆盖未认证请求。
 速率限制参数可在 .env 中配置：
   RATE_LIMIT_ENABLED=true/false（默认: true）
   RATE_LIMIT_MAX_REQUESTS=60（默认: 60）
@@ -18,7 +18,7 @@ from src.logging_config import get_logger
 logger = get_logger("api")
 
 # 无需限流的公共路径
-PUBLIC_PATHS = {"/health", "/", "/docs", "/openapi.json", "/favicon.ico", "/redoc"}
+PUBLIC_PATHS = {"/health", "/ready", "/", "/docs", "/openapi.json", "/favicon.ico", "/redoc"}
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
@@ -40,8 +40,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not settings.RATE_LIMIT_ENABLED:
             return await call_next(request)
 
-        # 客户端标识：优先使用用户 ID，否则使用 IP
-        client_key = request.headers.get("X-User-ID") or request.client.host
+        # This middleware runs before auth. Never trust a client-supplied user ID.
+        client_key = request.client.host if request.client else "unknown"
         now = time.time()
 
         # 滑动窗口：移除窗口外的旧记录

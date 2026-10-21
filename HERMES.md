@@ -3,6 +3,8 @@
 > 本文档定义了 Hermes 办公协同 Agent 的开发、运维和自我进化的核心原则，
 > 确保系统稳定、安全、可控，符合企业级合规要求。
 >
+> 本文件包含设计目标与开发要求；已实现边界以 [运行与架构说明](docs/运行与架构说明.md) 为准。
+>
 > **当前版本**: v1.2.0 | **生效日期**: 2026-06-05
 
 ---
@@ -46,7 +48,7 @@
 
 **在项目中的实现**：
 
-- `learning_cycle.py` 中的 `_clarify_assumptions()` 方法自动生成假设清单
+- 当前 `src/engine/learning_cycle.py` 通过 `_analyze_and_draft()` 分析纠正，`src/services/skill_verification.py:validate_definition()` 校验草稿结构；尚未实现独立的 `_clarify_assumptions()` 自动澄清接口
 - 假设清单包含：核心需求、歧义点、资源列表、权限需求、潜在异常、合规风险、置信度评分
 
 ---
@@ -63,7 +65,7 @@
 
 **在项目中的实现**：
 
-- `skill_manager.py` 中的 `check_complexity()` 方法检查技能复杂度阈值
+- `src/skills/manager.py` 中的 `check_complexity()` 方法检查技能复杂度阈值
 - 复杂度超过阈值自动触发人工审核
 
 **复杂度阈值表**：
@@ -89,7 +91,7 @@
 
 **在项目中的实现**：
 
-- `skill_manager.py` 中的 `validate_skill_changes()` 方法验证变更是否符合最小diff原则
+- `src/skills/manager.py` 中的 `validate_skill_changes()` 方法验证变更是否符合最小diff原则
 - 变更超过3个自动触发警告，拒绝无关变更
 - 所有变更记录到审计日志，包含：请求ID、操作人、权限、时间
 
@@ -110,7 +112,7 @@
 **在项目中的实现**：
 
 - `tests/test_skill_autolearn.py` 包含完整的技能自学习用例库
-- 学习循环三闸门确保技能质量：假设澄清 → 复杂度检查 → 测试验证
+- 当前实现采用草稿结构验证与管理员审核；上述自动假设澄清和自动运行固定测试集是目标规范，不能视为已上线能力
 
 ---
 
@@ -167,7 +169,7 @@
 | IM适配器 | feishu, dingtalk, wecom, wechat, slack, discord | `src/gateway/`                 |
 | 模型路由 | openai, anthropic, ollama, zhipu, moonshot      | `src/plugins/model_routers.py` |
 | 记忆存储 | chroma, milvus, faiss                           | `src/plugins/memory_stores.py` |
-| 技能管理 | default                                         | `src/skills/skill_manager.py`  |
+| 技能管理 | default                                         | `src/skills/manager.py`  |
 
 **危险工具列表**（需管理员授权）：
 
@@ -492,7 +494,7 @@ python -m pytest tests/test_skill_autolearn.py -v
 curl -X POST http://localhost:3000/api/v1/audit/verify
 
 # 检查技能复杂度
-python -c "from src.skills.skill_manager import skill_manager; print(skill_manager.check_complexity(skill))"
+python -c "from src.skills.manager import skill_manager; print(skill_manager.check_complexity(skill))"
 ```
 
 ---

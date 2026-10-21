@@ -2,6 +2,7 @@ import ast
 import json
 import sqlite3
 import os
+import threading
 from typing import Optional, List, Dict, Any
 from src.types import UserProfile, Message, Skill, MemoryEntry
 from src.utils import generate_id, get_timestamp
@@ -30,13 +31,33 @@ def _safe_deserialize(value: str, default=None):
 
 
 class Database:
-    def __init__(self, db_path: str = settings.DATABASE_PATH):
-        self.db_path = db_path
-        os.makedirs(os.path.dirname(db_path), exist_ok=True)
-        self._init_tables()
+    def __init__(self, db_path: str = settings.DATABASE_PATH, *, initialize=True):
+        self._db_path = db_path
+        self._initialized = False
+        self._init_lock = threading.RLock()
+        if initialize:
+            self.initialize()
+
+    @property
+    def db_path(self):
+        self.initialize()
+        return self._db_path
+
+    @db_path.setter
+    def db_path(self, value):
+        with self._init_lock:
+            self._db_path = value
+            self._initialized = False
+
+    def initialize(self):
+        with self._init_lock:
+            if not self._initialized:
+                os.makedirs(os.path.dirname(self._db_path) or ".", exist_ok=True)
+                self._init_tables()
+                self._initialized = True
     
     def _init_tables(self):
-        with sqlite3.connect(self.db_path) as conn:
+        with sqlite3.connect(self._db_path) as conn:
             cursor = conn.cursor()
             cursor.execute("CREATE TABLE IF NOT EXISTS pending_message_responses (message_id TEXT PRIMARY KEY, response TEXT NOT NULL)")
             
@@ -369,6 +390,11 @@ class Database:
         with sqlite3.connect(self.db_path) as conn:
             row = conn.execute("SELECT id,name,description,type,trigger_patterns,steps,metadata,created_at,updated_at,version,created_by FROM skills WHERE id=?", (skill_id,)).fetchone()
             return self._row_to_skill(row) if row else None
+
+    def delete_skill(self, skill_id: str) -> bool:
+        """Delete the active definition while retaining versions and audit history."""
+        with sqlite3.connect(self.db_path) as conn:
+            return conn.execute("DELETE FROM skills WHERE id = ?", (skill_id,)).rowcount > 0
 
     def get_all_skills(self) -> List[Skill]:
         with sqlite3.connect(self.db_path) as conn:
@@ -1062,4 +1088,4 @@ class Database:
             ]
 
 
-db = Database()
+db = Database(initialize=False)

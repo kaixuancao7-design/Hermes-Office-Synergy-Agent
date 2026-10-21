@@ -10,22 +10,33 @@ from src.utils import generate_id, get_timestamp
 
 
 class AuditLogService:
-    def __init__(self, db_path=None):
+    def __init__(self, db_path=None, *, initialize=True):
         self.db_path = db_path or settings.DATABASE_PATH
-        Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        with sqlite3.connect(self.db_path) as conn:
-            conn.execute("CREATE TABLE IF NOT EXISTS audit_entries (seq INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)")
+        self._initialized = False
+        if initialize:
+            self.initialize()
+
+    def initialize(self):
+        with self._lock:
+            if self._initialized:
+                return
+            Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(self.db_path) as conn:
+                conn.execute("CREATE TABLE IF NOT EXISTS audit_entries (seq INTEGER PRIMARY KEY AUTOINCREMENT, payload TEXT NOT NULL)")
+            self._initialized = True
 
     @staticmethod
     def _checksum(data):
         return hashlib.sha256(json.dumps({k: v for k, v in data.items() if k != "checksum"}, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
     def _all(self):
+        self.initialize()
         with sqlite3.connect(self.db_path) as conn:
             return [AuditLog(**json.loads(row[0])) for row in conn.execute("SELECT payload FROM audit_entries ORDER BY seq")]
 
     def _record(self, operator, action, target_type, target_id, detail, result="success"):
+        self.initialize()
         with self._lock, sqlite3.connect(self.db_path) as conn:
             conn.execute("BEGIN IMMEDIATE")
             row = conn.execute("SELECT payload FROM audit_entries ORDER BY seq DESC LIMIT 1").fetchone()
@@ -111,4 +122,4 @@ class AuditLogService:
             return False
 
 
-audit_log_service = AuditLogService()
+audit_log_service = AuditLogService(initialize=False)

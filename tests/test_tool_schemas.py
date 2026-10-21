@@ -41,13 +41,13 @@ def test_legacy_checks():
     mcp_descs = get_tool_descriptors_mcp()
     assert len(mcp_descs) == len(schemas), "MCP count should match OpenAI count"
     for item in mcp_descs:
-        assert set(item.keys()) == {"name", "description", "arguments"}, f"unexpected keys: {item.keys()}"
-        args = item["arguments"]
+        assert set(item.keys()) == {"name", "description", "inputSchema"}, f"unexpected keys: {item.keys()}"
+        args = item["inputSchema"]
         assert args["type"] == "object", f"arguments.type should be object, got {args.get('type')}"
         assert isinstance(args["properties"], dict)
         assert isinstance(args["required"], list)
-        assert "parameters" not in item, "MCP should use 'arguments' not 'parameters'"
-    print(f"  OK: {len(mcp_descs)} MCP descriptors, all use 'arguments' field")
+        assert "parameters" not in item, "MCP should use 'inputSchema' not 'parameters'"
+    print(f"  OK: {len(mcp_descs)} MCP descriptors, all use 'inputSchema' field")
 
     print()
     print("=== Test 4: Optional field flattened (no anyOf) ===")

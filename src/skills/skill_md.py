@@ -24,7 +24,6 @@ class SkillMarkdownManager:
 
     def __init__(self, base_dir: str = None):
         self.base_dir = base_dir or self.SKILLS_DIR
-        os.makedirs(self.base_dir, exist_ok=True)
 
     # ========================================================================
     # Skill → Markdown
@@ -125,6 +124,7 @@ class SkillMarkdownManager:
 
     def write_skill_md(self, skill) -> str:
         """写入 SKILL.md 文件，返回文件路径"""
+        os.makedirs(self.base_dir, exist_ok=True)
         safe_name = re.sub(r'[<>:"/\\|?*]', '_', skill.name)
         filepath = os.path.join(self.base_dir, f"{safe_name}.md")
         content = self.skill_to_markdown(skill)

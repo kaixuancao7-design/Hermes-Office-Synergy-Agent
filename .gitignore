@@ -68,3 +68,10 @@ docker-compose.override.yml
 # 临时文件
 *.tmp
 *.temp
+
+# Local outbound MCP server configuration
+/config/mcp_servers.json
+
+# 其他不需要上传的文件
+*.bak
+docs/

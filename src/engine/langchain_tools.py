@@ -30,40 +30,11 @@ _PROMPT_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "prompts")
 # LLM 会读取这些 schema 的 description 来决定传什么参数
 # ============================================================================
 
-class DocumentSearchInput(BaseModel):
-    """文档搜索参数"""
-    query: str = Field(description="要在文档向量库中搜索的关键词或问题")
-    limit: int = Field(default=5, description="返回结果的最大数量")
-
-
-class MemorySearchInput(BaseModel):
-    """记忆搜索参数"""
-    query: str = Field(description="要搜索的记忆关键词或问题")
-    limit: int = Field(default=5, description="返回结果的最大数量")
-
-
-class WebSearchInput(BaseModel):
-    """网页搜索参数"""
-    query: str = Field(description="要在网上搜索的关键词")
-
-
-class CodeExecutionInput(BaseModel):
-    """代码执行参数"""
-    code: str = Field(description="要执行的完整代码")
-    language: str = Field(default="python", description="编程语言，默认python")
-
-
-class FileOperationsInput(BaseModel):
-    """文件操作参数"""
-    operation: str = Field(description="操作类型: read(读取), write(写入), list(列出文件), delete(删除)")
-    path: str = Field(description="文件或目录的路径")
-    content: str = Field(default="", description="要写入的内容（仅write操作需要）")
-
-
-class FeishuFileReadInput(BaseModel):
-    """飞书文件读取参数"""
-    file_key: str = Field(description="飞书文件的唯一标识key")
-    user_id: str = Field(default="", description="当前用户ID")
+# Compatibility re-exports: callers may keep importing these names here.
+from src.tools.schemas import (
+    DocumentSearchInput, MemorySearchInput, WebSearchInput, CodeExecutionInput,
+    FileOperationsInput, FeishuFileReadInput,
+)
 
 
 # ============================================================================
@@ -93,7 +64,7 @@ def _execute_web_search(query: str) -> str:
 
 def _execute_code(code: str, language: str = "python") -> str:
     """执行代码"""
-    return _execute_as_json("code", locals())
+    return _execute_as_json("code_execution", locals())
 
 
 def _execute_file_operations(operation: str, path: str, content: str = "") -> str:
@@ -189,11 +160,19 @@ def create_langchain_tools(tool_ids: Optional[List[str]] = None) -> List:
         logger.warning("langchain_core 未安装，无法创建LangChain工具")
         return []
 
+    from src.engine.mcp_client import mcp_client_manager
+    remote = {tool["name"]: tool for tool in mcp_client_manager.descriptors()}
     if tool_ids is None:
-        tool_ids = list(TOOL_DEFINITIONS.keys())
+        tool_ids = list(TOOL_DEFINITIONS.keys()) + list(remote)
 
     tools = []
     for tool_id in tool_ids:
+        if tool_id in remote:
+            info = remote[tool_id]
+            func, coroutine = _remote_functions(tool_id)
+            tools.append(StructuredTool.from_function(func=func, coroutine=coroutine,
+                name=tool_id, description=info["description"], args_schema=info["inputSchema"]))
+            continue
         if tool_id not in TOOL_DEFINITIONS:
             continue
         info = TOOL_DEFINITIONS[tool_id]
@@ -290,11 +269,17 @@ def get_tool_schemas_openai(tool_ids: Optional[List[str]] = None) -> List[dict]:
     Returns:
         OpenAI tools 参数可直接消费的字典列表
     """
+    from src.engine.mcp_client import mcp_client_manager
+    remote = {tool["name"]: tool for tool in mcp_client_manager.descriptors()}
     if tool_ids is None:
-        tool_ids = list(TOOL_DEFINITIONS.keys())
+        tool_ids = list(TOOL_DEFINITIONS.keys()) + list(remote)
 
     schemas: List[dict] = []
     for tool_id in tool_ids:
+        if tool_id in remote:
+            tool = remote[tool_id]
+            schemas.append({"name": tool_id, "description": tool["description"], "parameters": tool["inputSchema"]})
+            continue
         if tool_id not in TOOL_DEFINITIONS:
             continue
         info = TOOL_DEFINITIONS[tool_id]
@@ -309,9 +294,9 @@ def get_tool_schemas_openai(tool_ids: Optional[List[str]] = None) -> List[dict]:
 def get_tool_descriptors_mcp(tool_ids: Optional[List[str]] = None) -> List[dict]:
     """返回 MCP 兼容工具描述符列表。
 
-    每项: {"name":..., "description":..., "arguments": {type:"object", properties:{}, required:[]}}
+    每项: {"name":..., "description":..., "inputSchema": {type:"object", properties:{}, required:[]}}
 
-    与 OpenAI 格式同源，仅外层键名 parameters → arguments（符合 MCP 规范）。
+    与 OpenAI 格式同源，仅外层键名 parameters → inputSchema（MCP 工具描述符字段）。
 
     Args:
         tool_ids: 需要的工具ID列表。None 时返回所有已定义工具。
@@ -323,7 +308,7 @@ def get_tool_descriptors_mcp(tool_ids: Optional[List[str]] = None) -> List[dict]
     mcp_descriptors: List[dict] = []
     for item in openai_schemas:
         mcp_item = dict(item)
-        mcp_item["arguments"] = mcp_item.pop("parameters")
+        mcp_item["inputSchema"] = mcp_item.pop("parameters")
         mcp_descriptors.append(mcp_item)
     return mcp_descriptors
 
@@ -378,6 +363,8 @@ def load_react_system_prompt(
         format_instructions = "可用的 action.type 值: finish"
 
     template = template.replace("{{ format_instructions }}", format_instructions)
+    descriptors = get_tool_schemas_openai(available_tools or [])
+    template += "\n\n工具参数定义（严格按 schema 传参）：\n" + json.dumps(descriptors, ensure_ascii=False)
 
     logger.debug(f"加载ReAct系统提示词 | length={len(template)} | tools={available_tools}")
     return template
@@ -622,3 +609,14 @@ def _execute_as_json(tool_id, params):
         return json.dumps(result, ensure_ascii=False, default=str)
     except Exception as exc:
         return json.dumps({"success": False, "error": str(exc)})
+
+
+def _remote_functions(tool_id):
+    def execute(**parameters):
+        return _execute_as_json(tool_id, parameters)
+
+    async def aexecute(**parameters):
+        import asyncio
+        return await asyncio.to_thread(_execute_as_json, tool_id, parameters)
+
+    return execute, aexecute

@@ -40,7 +40,7 @@ def test_revocation_deletes_only_requested_permission(tmp_path, monkeypatch):
 
 
 def test_profile_memory_and_adapter_access_boundaries():
-    tree = ast.parse((ROOT / "src/api/v1/endpoints.py").read_text(encoding="utf-8"))
+    tree = ast.parse((ROOT / "src/api/v1/messages.py").read_text(encoding="utf-8"))
     selected = [x for x in tree.body if isinstance(x, ast.AsyncFunctionDef)
                 and x.name in {"get_user_profile", "update_user_profile", "search_memory", "register_adapter"}]
     def admin(actor):

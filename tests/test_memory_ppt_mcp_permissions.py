@@ -184,6 +184,9 @@ def test_mcp_http_real_protocol_auth_and_identity(monkeypatch):
     monkeypatch.setattr(memory_manager, "get_user_profile", lambda user: SimpleNamespace(preferences={"owner": user}))
 
     def execute(tool, parameters):
+        if tool == "memory_search":
+            from src.plugins.tool_executors import MemorySearchTool
+            return MemorySearchTool().execute(parameters)
         seen.append((current_user.get(), parameters["user_id"]))
         return {"success": True, "user_id": parameters["user_id"]}
 

@@ -38,6 +38,16 @@ from src.engine.skill_executor import skill_executor
 logger = get_logger("gateway")
 
 
+class MessageGraphUnavailable(RuntimeError):
+    """Raised before any graph node executes when the graph is unavailable."""
+
+
+class MessageExecutionError(RuntimeError):
+    def __init__(self, stage):
+        self.stage = stage
+        super().__init__(f"Message execution failed at {stage}")
+
+
 # ============================================================================
 # Graph State
 # ============================================================================
@@ -68,6 +78,7 @@ class RouteState(TypedDict, total=False):
     mode: str                  # "ReAct" | "Direct" | "PPT" | "Skill"
 
     # ---- 技能预匹配 ----
+    near_miss_suggestion: str
     matched_skill: Any         # 预匹配到的技能对象（Skill），供 handle_skill 节点使用
 
     # ---- 输出 ----
@@ -107,16 +118,9 @@ class MessageGraph:
             graph = StateGraph(RouteState)
 
             # 添加节点
-            graph.add_node("setup", self._setup_node)
-            graph.add_node("filter", self._filter_node)
-            graph.add_node("detect_file", self._detect_file_node)
-            graph.add_node("skill_prematch", self._skill_prematch_node)
-            graph.add_node("recognize", self._recognize_node)
-            graph.add_node("handle_skill", self._handle_skill_node)
-            graph.add_node("handle_ppt", self._handle_ppt_node)
-            graph.add_node("handle_react", self._handle_react_node)
-            graph.add_node("handle_direct", self._handle_direct_node)
-            graph.add_node("save_response", self._save_response_node)
+            for name in ("setup", "filter", "detect_file", "skill_prematch", "recognize",
+                         "handle_skill", "handle_ppt", "handle_react", "handle_direct", "save_response"):
+                graph.add_node(name, self._guard_node(name, getattr(self, f"_{name}_node")))
 
             # 主线
             graph.add_edge(START, "setup")
@@ -158,6 +162,15 @@ class MessageGraph:
             logger.warning("[MSG_GRAPH] langgraph未安装，消息图不可用")
             return None
 
+    @staticmethod
+    def _guard_node(name, handler):
+        async def guarded(state):
+            try:
+                return await handler(state)
+            except Exception as exc:
+                raise MessageExecutionError(name) from exc
+        return guarded
+
     # ========================================================================
     # 公开入口
     # ========================================================================
@@ -167,7 +180,7 @@ class MessageGraph:
         start_time = datetime.now()
 
         if self._graph is None:
-            return await self.router.route(message)
+            raise MessageGraphUnavailable("Message graph could not be built")
 
         metadata = message.metadata or {}
         trace_id = metadata.get("message_id", generate_id())
@@ -192,11 +205,15 @@ class MessageGraph:
                 "intent_entities": {},
                 "use_react": False,
                 "mode": "Direct",
+                "matched_skill": None,
+                "near_miss_suggestion": "",
                 "response": "",
                 "elapsed_ms": 0.0,
             }
 
-            config = {"configurable": {"thread_id": f"msg_{trace_id}"}}
+            from src.data.request_store import RequestStore
+            request_key, _ = RequestStore.identity(message)
+            config = {"configurable": {"thread_id": f"msg_{request_key}"}}
             result = await self._graph.ainvoke(initial_state, config)
 
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
@@ -215,7 +232,7 @@ class MessageGraph:
 
         except Exception as e:
             logger.error(f"[MSG_GRAPH] 路由失败 | trace_id={trace_id} | error={str(e)}", exc_info=True)
-            return "处理请求时出现错误，请稍后重试。"
+            raise
         finally:
             clear_request_context()
 
@@ -297,7 +314,9 @@ class MessageGraph:
         query = state["content"]
         user_id = state.get("user_id", "unknown")
 
-        matched = trigger_matcher.find_relevant_skill(query, user_id)
+        matched, near_misses = trigger_matcher.find_relevant_skill_with_near_misses(query, user_id)
+        state["matched_skill"] = None
+        state["near_miss_suggestion"] = skill_executor.build_near_miss_suggestion(near_misses) if near_misses and not matched else ""
         if matched:
             score = trigger_matcher._calculate_match_score(matched, query.lower())
             if score >= skill_executor.SKILL_MATCH_THRESHOLD:
@@ -400,10 +419,7 @@ class MessageGraph:
 
         except Exception as e:
             logger.error(f"[MSG_SKILL] Skill execution failed | error={str(e)}")
-            state["response"] = (
-                f"执行技能「{full_skill.name}」时出现错误，已切换到通用模式处理您的请求。\n\n"
-                f"错误详情: {str(e)[:200]}"
-            )
+            raise
 
         return state
 
@@ -464,7 +480,8 @@ class MessageGraph:
     async def _save_response_node(self, state: RouteState) -> RouteState:
         """SaveResponse节点 — 保存响应、记忆存储、日志"""
         user_id = state["user_id"]
-        response = state.get("response", "")
+        response = state.get("response", "") + state.get("near_miss_suggestion", "")
+        state["response"] = response
         group_id = state["group_id"]
         group_name = state["group_name"]
         intent_type = state["intent_type"]

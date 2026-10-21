@@ -169,8 +169,11 @@ def setup_logging(
     root_logger = logging.getLogger()
     root_logger.setLevel(getattr(logging, log_level.upper()))
 
-    # 清除现有处理器
-    root_logger.handlers.clear()
+    # Preserve host/test logging handlers; close only handlers owned by this app.
+    for handler in list(root_logger.handlers):
+        if getattr(handler, "_hermes_owned", False):
+            root_logger.removeHandler(handler)
+            handler.close()
 
     request_id_filter = RequestIDFilter()
     output_types = outputs or ["console", "file"]
@@ -181,6 +184,7 @@ def setup_logging(
         console_handler.setLevel(logging.DEBUG)
         console_handler.setFormatter(StructuredFormatter())
         console_handler.addFilter(request_id_filter)
+        console_handler._hermes_owned = True
         root_logger.addHandler(console_handler)
         logging.debug("控制台日志输出已启用")
 
@@ -195,6 +199,7 @@ def setup_logging(
         global_file_handler.setLevel(logging.INFO)
         global_file_handler.setFormatter(StructuredFormatter())
         global_file_handler.addFilter(request_id_filter)
+        global_file_handler._hermes_owned = True
         root_logger.addHandler(global_file_handler)
         logging.debug("文件日志输出已启用")
 
@@ -209,6 +214,7 @@ def setup_logging(
         json_file_handler.setLevel(logging.INFO)
         json_file_handler.setFormatter(StructuredFormatter(json_format=True))
         json_file_handler.addFilter(request_id_filter)
+        json_file_handler._hermes_owned = True
         root_logger.addHandler(json_file_handler)
         logging.debug("JSON文件日志输出已启用")
 
@@ -222,6 +228,7 @@ def setup_logging(
     error_file_handler.setLevel(logging.ERROR)
     error_file_handler.setFormatter(StructuredFormatter())
     error_file_handler.addFilter(request_id_filter)
+    error_file_handler._hermes_owned = True
     root_logger.addHandler(error_file_handler)
 
     # Syslog输出
@@ -231,6 +238,7 @@ def setup_logging(
             syslog_handler.setLevel(logging.WARNING)
             syslog_handler.setFormatter(StructuredFormatter())
             syslog_handler.addFilter(request_id_filter)
+            syslog_handler._hermes_owned = True
             root_logger.addHandler(syslog_handler)
             logging.debug("Syslog日志输出已启用")
         except Exception as e:
@@ -254,7 +262,9 @@ def setup_logging(
         module_logger.setLevel(getattr(logging, module_level.upper()))
         module_logger.propagate = False
 
-        module_logger.handlers.clear()
+        for handler in list(module_logger.handlers):
+            module_logger.removeHandler(handler)
+            handler.close()
 
         # 为每个模块创建独立的日志文件
         module_file_handler = logging.handlers.RotatingFileHandler(

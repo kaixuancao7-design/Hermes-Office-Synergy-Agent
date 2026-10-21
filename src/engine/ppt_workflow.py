@@ -65,12 +65,25 @@ class PPTWorkflow:
         self._contexts: Dict[str, bool] = {}
         self._generator = PPTGeneratorBase()
         self._quality_gate = QualityGate(strict_mode=False)
-        self._graph = self._build_graph()
+        self._compiled_graph = None
+        self._graph_initialized = False
         logger.info("[PPT_WORKFLOW] LangGraph PPT工作流初始化完成")
 
     # ========================================================================
     # 图构建
     # ========================================================================
+
+    @property
+    def _graph(self):
+        if not self._graph_initialized:
+            self._compiled_graph = self._build_graph()
+            self._graph_initialized = True
+        return self._compiled_graph
+
+    @_graph.setter
+    def _graph(self, value):
+        self._compiled_graph = value
+        self._graph_initialized = True
 
     def _build_graph(self):
         """构建LangGraph StateGraph"""

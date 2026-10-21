@@ -96,13 +96,16 @@ class Settings(BaseSettings):
     MCP_SERVER_ENABLED: bool = False   # 设为 True 启用 MCP HTTP 子服务
     MCP_SERVER_HOST: str = "127.0.0.1"
     MCP_SERVER_PORT: int = 8000        # MCP Server HTTP 端口
+    MCP_CLIENT_ENABLED: bool = False
+    MCP_SERVERS_CONFIG: str = "./config/mcp_servers.json"
+    MCP_CLIENT_TIMEOUT: float = 30
 
     # 速率限制配置
     RATE_LIMIT_ENABLED: bool = True
     RATE_LIMIT_MAX_REQUESTS: int = 60  # 每个窗口期最大请求数
     RATE_LIMIT_WINDOW_SECONDS: int = 60  # 窗口期（秒）
 
-    model_config = SettingsConfigDict(env_file=".env")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 
 settings = Settings()

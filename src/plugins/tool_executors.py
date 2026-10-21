@@ -155,6 +155,9 @@ class BasicToolExecutor(ToolExecutorBase):
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具"""
+        from src.engine.mcp_client import mcp_client_manager
+        if tool_id.startswith("mcp__"):
+            return mcp_client_manager.execute(tool_id, parameters)
         start_time = datetime.now()
         request_id = parameters.get('request_id', generate_id())
         user_id = parameters.get('user_id', 'unknown')
@@ -220,7 +223,8 @@ class BasicToolExecutor(ToolExecutorBase):
     
     def get_tools(self) -> List[str]:
         """获取所有可用工具"""
-        tools = list(self.tools.keys())
+        from src.engine.mcp_client import mcp_client_manager
+        tools = list(self.tools.keys()) + [t["name"] for t in mcp_client_manager.descriptors()]
         logger.debug(f"[TOOL_LIST] 获取工具列表 | count={len(tools)}")
         return tools
     
@@ -304,6 +308,9 @@ class SandboxedToolExecutor(ToolExecutorBase):
     
     def execute(self, tool_id: str, parameters: Dict[str, Any]) -> Dict[str, Any]:
         """执行工具（带安全检查）"""
+        from src.engine.mcp_client import mcp_client_manager
+        if tool_id.startswith("mcp__"):
+            return mcp_client_manager.execute(tool_id, parameters)
         if tool_id not in self.tools:
             return {"success": False, "error": f"工具 {tool_id} 不存在"}
         
@@ -353,7 +360,8 @@ class SandboxedToolExecutor(ToolExecutorBase):
     
     def get_tools(self) -> List[str]:
         """获取所有可用工具"""
-        return list(self.tools.keys())
+        from src.engine.mcp_client import mcp_client_manager
+        return list(self.tools.keys()) + [t["name"] for t in mcp_client_manager.descriptors()]
     
     def get_executor_type(self) -> str:
         return "sandboxed"

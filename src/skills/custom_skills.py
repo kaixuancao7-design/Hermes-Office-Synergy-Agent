@@ -14,16 +14,16 @@ class CustomSkillsManager:
     def __init__(self):
         pass
     
-    def create_custom_skill(self, user_id: str, name: str, description: str, steps: List[Dict[str, Any]]) -> Skill:
+    def create_custom_skill(self, user_id: str, name: str, description: str, steps: List[Dict[str, Any]], *, trigger_patterns=None, metadata=None) -> Skill:
         """创建自定义技能"""
         skill = Skill(
             id=generate_id(),
             name=name,
             description=description,
             type='custom',
-            trigger_patterns=[],
+            trigger_patterns=trigger_patterns or [],
             steps=[SkillStep(**s) for s in steps],
-            metadata={},
+            metadata=metadata or {},
             created_at=get_timestamp(),
             updated_at=get_timestamp(),
             created_by=user_id,

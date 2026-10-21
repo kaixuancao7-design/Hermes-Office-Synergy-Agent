@@ -146,7 +146,7 @@ class ReActEngine:
                 final_response=f"处理请求时出现错误: {str(e)}",
                 step_count=0, mode="manual_loop", created_at=get_timestamp(),
             )
-            return f"处理请求时出现错误: {str(e)}"
+            raise
 
         finally:
             current_user.reset(identity_token)
@@ -174,6 +174,7 @@ class ReActEngine:
         if not self._check_langgraph_available():
             return None
 
+        execution_started = False
         try:
             from src.engine.langchain_tools import (
                 create_langchain_tools,
@@ -208,9 +209,10 @@ class ReActEngine:
 
             # 5. 调用 agent
             logger.info(f"[ReAct_LG] 启动LangGraph agent | model={settings.MODEL_ROUTER_TYPE} | tools={[t.name for t in lc_tools]}")
+            execution_started = True
             result = await agent.ainvoke(
                 {"messages": [HumanMessage(content=query)]},
-                config={"configurable": {"thread_id": user_id}},
+                config={"configurable": {"thread_id": f"react_{user_id}_{generate_id()}"}},
             )
 
             # 5b. 从 LangGraph 消息中提取工具调用轨迹
@@ -225,13 +227,16 @@ class ReActEngine:
                         logger.info(f"[ReAct_LG] LangGraph agent返回回答 | length={len(content)}")
                         return content.strip()
 
-            logger.warning("[ReAct_LG] Agent未返回有效AI消息，回退到JSON模式")
-            return None
+            raise RuntimeError("Agent execution returned no final response; replay stopped")
 
         except ImportError as e:
+            if execution_started:
+                raise
             logger.info(f"[ReAct_LG] langgraph不可用: {str(e)}，回退到JSON模式")
             return None
         except Exception as e:
+            if execution_started:
+                raise
             logger.warning(f"[ReAct_LG] LangGraph agent异常: {str(e)}，回退到JSON模式")
             return None
 
@@ -242,12 +247,10 @@ class ReActEngine:
         LangGraph 的 create_react_agent 通过原生 function calling 处理工具调用。
         这里只提供角色描述和使用指南。
         """
-        from src.engine.langchain_tools import TOOL_DEFINITIONS
+        from src.engine.langchain_tools import get_tool_schemas_openai
 
-        tool_lines = []
-        for tool_id in available_tools:
-            if tool_id in TOOL_DEFINITIONS:
-                tool_lines.append(f"- **{tool_id}**: {TOOL_DEFINITIONS[tool_id]['description']}")
+        tool_lines = [f"- **{tool['name']}**: {tool['description']}"
+                      for tool in get_tool_schemas_openai(available_tools)]
 
         tools_desc = "\n".join(tool_lines) if tool_lines else "无可用工具"
 
@@ -507,7 +510,9 @@ class ReActEngine:
         start_time = datetime.now()
         logger.info(f"[TOOL_EXECUTE] 开始执行工具 | tool={tool_id} | user_id={user_id}")
 
-        if llm_params:
+        if tool_id.startswith("mcp__"):
+            params = dict(llm_params or {})
+        elif llm_params:
             params = dict(llm_params)
             params["user_id"] = user_id
             if metadata:

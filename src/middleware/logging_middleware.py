@@ -18,8 +18,8 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # 生成或获取请求ID
         request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))     
 
-        # 获取用户ID（从请求头或其他来源）
-        user_id = request.headers.get("X-User-ID", "-")
+        # Authentication has not run yet; do not attribute logs to untrusted headers.
+        user_id = "-"
 
         # 设置请求上下文
         set_request_context(request_id=request_id, user_id=user_id)
@@ -27,12 +27,13 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         # 记录请求开始
         logger.info(
             f"Request started | {request.method} {request.url.path} | "
-            f"client={request.client.host}:{request.client.port}"
+            f"client={request.client.host if request.client else 'unknown'}"
         )
         
         try:
             # 处理请求
             response = await call_next(request)
+            response.headers["X-Request-ID"] = request_id
 
             # 记录请求完成
             logger.info(

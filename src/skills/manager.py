@@ -219,9 +219,9 @@ class SkillManager:
         """创建预设技能"""
         return preset_skills_manager.create_preset_skill(**kwargs)
 
-    def create_custom_skill(self, user_id: str, name: str, description: str, steps: List[Dict[str, Any]]) -> Skill:
+    def create_custom_skill(self, user_id: str, name: str, description: str, steps: List[Dict[str, Any]], **kwargs) -> Skill:
         """创建自定义技能"""
-        return custom_skills_manager.create_custom_skill(user_id, name, description, steps)
+        return custom_skills_manager.create_custom_skill(user_id, name, description, steps, **kwargs)
 
     def create_learned_skill(self, user_id: str, draft_id: str) -> Optional[Skill]:
         """从草稿创建学习生成的技能"""

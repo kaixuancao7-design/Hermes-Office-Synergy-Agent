@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "office": {
+      "enabled": false,
+      "transport": "streamable_http",
+      "url": "http://127.0.0.1:9000/mcp",
+      "headers_env": {"X-API-Key": "OFFICE_MCP_API_KEY"},
+      "allowed_users": ["alice"],
+      "allowed_tools": ["search_documents"],
+      "timeout": 30
+    },
+    "local": {
+      "enabled": false,
+      "transport": "stdio",
+      "command": "python",
+      "args": ["C:/path/to/your_mcp_server.py"],
+      "env_from": {"SERVICE_TOKEN": "LOCAL_MCP_SERVICE_TOKEN"},
+      "allowed_users": ["alice"],
+      "allowed_tools": ["echo"]
+    }
+  }
+}

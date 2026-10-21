@@ -11,6 +11,8 @@ def validate_definition(draft):
     executor = get_tool_executor()
     if executor is not None:
         known.update(executor.get_tools())
+    from src.engine.mcp_client import mcp_client_manager
+    known.update(tool["name"] for tool in mcp_client_manager.catalog())
     if not draft.skill_name.strip() or not draft.description.strip():
         raise ValueError("Skill name and description are required")
     if not draft.steps or len(draft.steps) > 10:

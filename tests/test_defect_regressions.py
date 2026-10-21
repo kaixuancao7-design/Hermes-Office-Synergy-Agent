@@ -85,7 +85,7 @@ def test_api_role_and_execution_contracts(monkeypatch):
     from src.types import Skill
     from src.utils import get_timestamp
     source = Path(__file__).resolve().parents[1] / "src/api/v1/endpoints.py"
-    tree = ast.parse(source.read_text(encoding="utf-8"))
+    tree = ast.Module(body=[node for name in ("skills.py", "permissions.py") for node in ast.parse((source.parent / name).read_text(encoding="utf-8")).body], type_ignores=[])
     selected = [node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
                 and node.name in {"get_user_role", "execute_skill", "set_user_role"}]
     calls = []
