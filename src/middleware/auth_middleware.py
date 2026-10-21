@@ -6,10 +6,12 @@
 未认证路径（始终跳过）：/health, /, /docs, /openapi.json, /favicon.ico
 """
 
+import json
+from fastapi import HTTPException
+from starlette.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import Request, Response
 from src.config import settings
-from src.exceptions import AuthenticationException
 from src.logging_config import get_logger
 
 logger = get_logger("api")
@@ -32,21 +34,27 @@ class APIKeyMiddleware(BaseHTTPMiddleware):
 
         api_key = request.headers.get("X-API-Key")
         valid_keys = [k.strip() for k in settings.API_KEYS.split(",") if k.strip()]
-
-        # 如果配置了有效 Key 列表，验证请求 Key
-        if valid_keys:
-            if not api_key or api_key not in valid_keys:
-                logger.warning(f"认证失败: path={request.url.path}, client={request.client.host}")
-                raise AuthenticationException(
-                    message="无效或缺失的 API Key",
-                    detail="请在 X-API-Key 请求头中提供有效的 API Key"
-                )
-        elif not api_key:
-            # 未配置 Key 但启用了认证 → 要求任意 Key
-            logger.warning(f"认证失败（缺失 Key）: path={request.url.path}, client={request.client.host}")
-            raise AuthenticationException(
-                message="缺失 API Key",
-                detail="请在 X-API-Key 请求头中提供 API Key"
-            )
-
+        try:
+            users = json.loads(settings.API_KEY_USERS)
+        except (ValueError, TypeError):
+            users = {}
+        if not isinstance(users, dict):
+            users = {}
+        if not api_key or api_key not in set(valid_keys) | set(users):
+            return JSONResponse({"detail": "无效或缺失的 API Key"}, status_code=401)
+        request.state.user_id = users.get(api_key)
         return await call_next(request)
+
+
+def authenticated_user(request: Request) -> str:
+    """Identity must come from a server-configured credential mapping."""
+    user_id = getattr(request.state, "user_id", None)
+    if not isinstance(user_id, str) or not user_id:
+        raise HTTPException(status_code=401, detail="需要绑定用户的 API Key，并启用 API_KEY_ENABLED")
+    return user_id
+
+
+def require_admin(user_id: str):
+    from src.services.permission_service import permission_service
+    if permission_service.get_user_role(user_id) != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")

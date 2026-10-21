@@ -50,6 +50,13 @@ class LearningCycle:
         Returns:
             创建的草稿 ID，失败时返回 None
         """
+        if not original.strip() or not corrected.strip() or original.strip() == corrected.strip():
+            return None
+        import hashlib
+        source_key = "correction:" + hashlib.sha256((user_id + "\0" + original + "\0" + corrected + "\0" + context).encode()).hexdigest()
+        existing = db.get_learning_source(source_key)
+        if existing:
+            return existing
         correction_id = generate_id()
 
         # 保存到内存缓存
@@ -72,7 +79,7 @@ class LearningCycle:
         self._learn_pattern(user_id, original, corrected, context)
 
         # Gate 2: 分析差异 → 生成 SkillDraft
-        draft_id = self._analyze_and_draft(user_id, original, corrected, context, intent)
+        draft_id = self._analyze_and_draft(user_id, original, corrected, context, intent, source_key)
         return draft_id
 
     # ========================================================================
@@ -102,7 +109,7 @@ class LearningCycle:
             logger.error(f"[LEARN:G2] 学习失败: {str(e)}")
 
     def _analyze_and_draft(self, user_id: str, original: str, corrected: str,
-                           context: str, intent: str) -> Optional[str]:
+                           context: str, intent: str, source_key: str = None) -> Optional[str]:
         """Gate 2: 分析纠正差异，生成 SkillDraft 并持久化
 
         通过比较 original 与 corrected 的差异提取：
@@ -157,6 +164,10 @@ class LearningCycle:
                 logger.info(f"[LEARN:G2] 草稿保存为draft | confidence={confidence:.2f}")
 
             # 持久化到数据库
+            from src.services.skill_verification import validate_definition
+            validate_definition(draft)
+            if source_key:
+                return db.save_learning_draft(source_key, draft)
             db.save_skill_draft(draft.model_dump())
 
             logger.info(f"[LEARN:G2] 技能草稿已创建 | draft_id={draft.id}"
@@ -184,22 +195,18 @@ class LearningCycle:
             logger.warning(f"[LEARN:G3] 草稿不存在: {draft_id}")
             return None
 
+        from src.services.permission_service import permission_service
+        if permission_service.get_user_role(reviewer_id) != "admin":
+            raise PermissionError("Only administrators may review learning drafts")
         if approved:
-            db.update_skill_draft_status(draft_id, "approved", reviewer_id, comments)
-
-            # 通过 learned_skills_manager 创建正式技能
             from src.skills.learned_skills import learned_skills_manager
-            skill = learned_skills_manager.create_from_draft(reviewer_id, draft_id)
-            if skill:
-                logger.info(f"[LEARN:G3] ✅ 技能已批准并部署 | draft_id={draft_id}"
-                             f" | skill_id={skill.id} | skill_name={skill.name}")
-            else:
-                logger.error(f"[LEARN:G3] 技能创建失败 | draft_id={draft_id}")
+            skill = learned_skills_manager.create_from_draft(reviewer_id, draft_id, comments)
+            if skill is None:
                 return None
         else:
-            db.update_skill_draft_status(draft_id, "rejected", reviewer_id, comments)
-            logger.info(f"[LEARN:G3] ❌ 草稿已拒绝 | draft_id={draft_id}"
-                         f" | reviewer={reviewer_id} | comments={comments[:50]}")
+            if db.get_published_skill_id(draft_id):
+                raise ValueError("A published draft cannot be rejected retroactively")
+            db.reject_skill_draft(draft_id, reviewer_id, comments)
 
         # 返回更新后的草稿
         updated = db.get_skill_draft(draft_id)
@@ -343,6 +350,9 @@ class LearningCycle:
         from collections import Counter
         top_words = [w for w, _ in Counter(chinese_words).most_common(5) if len(w) >= 2]
         triggers.extend(top_words)
+        english_words = re.findall(r"[A-Za-z][A-Za-z0-9_-]{2,}", context.lower())
+        stop_words = {"the", "and", "for", "with", "this", "that", "from", "have", "was", "are"}
+        triggers.extend(word for word, _ in Counter(english_words).most_common(10) if word not in stop_words)
 
         # 去重，最多10个
         seen = set()

@@ -249,6 +249,8 @@ async def shutdown_event():
         pass
 
     feishu_websocket_service.stop()
+    from src.engine.checkpointer import close_checkpointer
+    await close_checkpointer()
     logger.info("Hermes Office Synergy Agent shutting down")
 
 

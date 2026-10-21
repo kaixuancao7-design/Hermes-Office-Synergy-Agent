@@ -8,6 +8,7 @@
   3. 关键词匹配 — 纯代码回退
      LangChain 不可用时的最后保障
 """
+from contextvars import ContextVar
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 from src.config import settings
@@ -30,13 +31,44 @@ class ReActEngine:
     """
 
     def __init__(self):
-        self.max_thinking_steps = 5
-        self.max_tool_calls = 3
+        self._last_trace_context = ContextVar(f"react_trace_{id(self)}", default=None)
+        self._tool_sequence_context = ContextVar(f"react_calls_{id(self)}", default=None)
+        self.max_thinking_steps = 8
+        self.max_tool_calls = 6
         self._langchain_available = None      # 延迟检测
         self._langgraph_available = None       # 延迟检测
         self.last_trace: Optional[ExecutionTrace] = None  # 最近一次执行轨迹
         logger.info("[INIT] ReActEngine 初始化完成 | max_steps=%d | max_tool_calls=%d",
                    self.max_thinking_steps, self.max_tool_calls)
+
+    @property
+    def last_trace(self):
+        return self._last_trace_context.get()
+
+    @last_trace.setter
+    def last_trace(self, value):
+        self._last_trace_context.set(value)
+
+    @property
+    def _trace_tool_sequence(self):
+        sequence = self._tool_sequence_context.get()
+        if sequence is None:
+            sequence = []
+            self._tool_sequence_context.set(sequence)
+        return sequence
+
+    @_trace_tool_sequence.setter
+    def _trace_tool_sequence(self, value):
+        self._tool_sequence_context.set(value)
+
+    async def run_with_trace(self, user_id, query, metadata=None):
+        response = await self.run(user_id, query, metadata)
+        trace = self.get_last_trace()
+        if trace is not None:
+            trace = trace.model_copy(deep=True)
+            from src.data.database import db
+            db.save_execution_trace(trace.model_dump())
+        return response, trace
 
     # ========================================================================
     # 公开入口 — 三层回退
@@ -51,6 +83,9 @@ class ReActEngine:
         start_time = datetime.now()
         trace_id = metadata.get("message_id", generate_id()) if metadata else generate_id()
         logger.info(f"[ReAct_START] 开始推理 | trace_id={trace_id} | user_id={user_id} | query={query[:50]}")
+
+        from src.tools.runtime import current_user
+        identity_token = current_user.set(user_id)
 
         # 初始化执行轨迹
         self.last_trace = None
@@ -112,6 +147,9 @@ class ReActEngine:
                 step_count=0, mode="manual_loop", created_at=get_timestamp(),
             )
             return f"处理请求时出现错误: {str(e)}"
+
+        finally:
+            current_user.reset(identity_token)
 
     # ========================================================================
     # 第1层：LangGraph create_react_agent
@@ -471,7 +509,7 @@ class ReActEngine:
 
         if llm_params:
             params = dict(llm_params)
-            params.setdefault("user_id", user_id)
+            params["user_id"] = user_id
             if metadata:
                 for key in ("message_id", "file_key", "file_name"):
                     if key in metadata and key not in params:
@@ -481,8 +519,7 @@ class ReActEngine:
 
         try:
             import asyncio
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, lambda: tool_executor.execute(tool_id, params))
+            result = await asyncio.to_thread(tool_executor.execute, tool_id, {**params, "user_id": user_id})
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
             if result.get("success"):
                 logger.info(f"[TOOL_SUCCESS] 工具执行成功 | tool={tool_id} | elapsed={elapsed_ms:.2f}ms")
@@ -554,14 +591,21 @@ class ReActEngine:
 
                     # 尝试匹配后续的 ToolMessage 来获取结果
                     result_text = None
-                    success = True
+                    success = False
                     # 在后续消息中查找对应的 ToolMessage
                     for later_msg in messages[messages.index(msg) + 1:]:
                         if getattr(later_msg, "type", "") == "tool":
                             later_tool_id = getattr(later_msg, "tool_call_id", "")
                             tc_id = tc.get("id", "") if isinstance(tc, dict) else getattr(tc, "id", "")
                             if later_tool_id == tc_id:
-                                result_text = getattr(later_msg, "content", str(later_msg))[:500]
+                                import json
+                                raw = getattr(later_msg, "content", "")
+                                try:
+                                    payload = json.loads(raw) if isinstance(raw, str) else raw
+                                    success = isinstance(payload, dict) and payload.get("success") is True and getattr(later_msg, "status", "success") != "error"
+                                except (ValueError, TypeError):
+                                    success = False
+                                result_text = str(raw)[:500]
                                 break
 
                     self._trace_tool_sequence.append(ToolCallRecord(

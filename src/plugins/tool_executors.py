@@ -6,6 +6,8 @@ from typing import Dict, Any, List, Optional
 from urllib.parse import unquote
 from datetime import datetime
 
+from src.tools.base import invoke_tool
+from src.tools.runtime import authorize_tool, parse_paths
 from src.plugins.base import ToolExecutorBase
 from src.config import settings
 from src.utils import generate_id, get_timestamp
@@ -75,7 +77,6 @@ class BasicToolExecutor(ToolExecutorBase):
         self.tools = {}
         self.tool_name_mapping = {
             "file_reader": "feishu_file_read",
-            "read_file": "feishu_file_read",
             "feishu_reader": "feishu_file_read"
         }
         self._feishu_client = None
@@ -124,25 +125,14 @@ class BasicToolExecutor(ToolExecutorBase):
     
     def _register_default_tools(self):
         """注册默认工具"""
-        tool_list = [
-            ("document_search", "文档搜索"),
-            ("memory_search", "记忆搜索"),
-            ("web_search", "网页搜索"),
-            ("code_execution", "代码执行"),
-            ("file_operations", "文件操作"),
-            ("feishu_file_read", "飞书文件读取"),
-            ("generate_ppt", "PPT生成")
-        ]
-        
-        for tool_id, tool_desc in tool_list:
-            try:
-                module = __import__('src.tools', fromlist=[tool_id])
-                tool_class = getattr(module, tool_id)
-                self.register_tool(tool_id, tool_class)
-                logger.debug(f"[TOOL_REGISTER] 注册工具 | id={tool_id} | desc={tool_desc}")
-            except (ImportError, AttributeError):
-                logger.debug(f"[TOOL_REGISTER] 工具 {tool_id} 注册失败，可能是动态注册")
-        
+        self.tools.update({
+            "document_search": DocumentSearchTool, "memory_search": MemorySearchTool,
+            "web_search": WebSearchTool, "code_execution": SandboxedCodeExecutionTool,
+            "file_operations": FileOperationsTool, "read_file": LocalReadTool,
+            "feishu_file_read": FeishuFileReadTool, "generate_ppt": GeneratePPT,
+        })
+        from src.tools.content_tools import GeneratePPTFromContent, GenerateOutline
+        self.tools.update(generate_ppt_from_content=GeneratePPTFromContent, generate_outline=GenerateOutline)
         self._register_ppt_tools()
 
     def _register_ppt_tools(self):
@@ -186,10 +176,8 @@ class BasicToolExecutor(ToolExecutorBase):
             
             # 获取工具类并创建实例
             tool_class = self.tools[tool_id]
-            tool_instance = tool_class(executor=self)
-            
-            # 执行工具
-            result = tool_instance.execute(parameters)
+            parameters = authorize_tool(tool_id, parameters)
+            result = invoke_tool(tool_class, parameters, self)
             
             # 计算执行时间
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
@@ -245,7 +233,7 @@ class SandboxedToolExecutor(ToolExecutorBase):
     
     def __init__(self):
         self.tools = {}
-        self.allowed_paths = settings.SANDBOX_ALLOWED_PATHS or []
+        self.allowed_paths = parse_paths(settings.SANDBOX_ALLOWED_PATHS)
         self.max_execution_time = settings.SANDBOX_MAX_EXECUTION_TIME or 30
         
         # 初始化飞书客户端
@@ -296,6 +284,10 @@ class SandboxedToolExecutor(ToolExecutorBase):
         self.register_tool("file_operations", SandboxedFileOperationsTool)
         self.register_tool("feishu_file_read", FeishuFileReadTool)
         self.register_tool("generate_ppt", GeneratePPT)
+        self.register_tool("read_file", LocalReadTool)
+        from src.tools.content_tools import GeneratePPTFromContent, GenerateOutline
+        self.register_tool("generate_ppt_from_content", GeneratePPTFromContent)
+        self.register_tool("generate_outline", GenerateOutline)
         self._register_ppt_tools()
 
     def _register_ppt_tools(self):
@@ -329,8 +321,8 @@ class SandboxedToolExecutor(ToolExecutorBase):
                 tool_params = {}
             
             # 创建工具实例（传入executor，以便工具可以访问客户端和存储）
-            tool_instance = self.tools[tool_id](executor=self)
-            result = tool_instance.execute(tool_params)
+            tool_params = authorize_tool(tool_id, tool_params)
+            result = invoke_tool(self.tools[tool_id], tool_params, self)
             return result
         except Exception as e:
             logger.error(f"执行工具 {tool_id} 失败: {str(e)}")
@@ -351,12 +343,8 @@ class SandboxedToolExecutor(ToolExecutorBase):
         if not file_path:
             return False
         
-        for allowed in self.allowed_paths:
-            if file_path.startswith(allowed):
-                return True
-        
-        return False
-    
+        return any(_path_within(file_path, allowed) for allowed in self.allowed_paths)
+
     def register_tool(self, tool_id: str, tool_class: Any) -> bool:
         """注册工具"""
         self.tools[tool_id] = tool_class
@@ -506,102 +494,26 @@ class WebSearchTool:
 
 
 class CodeExecutionTool:
-    """代码执行工具"""
-    
     def __init__(self, executor=None):
         self.executor = executor
-    
-    def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        code = parameters.get("code", "")
-        language = parameters.get("language", "python")
-        
-        try:
-            if language == "python":
-                import subprocess
-                import tempfile
-                import os
-                
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                    f.write(code)
-                    temp_path = f.name
-                
-                result = subprocess.run(
-                    ["python", temp_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                os.unlink(temp_path)
-                
-                return {
-                    "success": True,
-                    "result": {
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "return_code": result.returncode
-                    }
-                }
-            else:
-                return {"success": False, "error": f"不支持的语言: {language}"}
-        
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "执行超时"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+
+    def execute(self, parameters):
+        from src.tools.code_sandbox import execute_python
+        return execute_python(parameters, getattr(self.executor, "max_execution_time", 30))
 
 
-class SandboxedCodeExecutionTool:
-    """沙箱代码执行工具"""
-    
-    def __init__(self, executor: "SandboxedToolExecutor"):
+class SandboxedCodeExecutionTool(CodeExecutionTool):
+    pass
+
+
+class LocalReadTool:
+    def __init__(self, executor=None):
         self.executor = executor
-    
-    def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
-        code = parameters.get("code", "")
-        language = parameters.get("language", "python")
-        
-        # 安全检查：禁止危险操作
-        dangerous_patterns = ["import os", "import subprocess", "open(", "os.system", "__import__"]
-        for pattern in dangerous_patterns:
-            if pattern in code:
-                return {"success": False, "error": "禁止执行危险操作"}
-        
-        try:
-            if language == "python":
-                # 限制执行时间
-                import subprocess
-                import tempfile
-                import os
-                
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                    f.write(code)
-                    temp_path = f.name
-                
-                result = subprocess.run(
-                    ["python", temp_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=self.executor.max_execution_time
-                )
-                
-                os.unlink(temp_path)
-                
-                return {
-                    "success": True,
-                    "result": {
-                        "stdout": result.stdout,
-                        "stderr": result.stderr,
-                        "return_code": result.returncode
-                    }
-                }
-            else:
-                return {"success": False, "error": f"不支持的语言: {language}"}
-        
-        except subprocess.TimeoutExpired:
-            return {"success": False, "error": "执行超时"}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
+
+    def execute(self, parameters):
+        params = {**parameters, "operation": "read"}
+        tool = SandboxedFileOperationsTool(self.executor) if hasattr(self.executor, "allowed_paths") else FileOperationsTool()
+        return tool.execute(params)
 
 
 class FileOperationsTool:
@@ -617,12 +529,7 @@ class FileOperationsTool:
         """检查路径是否在允许的目录范围内"""
         if not file_path:
             return False
-        import os as _os
-        abs_path = _os.path.abspath(file_path)
-        for allowed in self._ALLOWED_DIRS:
-            if abs_path.startswith(_os.path.abspath(allowed)):
-                return True
-        return False
+        return any(_path_within(file_path, allowed) for allowed in self._ALLOWED_DIRS)
 
     def execute(self, parameters: Dict[str, Any]) -> Dict[str, Any]:
         operation = parameters.get("operation", "")
@@ -1468,3 +1375,12 @@ TOOL_EXECUTOR_REGISTRY = {
     "basic": BasicToolExecutor,
     "sandboxed": SandboxedToolExecutor
 }
+
+
+def _path_within(path: str, root: str) -> bool:
+    from pathlib import Path
+    try:
+        Path(path).resolve().relative_to(Path(root).resolve())
+        return True
+    except (ValueError, OSError, RuntimeError):
+        return False

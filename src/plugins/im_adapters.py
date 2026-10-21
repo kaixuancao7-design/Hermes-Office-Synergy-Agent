@@ -19,6 +19,7 @@ class FeishuAdapter(IMAdapterBase):
     """飞书IM适配器"""
     
     def __init__(self):
+        self.main_loop = None
         self.processing_message_ids = set()
         self.last_message_time = {}
         self.MESSAGE_INTERVAL = 1
@@ -70,7 +71,8 @@ class FeishuAdapter(IMAdapterBase):
                 auto_reconnect=True
             )
             
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
+            self.main_loop = loop
             await loop.run_in_executor(None, self.ws_client.start)
             self.is_running = True
             logger.info("飞书适配器启动成功")
@@ -240,13 +242,17 @@ class FeishuAdapter(IMAdapterBase):
             event_type = event_data.get('header', {}).get('event_type', '')
             
             if event_type == 'im.message.receive_v1':
-                asyncio.create_task(self._handle_message_event(event_data))
+                if self.main_loop is None or not self.main_loop.is_running():
+                    raise RuntimeError("Feishu service event loop is unavailable")
+                self.main_loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(self._handle_message_event(event_data)))
         except Exception as e:
             logger.error(f"飞书事件处理失败: {str(e)}")
         
         return None
     
     async def _handle_message_event(self, event_data: Dict):
+        message = {}
         try:
             message = event_data.get('event', {}).get('message', {})
             sender = event_data.get('event', {}).get('sender', {})
@@ -266,14 +272,7 @@ class FeishuAdapter(IMAdapterBase):
                 return
             
             user_id = sender.get('sender_id', {}).get('user_id', 'unknown')
-            
-            current_time = time.time()
-            last_time = self.last_message_time.get(user_id, 0)
-            if current_time - last_time < self.MESSAGE_INTERVAL:
-                return
-            self.last_message_time[user_id] = current_time
-            
-            db.mark_message_processed(message_id, user_id, source="feishu")
+
             self.processing_message_ids.add(message_id)
             
             content = message.get('content', '{}')
@@ -293,6 +292,17 @@ class FeishuAdapter(IMAdapterBase):
     
     async def _process_message_async(self, message_id: str, user_id: str, content: str, chat_type: str, msg_type: str = '', attachments: List[Dict] = None):
         try:
+            current_time = time.monotonic()
+            scheduled = max(current_time, self.last_message_time.get(user_id, 0) + self.MESSAGE_INTERVAL)
+            self.last_message_time[user_id] = scheduled
+            await asyncio.sleep(scheduled - current_time)
+
+            cached_response = db.get_pending_message_response(message_id)
+            if cached_response is not None:
+                if await self.send_message(user_id, cached_response):
+                    db.mark_message_processed(message_id, user_id, source="feishu")
+                return
+
             from src.gateway.message_router import message_router
             from src.types import Message
             from src.data.vector_store import rag_manager
@@ -376,8 +386,12 @@ class FeishuAdapter(IMAdapterBase):
                 }
             )
             
-            response = await message_router.route(msg)
-            await self.send_message(user_id, response)
+            response = db.get_pending_message_response(message_id)
+            if response is None:
+                response = await message_router.route(msg)
+                db.save_pending_message_response(message_id, response)
+            if await self.send_message(user_id, response):
+                db.mark_message_processed(message_id, user_id, source="feishu")
         except Exception as e:
             logger.error(f"异步消息处理失败: {str(e)}")
         finally:

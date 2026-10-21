@@ -83,10 +83,15 @@ class PPTGeneratorBase:
             
             # 生成输出路径
             if not output_path:
-                output_path = f"{self.output_dir}/{generate_id()[:8]}_{title[:20]}.pptx"
+                import re
+                safe_title = re.sub(r'[<>:"/\\|?*]', "_", title[:20])
+                output_path = f"{self.output_dir}/{generate_id()[:8]}_{safe_title}.pptx"
             
             # 确保目录存在
             import os
+            from src.tools.runtime import within
+            if not within(output_path, ["output"]):
+                raise PermissionError("PPT output must remain inside output directory")
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
             
             # 保存文件

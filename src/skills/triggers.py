@@ -26,6 +26,13 @@ class TriggerMatcher:
     def __init__(self):
         pass
 
+    @staticmethod
+    def _can_execute(user_id, skill_id):
+        from src.services.permission_service import permission_service
+        skill = db.get_skill(skill_id)
+        return bool(skill and (skill.created_by == user_id or
+                    permission_service.check_skill_permission(user_id, skill_id, "execute").allowed))
+
     # =========================================================================
     # Tier 1: 轻量级匹配（仅使用 SkillSummary）
     # =========================================================================
@@ -55,6 +62,8 @@ class TriggerMatcher:
         best_score = 0.0
 
         for summary in summaries:
+            if user_id and not self._can_execute(user_id, summary.id):
+                continue
             score = self._calculate_summary_score(summary, query_lower)
 
             if score > best_score and score >= 0.3:
@@ -66,13 +75,6 @@ class TriggerMatcher:
                 f"[T1_MATCH] 找到相关技能: {best_match.name}, "
                 f"匹配度: {best_score:.2f}, type={best_match.type}"
             )
-
-            # 记录 learned 技能的使用（为 Curator 评分提供数据）
-            if best_match.type == "learned":
-                try:
-                    db.record_skill_usage(best_match.id, user_id or "unknown")
-                except Exception:
-                    pass
 
         return best_match
 
@@ -102,6 +104,8 @@ class TriggerMatcher:
         near_misses: List[Tuple[SkillSummary, float]] = []
 
         for summary in summaries:
+            if user_id and not self._can_execute(user_id, summary.id):
+                continue
             score = self._calculate_summary_score(summary, query_lower)
 
             if score >= 0.5 and score > best_score:
@@ -119,12 +123,6 @@ class TriggerMatcher:
                 f"[T1_MATCH] 找到最佳匹配: {best_match.name} "
                 f"(score={best_score:.2f}), near_misses={len(near_misses)}"
             )
-            if best_match.type == "learned":
-                try:
-                    db.record_skill_usage(best_match.id, user_id or "unknown")
-                except Exception:
-                    pass
-
         return best_match, near_misses
 
     def _calculate_summary_score(
@@ -179,6 +177,8 @@ class TriggerMatcher:
             完整 Skill 对象，或 None（如果技能不存在）
         """
         skill = db.get_skill(skill_id)
+        if skill and (skill.metadata.get("archived") or skill.metadata.get("quarantined")):
+            return None
         if skill:
             logger.debug(f"[T2_LOAD] Loaded full skill: {skill.name} ({len(skill.steps)} steps)")
         else:

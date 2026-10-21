@@ -162,8 +162,6 @@ class MessageRouter:
                                 f"{footer}"
                             )
 
-                            # 记录技能使用（供 Curator 评分）
-                            db.record_skill_usage(full_skill.id, user_id)
                             # 保存响应和日志
                             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
                             log_event(logger, "message_processed", trace_id=trace_id,
@@ -205,9 +203,6 @@ class MessageRouter:
 
             if use_react:
                 response = await self._handle_with_react(user_id, message.content, message.metadata)
-                # 异步检查是否需要从执行轨迹自动生成技能
-                import asyncio
-                asyncio.create_task(self._auto_generate_skill_if_complex(user_id))
             else:
                 response = await self._handle_intent(user_id, intent, message.content, message.metadata)
 
@@ -495,8 +490,6 @@ class MessageRouter:
                             summary, context.lower()
                         ),
                     )
-                    # 记录技能使用
-                    db.record_skill_usage(full_skill.id, user_id)
                     return result.response
                 except Exception as e:
                     logger.error(
@@ -811,11 +804,10 @@ class MessageRouter:
         """显式捕获用户纠正（API调用入口）"""
         learning_cycle.capture_correction(user_id, original, corrected, context)
 
-    async def _auto_generate_skill_if_complex(self, user_id: str) -> None:
+    async def _auto_generate_skill_if_complex(self, user_id: str, trace) -> None:
         """检查最近一次 ReAct 执行轨迹，如果足够复杂则自动生成技能"""
         try:
-            trace = react_engine.get_last_trace()
-            if not trace:
+            if not trace or trace.user_id != user_id:
                 return
 
             from src.engine.skill_generator import skill_auto_generator
@@ -833,10 +825,10 @@ class MessageRouter:
         try:
             from src.engine.skill_patcher import skill_auto_patcher
 
-            related = await skill_auto_patcher.find_related_skill(context)
+            related = await skill_auto_patcher.find_related_skill(context, user_id)
             if related:
                 logger.info(f"[AUTO_PATCH] Correction relates to skill: {related.name}")
-                await skill_auto_patcher.patch_skill(related, original, corrected, context)
+                await skill_auto_patcher.patch_skill(related, original, corrected, context, user_id)
         except Exception as e:
             logger.warning(f"[AUTO_PATCH] Auto-patch check failed: {e}")
     
@@ -868,11 +860,15 @@ class MessageRouter:
             logger.debug(f"_handle_with_react - user_id={user_id}, query={query[:100]}..., metadata={metadata}")
             if metadata and "message_id" not in metadata:
                 logger.warning(f"元数据中缺少 message_id: {metadata}")
-            return await react_engine.run(user_id, query, metadata=metadata)
+            response, trace = await react_engine.run_with_trace(user_id, query, metadata=metadata)
+            if trace:
+                import asyncio
+                asyncio.create_task(self._auto_generate_skill_if_complex(user_id, trace))
+            return response
         except Exception as e:
             logger.error(f"ReAct engine failed: {str(e)}")
             # 降级到普通处理
-            return self._handle_unknown(user_id, query)
+            return await self._handle_unknown(user_id, query)
 
 
 message_router = MessageRouter()

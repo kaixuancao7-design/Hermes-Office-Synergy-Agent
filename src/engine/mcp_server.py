@@ -12,6 +12,19 @@ except ImportError:
 
 logger = logging.getLogger("mcp_server")
 
+async def _execute_guarded(tool_id, parameters):
+    import asyncio
+    from src.tools.runtime import current_user
+    user_id = current_user.get()
+    if not user_id:
+        return {"success": False, "error": "MCP tool requires a server-authenticated user identity"}
+    from src.plugins import get_tool_executor
+    executor = get_tool_executor()
+    if executor is None:
+        return {"success": False, "error": "Tool executor is unavailable"}
+    return await asyncio.to_thread(executor.execute, tool_id, {**parameters, "user_id": user_id})
+
+
 if HAS_MCP_SDK:
     mcp = FastMCP("HermesAgent")
 
@@ -112,38 +125,7 @@ if HAS_MCP_SDK:
     ) -> Dict[str, Any]:
         """代码执行工具"""
 
-        try:
-            if language == "python":
-                import subprocess
-                import tempfile
-
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-                    f.write(code)
-                    temp_path = f.name
-
-                result = subprocess.run(
-                    ["python", temp_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-
-                os.unlink(temp_path)
-
-                return {
-                    "success": result.returncode == 0,
-                    "stdout": result.stdout,
-                    "stderr": result.stderr,
-                    "returncode": result.returncode
-                }
-            else:
-                return {
-                    "success": False,
-                    "error": f"不支持的语言: {language}"
-                }
-        except Exception as e:
-            logger.error(f"代码执行失败: {str(e)}")
-            return {"success": False, "error": str(e)}
+        return await _execute_guarded("code_execution", {"code": code, "language": language})
 
 
     @mcp.tool()
@@ -154,41 +136,8 @@ if HAS_MCP_SDK:
     ) -> Dict[str, Any]:
         """文件操作工具"""
 
-        try:
-            if operation == "read":
-                if not os.path.exists(file_path):
-                    return {"success": False, "error": f"文件不存在: {file_path}"}
-
-                with open(file_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
-
-                return {"success": True, "content": content}
-
-            elif operation == "write":
-                os.makedirs(os.path.dirname(file_path), exist_ok=True)
-
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(content or "")
-
-                return {"success": True, "file_path": file_path}
-
-            elif operation == "delete":
-                if os.path.exists(file_path):
-                    os.unlink(file_path)
-                return {"success": True}
-
-            elif operation == "list":
-                if os.path.isdir(file_path):
-                    files = os.listdir(file_path)
-                    return {"success": True, "files": files}
-                return {"success": False, "error": "不是有效的目录"}
-
-            else:
-                return {"success": False, "error": f"不支持的操作: {operation}"}
-
-        except Exception as e:
-            logger.error(f"文件操作失败: {str(e)}")
-            return {"success": False, "error": str(e)}
+        return await _execute_guarded("file_operations", {
+            "operation": operation, "path": file_path, "content": content or ""})
 
 
     @mcp.tool()

@@ -22,7 +22,8 @@ class UrlReaderTool(BaseTool):
     description = "用于获取网页或文档的内容。支持GET和POST请求，可以设置自定义请求头和请求数据。适用于访问公开可访问的网页、文档API等。"
     schema = UrlReaderParams
     
-    def __init__(self):
+    def __init__(self, executor=None):
+        super().__init__(executor)
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

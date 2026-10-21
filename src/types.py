@@ -1,5 +1,5 @@
 from typing import Optional, List, Dict, Any, Literal
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 
 
@@ -25,6 +25,7 @@ class Message(BaseModel):
 class SkillStep(BaseModel):
     id: str
     action: str
+    description: str = ""
     # 步骤类型：tool=工具调用, llm=LLM语义动作。None=未标注，由执行器推断（向后兼容旧技能）
     type: Optional[Literal["tool", "llm"]] = None
     parameters: Dict[str, Any]
@@ -316,7 +317,7 @@ class ExecutionTrace(BaseModel):
     tool_sequence: List[ToolCallRecord] = []
     final_response: str = ""
     step_count: int = 0
-    mode: Literal["langgraph", "manual_loop", "direct"] = "manual_loop"
+    mode: Literal["langgraph", "manual_loop", "direct", "skill_driven"] = "manual_loop"
     created_at: int = 0
 
 
@@ -353,6 +354,7 @@ class IMAdapterConfig(BaseModel):
 
 
 class SkillDraft(BaseModel):
+    metadata: Dict[str, Any] = Field(default_factory=dict)
     """技能草稿"""
     id: str
     skill_name: str

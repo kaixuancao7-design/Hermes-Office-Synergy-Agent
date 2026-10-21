@@ -37,15 +37,9 @@ class GenerateOutline(BaseTool):
             return "Error: content is required"
         
         try:
-            from src.plugins.model_routers import select_model, call_model
-            
-            model = select_model("summarization", "complex")
-            if not model:
-                model = select_model("document_analysis", "complex")
-            
-            if not model:
-                return "Error: No suitable model available for outline generation"
-            
+            from src.plugins.model_routers import call_model
+            from src.tools.runtime import run_sync
+
             prompt = f"""根据以下文档内容，生成一个结构化的PPT大纲：
 
 文档内容：
@@ -65,7 +59,9 @@ PPT标题：{title}
   {{"title": "章节2标题", "content": ["要点1", "要点2"]}}
 ]
 """
-            result = call_model(model, [{"role": "user", "content": prompt}])
+            result = run_sync(call_model(prompt))
+            if result.strip().startswith("```"):
+                result = result.strip().split("\n", 1)[1].rsplit("```", 1)[0]
             
             import json
             try:
@@ -80,7 +76,7 @@ PPT标题：{title}
                 
         except Exception as e:
             logger.error(f"Outline generation failed: {str(e)}")
-            return f"大纲生成失败: {str(e)}"
+            return f"Error: Outline generation failed: {e}"
 
 
 @register_tool("generate_ppt_from_content")
@@ -121,16 +117,16 @@ class GeneratePPTFromContent(BaseTool):
             
             if not content:
                 logger.info(f"本地存储未找到，尝试从飞书下载: {file_key}")
-                from src.plugins.im_adapters import FeishuAdapter
-                feishu_adapter = FeishuAdapter()
-                try:
-                    content = feishu_adapter.read_file(file_key)
-                    if not content:
-                        return "Error: Failed to read file content"
-                    logger.info(f"从飞书下载文件成功，内容长度: {len(content)}")
-                except Exception as e:
-                    logger.error(f"从飞书读取文件失败: {str(e)}")
-                    return f"Error: Failed to read file: {str(e)}"
+                from src.plugins import get_tool_executor
+                executor = self.executor or get_tool_executor()
+                if executor is None:
+                    return "Error: Tool executor unavailable"
+                result = executor.execute("feishu_file_read", {**params, "user_id": user_id})
+                if not result.get("success"):
+                    return "Error: Failed to read file content"
+                content = result.get("result", "")
+                if isinstance(content, dict):
+                    content = content.get("content", "")
             else:
                 logger.info(f"从本地存储获取文件内容成功，内容长度: {len(content)}")
         
@@ -163,4 +159,4 @@ class GeneratePPTFromContent(BaseTool):
             
         except Exception as e:
             logger.error(f"Generate PPT from content failed: {str(e)}")
-            return f"根据内容生成PPT失败: {str(e)}"
+            return f"Error: PPT generation failed: {e}"

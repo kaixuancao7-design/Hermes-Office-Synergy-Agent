@@ -9,6 +9,7 @@
 """
 
 import os
+import json
 import re
 from typing import Dict, Any, Optional, List
 from src.logging_config import get_logger
@@ -40,6 +41,7 @@ class SkillMarkdownManager:
 
         lines = [
             "---",
+            f"id: {skill.id}",
             f"name: {skill.name}",
             f"description: {skill.description or ''}",
             f"version: {skill.version or '1.0.0'}",
@@ -79,6 +81,7 @@ class SkillMarkdownManager:
                 lines.append(f"- **Next Step**: {step.next_step_id}")
             lines.append("")
 
+        lines.extend(["## Skill Data", "", "```json", json.dumps(skill.model_dump(), ensure_ascii=False, indent=2), "```", ""])
         return "\n".join(lines)
 
     # ========================================================================
@@ -90,6 +93,10 @@ class SkillMarkdownManager:
         from src.types import Skill, SkillStep
         from src.utils import generate_id, get_timestamp
 
+        structured = re.search(r"^## Skill Data\s*\n\s*```json\s*\n(.*?)\n```", content, re.MULTILINE | re.DOTALL)
+        if structured:
+            return Skill.model_validate(json.loads(structured.group(1)))
+
         # 1. 解析 YAML frontmatter
         frontmatter = self._parse_frontmatter(content)
         if not frontmatter:
@@ -99,7 +106,7 @@ class SkillMarkdownManager:
         steps = self._parse_steps(content)
 
         return Skill(
-            id=frontmatter.get("id", generate_id()),
+            id=frontmatter.get("id") or __import__("uuid").uuid5(__import__("uuid").NAMESPACE_URL, "hermes-skill:" + frontmatter.get("name", "unnamed")).hex,
             name=frontmatter.get("name", "unnamed-skill"),
             description=frontmatter.get("description", ""),
             type=frontmatter.get("type", "learned"),
@@ -163,6 +170,18 @@ class SkillMarkdownManager:
                 filepath = os.path.join(self.base_dir, filename)
                 skill = self.read_skill_md(filepath)
                 if skill:
+                    if skill.type == "learned":
+                        from src.data.database import db
+                        draft_id = skill.metadata.get("draft_id")
+                        draft = db.get_skill_draft(draft_id) if draft_id else None
+                        if not draft or draft["status"] != "approved" or db.get_published_skill_id(draft_id) != skill.id:
+                            logger.warning(f"[SKILL_MD] Quarantined unverified learned file: {filepath}")
+                            continue
+                        # Disk content is never allowed to alter the reviewed DB definition.
+                        reviewed = db.get_skill(skill.id)
+                        if reviewed is None or reviewed.model_dump() != skill.model_dump():
+                            logger.warning(f"[SKILL_MD] Quarantined modified learned file: {filepath}")
+                            continue
                     skills.append(skill)
 
         logger.info(f"[SKILL_MD] Synced {len(skills)} skills from {self.base_dir}")
@@ -307,9 +326,19 @@ class SkillMarkdownManager:
                 step_type = None
 
             # 提取 Parameters
-            param_matches = re.findall(r'`(\w+)`:\s*(.+)', block)
-            for key, val in param_matches:
-                parameters[key] = val.strip()
+            import ast
+            param_matches = list(re.finditer(r"^  - `(\w+)`:[ \t]*(.*)$", block, re.MULTILINE))
+            for number, match in enumerate(param_matches):
+                end = param_matches[number+1].start() if number+1 < len(param_matches) else len(block)
+                continuation = block[match.end():end].split("\n- **", 1)[0].rstrip()
+                raw = match.group(2) + continuation
+                try:
+                    parameters[match.group(1)] = json.loads(raw)
+                except (ValueError, TypeError):
+                    try:
+                        parameters[match.group(1)] = ast.literal_eval(raw)
+                    except (ValueError, SyntaxError):
+                        parameters[match.group(1)] = raw
 
             # 提取 Condition
             cond_match = re.search(r'\*\*Condition\*\*:\s*(.+)', block)

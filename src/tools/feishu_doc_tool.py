@@ -23,7 +23,8 @@ class FeishuDocTool(BaseTool):
     description = "用于访问飞书文档内容。支持获取飞书文档、表格、幻灯片等内容。需要提供文档URL或文档ID。"
     schema = FeishuDocParams
     
-    def __init__(self):
+    def __init__(self, executor=None):
+        super().__init__(executor)
         self.app_id = settings.FEISHU_APP_ID
         self.app_secret = settings.FEISHU_APP_SECRET
         self.access_token = None

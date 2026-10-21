@@ -1,63 +1,59 @@
-"""学习技能管理器"""
-from typing import List, Dict, Any, Optional
-from src.types import Skill, SkillStep
+"""Reviewed, idempotent publication of new skills and patch proposals."""
+from typing import Optional
+from uuid import uuid5, NAMESPACE_URL
+from src.types import Skill, SkillDraft
 from src.data.database import db
-from src.utils import generate_id, get_timestamp
+from src.utils import get_timestamp
 from src.logging_config import get_logger
 
 logger = get_logger("skill")
 
 
 class LearnedSkillsManager:
-    """学习生成技能管理器"""
-    
-    def __init__(self):
-        pass
-    
-    def create_from_draft(self, user_id: str, draft_id: str) -> Optional[Skill]:
-        """从草稿创建学习生成的技能"""
-        try:
-            # 简化实现：实际应该从数据库获取草稿
-            draft = self._get_draft(draft_id)
-            
-            if not draft:
-                return None
-            
-            skill = Skill(
-                id=generate_id(),
-                name=draft.get('name', '未命名技能'),
-                description=draft.get('description', ''),
-                type='learned',
-                trigger_patterns=draft.get('trigger_patterns', []),
-                steps=[SkillStep(**s) for s in draft.get('steps', [])],
-                metadata=draft.get('metadata', {}),
-                created_at=get_timestamp(),
-                updated_at=get_timestamp(),
-                created_by=user_id,
-                version='1.0.0'
-            )
-            
-            db.save_skill(skill)
-
-            # 写入 SKILL.md 文件（agentskills.io 兼容格式）
-            try:
-                from src.skills.skill_md import skill_md_manager
-                skill_md_manager.write_skill_md(skill)
-            except Exception as e:
-                logger.warning(f"SKILL.md 写入失败: {e}")
-
-            logger.info(f"从草稿创建学习技能: {skill.name}")
-
-            return skill
-        
-        except Exception as e:
-            logger.error(f"创建学习技能失败: {str(e)}")
+    def create_from_draft(self, user_id: str, draft_id: str, comments: str = "") -> Optional[Skill]:
+        from src.services.permission_service import permission_service
+        from src.services.skill_verification import validate_definition
+        if permission_service.get_user_role(user_id) != "admin":
+            raise PermissionError("Only administrators may approve learning drafts")
+        existing = db.get_published_skill_id(draft_id)
+        if existing:
+            return db.get_skill(existing)
+        raw = self._get_draft(draft_id)
+        if not raw or raw["status"] == "rejected":
             return None
-    
-    def _get_draft(self, draft_id: str) -> Optional[Dict[str, Any]]:
-        """从数据库获取技能草稿"""
+        draft = SkillDraft.model_validate(raw)
+        validate_definition(draft)
+        metadata = dict(draft.metadata)
+        target = metadata.get("target_skill_id")
+        base_version = metadata.get("base_version")
+        if target:
+            original = db.get_skill(target)
+            if not original or not base_version or original.version != base_version:
+                raise ValueError("Stale patch proposal")
+            parts = original.version.split(".")
+            version = f"{parts[0]}.{parts[1]}.{int(parts[2])+1}"
+            values = original.model_dump()
+            values.update(steps=draft.steps, trigger_patterns=draft.trigger_patterns, version=version,
+                updated_at=get_timestamp(), metadata={**original.metadata, "draft_id": draft_id, "reviewed_by": user_id})
+            skill = Skill.model_validate(values)
+        else:
+            skill = Skill(id=uuid5(NAMESPACE_URL, "hermes-published:" + draft_id).hex,
+                name=draft.skill_name, description=draft.description, type="learned",
+                trigger_patterns=draft.trigger_patterns, steps=draft.steps,
+                metadata={**metadata, "draft_id": draft_id, "reviewed_by": user_id},
+                created_at=get_timestamp(), updated_at=get_timestamp(), created_by=draft.user_id, version="1.0.0")
+        published = db.publish_skill_draft(draft_id, user_id, comments, skill, base_version if target else None)
+        skill = db.get_skill(published)
+        # The DB is authoritative. Export failure cannot undo or duplicate publication.
+        try:
+            from src.skills.skill_md import skill_md_manager
+            skill_md_manager.write_skill_md(skill)
+        except Exception as exc:
+            logger.warning(f"Reviewed skill export failed: {exc}")
+        return skill
+
+    def _get_draft(self, draft_id):
         return db.get_skill_draft(draft_id)
 
 
-# 全局实例
 learned_skills_manager = LearnedSkillsManager()

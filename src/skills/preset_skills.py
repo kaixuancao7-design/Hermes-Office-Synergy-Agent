@@ -67,7 +67,7 @@ class PresetSkillsManager:
           E. 任务与项目 (1):   周报生成
           F. 演示与展示 (1):   PPT生成
         """
-        return [
+        definitions = [
             # ===== A. 文档与内容处理 =====
             {
                 'id': 'summarize-document',
@@ -847,6 +847,24 @@ class PresetSkillsManager:
                 ],
             },
         ]
+        for skill in definitions:
+            for step in skill["steps"]:
+                if step["action"] == "code_execution":
+                    # The model supplies complete, self-contained code using the actual input data.
+                    step["parameters"].pop("code", None)
+                    step["parameters"]["instruction"] += " Code must include input data inline; save artifacts to /output."
+                if skill["id"] == "chart-generation" and step["id"] == "save-deliver":
+                    step["action"] = "summarize"
+                    step["type"] = "llm"
+                if skill["id"] == "ppt-generate":
+                    bindings = {
+                        "generate-content": {"outline": "${generate-outline.outline}", "template_id": "${match-template.templates.0.id}"},
+                        "generate-pptx": {"slides": "${generate-content.slides}"},
+                        "quality-check": {"file_path": "${generate-pptx.file_path}"},
+                    }
+                    step["parameters"].update(bindings.get(step["id"], {}))
+        return definitions
+
 
     # =========================================================================
     # 查询与统计

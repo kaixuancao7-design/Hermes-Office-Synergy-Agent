@@ -9,7 +9,7 @@ logger = get_logger("tool.file")
 
 class ReadFileSchema(ToolSchema):
     """读取文件工具参数Schema"""
-    path: str = Field(description="文件路径", default="")
+    path: str = Field(description="文件路径")
 
 
 class FeishuFileReadSchema(ToolSchema):
@@ -32,9 +32,8 @@ class ReadFile(BaseTool):
             return "Error: path is required"
         
         try:
-            from src.infrastructure.sandbox import sandbox
-            content = sandbox.read_file(file_path)
-            return content if content else "Failed to read file"
+            from src.plugins.tool_executors import LocalReadTool
+            return LocalReadTool(self.executor).execute(params)
         except Exception as e:
             logger.error(f"Read file failed: {str(e)}")
             return f"Error reading file: {str(e)}"

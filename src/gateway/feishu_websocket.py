@@ -22,6 +22,7 @@ class FeishuEventHandler:
     """飞书事件处理器"""
     
     def __init__(self):
+        self.main_loop = None
         self.processing_message_ids = set()  # 正在处理中的消息ID（内存中，用于防止并发）
         self.last_message_time = {}  # 每个用户的最后消息时间
         self.MESSAGE_INTERVAL = 1  # 同一用户消息最小间隔（秒）
@@ -47,7 +48,9 @@ class FeishuEventHandler:
             logger.debug(f"[EVENT_RECEIVE] 收到事件 | event_type={event_type} | event_id={event_id} | payload_len={payload_len}")
             
             if event_type == 'im.message.receive_v1':
-                self._handle_message_event(event_data)
+                if self.main_loop is None or not self.main_loop.is_running():
+                    raise RuntimeError("Feishu service event loop is unavailable")
+                self.main_loop.call_soon_threadsafe(self._handle_message_event, event_data)
             elif event_type:
                 logger.debug(f"[EVENT_IGNORE] 忽略未知事件类型 | event_type={event_type}")
             
@@ -68,6 +71,7 @@ class FeishuEventHandler:
     
     def _handle_message_event(self, event_data: Dict):
         """处理消息事件 - 使用异步模式避免飞书重试"""
+        message = {}
         try:
             message = event_data.get('event', {}).get('message', {})
             sender = event_data.get('event', {}).get('sender', {})
@@ -97,17 +101,7 @@ class FeishuEventHandler:
             # 5. 获取用户ID
             user_id = sender.get('sender_id', {}).get('user_id', 'unknown')
             
-            # 6. 检查用户消息频率（防止刷屏）
-            current_time = time.time()
-            last_time = self.last_message_time.get(user_id, 0)
-            if current_time - last_time < self.MESSAGE_INTERVAL:
-                logger.warning(f"[MESSAGE_RATE_LIMIT] 用户消息过于频繁 | user_id={user_id} | interval={current_time - last_time:.2f}s")
-                return
-            self.last_message_time[user_id] = current_time
-            
-            # 7. 立即标记消息为已处理（写入数据库）
-            db.mark_message_processed(message_id, user_id, source="feishu")
-            
+            # 频率限制在异步处理函数中等待，不丢弃已接收消息。
             # 8. 标记消息为处理中（内存中，用于并发控制）
             self.processing_message_ids.add(message_id)
             
@@ -145,6 +139,11 @@ class FeishuEventHandler:
         start_time = datetime.now()
         
         try:
+            current_time = time.monotonic()
+            scheduled = max(current_time, self.last_message_time.get(user_id, 0) + self.MESSAGE_INTERVAL)
+            self.last_message_time[user_id] = scheduled
+            await asyncio.sleep(scheduled - current_time)
+
             # 解析内容
             try:
                 content_json = json.loads(content)
@@ -191,14 +190,19 @@ class FeishuEventHandler:
             )
             
             # 使用消息路由处理
-            response = await message_router.route(msg)
+            response = db.get_pending_message_response(message_id)
+            if response is None:
+                response = await message_router.route(msg)
+                db.save_pending_message_response(message_id, response)
             
             response_preview = safe_log_string(response[:50]) if response else ""
             logger.info(f"[MESSAGE_RESPONSE] 生成响应 | message_id={message_id} | response={response_preview}")
             
             # 发送回复
-            send_result = FeishuWebSocketService._send_message_static(user_id, response)
+            send_result = await asyncio.to_thread(
+                FeishuWebSocketService._send_message_static, user_id, response)
             if send_result:
+                db.mark_message_processed(message_id, user_id, source="feishu")
                 logger.debug(f"[MESSAGE_SEND] 消息发送成功 | user_id={user_id}")
             else:
                 logger.warning(f"[MESSAGE_SEND] 消息发送失败 | user_id={user_id}")
@@ -230,10 +234,6 @@ class FeishuEventHandler:
             
             elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
             logger.info(f"[REQUEST_END] 消息处理完成 | message_id={message_id} | elapsed={elapsed_ms:.2f}ms")
-            
-            # 限制处理中消息ID的数量（内存保护）
-            if len(self.processing_message_ids) > 100:
-                self.processing_message_ids = set(list(self.processing_message_ids)[-50:])
 
 
 class FeishuWebSocketService:
@@ -318,6 +318,7 @@ class FeishuWebSocketService:
     
     async def start(self):
         """启动 WebSocket 服务"""
+        self.event_handler.main_loop = asyncio.get_running_loop()
         if not self.initialize():
             return False
             

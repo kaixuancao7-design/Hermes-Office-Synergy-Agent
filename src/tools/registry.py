@@ -77,20 +77,14 @@ def execute_tool(name: str, params: Dict[str, Any]) -> Any:
     Returns:
         执行结果
     """
-    tool = get_tool(name)
-    if not tool:
-        return f"Unknown tool: {name}"
-    
+    from src.tools.base import invoke_tool
+    if name not in _tool_registry:
+        return {"success": False, "error": f"Unknown tool: {name}"}
     try:
-        # 参数校验
-        if not tool.validate_params(params):
-            return f"参数校验失败: {name}"
-        
-        # 执行工具
-        return tool.execute(params)
-    except Exception as e:
-        logger.error(f"工具执行失败 [{name}]: {str(e)}")
-        return f"Error executing {name}: {str(e)}"
+        from src.tools.runtime import authorize_tool
+        return invoke_tool(_tool_registry[name], authorize_tool(name, params))
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
 
 def clear_registry():

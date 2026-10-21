@@ -169,6 +169,27 @@ class SkillManager:
         )
         return migrated_skills, migrated_steps
 
+    def update_skill(self, user_id, skill_id, updates):
+        original = self.get_skill(skill_id)
+        if original is None:
+            return None
+        if not permission_service.check_skill_permission(user_id, skill_id, "edit").allowed:
+            raise PermissionError("没有编辑技能的权限")
+        allowed = {"name", "description", "steps", "trigger_patterns", "metadata"}
+        if not updates or set(updates) - allowed:
+            raise ValueError("Unsupported or empty skill updates")
+        updated = Skill.model_validate({**original.model_dump(), **updates,
+            "version": self._increment_version(original.version), "updated_at": get_timestamp()})
+        ids = [step.id for step in updated.steps]
+        if len(ids) != len(set(ids)) or any(s.next_step_id and s.next_step_id not in ids for s in updated.steps):
+            raise ValueError("Duplicate step ID or invalid next_step_id")
+        skill_version_manager.save_version(original, user_id, "create")
+        skill_version_manager.save_version(updated, user_id)
+        db.save_skill(updated)
+        skill_version_manager._log_change(skill_id, updated.version, "update", "Updated skill definition", user_id)
+        audit_log_service.log_skill_edit(user_id, skill_id, updated.name, "Updated skill definition")
+        return updated
+
     def delete_skill(self, user_id: str, skill_id: str) -> bool:
         """删除技能（需要检查权限）"""
         self._ensure_internal_skills()
@@ -243,7 +264,12 @@ class SkillManager:
 
         rolled_back = skill_version_manager.rollback(skill_id, target_version, user_id)
         if rolled_back:
+            versions = skill_version_manager.get_versions(skill_id)
+            latest = max((v.version for v in versions), key=lambda v: tuple(int(p) for p in v.split(".")))
+            rolled_back.version = self._increment_version(latest)
+            skill_version_manager.save_version(rolled_back, user_id, "rollback")
             db.save_skill(rolled_back)
+            skill_version_manager._log_change(skill_id, rolled_back.version, "rollback", f"Restored {target_version}", user_id)
 
             # 记录审计日志
             audit_log_service.log_skill_edit(user_id, skill_id, rolled_back.name, f"Rolled back to version {target_version}")
@@ -260,11 +286,11 @@ class SkillManager:
 
     def set_user_role(self, admin_id: str, user_id: str, role: str, department: Optional[str] = None) -> bool:
         """设置用户角色（需要管理员权限）"""
+        old_role = permission_service.get_user_role(user_id)
         success = permission_service.set_user_role(admin_id, user_id, role, department)
 
         if success:
             # 记录审计日志
-            old_role = permission_service.get_user_role(user_id)
             audit_log_service.log_role_change(admin_id, user_id, old_role or "guest", role)
 
         return success
@@ -281,7 +307,7 @@ class SkillManager:
 
     def revoke_permission(self, revoker_id: str, skill_id: str, user_id: str, permission: str) -> bool:
         """撤销用户技能权限"""
-        success = permission_service.revoke_all_permissions(revoker_id, user_id)
+        success = permission_service.revoke_skill_permission(revoker_id, skill_id, user_id, permission)
 
         if success:
             # 记录审计日志

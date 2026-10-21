@@ -78,106 +78,32 @@ def _get_executor():
 
 def _execute_document_search(query: str, limit: int = 5) -> str:
     """执行文档搜索"""
-    executor = _get_executor()
-    if not executor:
-        return "错误：工具执行器不可用"
-    result = executor.execute("document_search", {"query": query, "limit": limit})
-    if result.get("success"):
-        docs = result.get("result", [])
-        if not docs:
-            return "未找到相关文档"
-        return "\n\n".join(
-            f"[文档{i+1}] {d.get('content', str(d))[:500]}"
-            for i, d in enumerate(docs)
-        )
-    return f"文档搜索失败: {result.get('error', '未知错误')}"
+    return _execute_as_json("document_search", locals())
 
 
 def _execute_memory_search(query: str, limit: int = 5) -> str:
     """执行记忆搜索"""
-    executor = _get_executor()
-    if not executor:
-        return "错误：工具执行器不可用"
-    result = executor.execute("memory_search", {"query": query, "limit": limit})
-    if result.get("success"):
-        memories = result.get("result", [])
-        if not memories:
-            return "未找到相关记忆"
-        return "\n\n".join(
-            f"[记忆{i+1}] {str(m)[:500]}"
-            for i, m in enumerate(memories)
-        )
-    return f"记忆搜索失败: {result.get('error', '未知错误')}"
+    return _execute_as_json("memory_search", locals())
 
 
 def _execute_web_search(query: str) -> str:
     """执行网页搜索"""
-    executor = _get_executor()
-    if not executor:
-        return "错误：工具执行器不可用"
-    result = executor.execute("web_search", {"query": query})
-    if result.get("success"):
-        items = result.get("result", [])
-        if not items:
-            return "未找到相关网页"
-        return "\n\n".join(
-            f"[{i+1}] {item.get('title', 'N/A')}\n    {item.get('summary', '')}\n    {item.get('url', '')}"
-            for i, item in enumerate(items)
-        )
-    return f"网页搜索失败: {result.get('error', '未知错误')}"
+    return _execute_as_json("web_search", locals())
 
 
 def _execute_code(code: str, language: str = "python") -> str:
     """执行代码"""
-    executor = _get_executor()
-    if not executor:
-        return "错误：工具执行器不可用"
-    result = executor.execute("code_execution", {"code": code, "language": language})
-    if result.get("success"):
-        r = result.get("result", {})
-        stdout = r.get("stdout", "")
-        stderr = r.get("stderr", "")
-        parts = []
-        if stdout:
-            parts.append(f"标准输出:\n{stdout}")
-        if stderr:
-            parts.append(f"错误输出:\n{stderr}")
-        return "\n".join(parts) if parts else "代码执行完成，无输出"
-    return f"代码执行失败: {result.get('error', '未知错误')}"
+    return _execute_as_json("code", locals())
 
 
 def _execute_file_operations(operation: str, path: str, content: str = "") -> str:
     """执行文件操作"""
-    executor = _get_executor()
-    if not executor:
-        return "错误：工具执行器不可用"
-    result = executor.execute("file_operations", {
-        "operation": operation,
-        "path": path,
-        "content": content,
-    })
-    if result.get("success"):
-        r = result.get("result", "")
-        return str(r) if r else f"{operation} 操作成功"
-    return f"文件操作失败: {result.get('error', '未知错误')}"
+    return _execute_as_json("file_operations", locals())
 
 
 def _execute_feishu_file_read(file_key: str, user_id: str = "") -> str:
     """读取飞书文件内容"""
-    executor = _get_executor()
-    if not executor:
-        return "错误：工具执行器不可用"
-    result = executor.execute("feishu_file_read", {
-        "file_key": file_key,
-        "user_id": user_id,
-    })
-    if result.get("success"):
-        content = result.get("result", {}).get("content", str(result.get("result", "")))
-        # 截断过长内容，避免超出模型上下文窗口
-        if len(content) > 8000:
-            content = content[:8000] + "\n...(内容已截断)"
-        return content
-    return f"飞书文件读取失败: {result.get('error', '未知错误')}"
+    return _execute_as_json("feishu_file_read", locals())
 
 
 # ============================================================================
@@ -685,3 +611,14 @@ def create_chat_model(temperature: float = 0.0):
     except Exception as e:
         logger.error(f"创建ChatModel失败 ({router_type}): {str(e)}")
         return None
+
+
+def _execute_as_json(tool_id, params):
+    executor = _get_executor()
+    if executor is None:
+        return json.dumps({"success": False, "error": "Tool executor unavailable"})
+    try:
+        result = executor.execute(tool_id, params)
+        return json.dumps(result, ensure_ascii=False, default=str)
+    except Exception as exc:
+        return json.dumps({"success": False, "error": str(exc)})

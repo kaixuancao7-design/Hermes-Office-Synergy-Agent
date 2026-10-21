@@ -390,8 +390,6 @@ class MessageGraph:
                 f"{footer}"
             )
 
-            # 记录技能使用（供 Curator 评分）
-            db.record_skill_usage(full_skill.id, user_id)
         except Exception as e:
             logger.error(f"[MSG_SKILL] Skill execution failed | error={str(e)}")
             state["response"] = (
@@ -432,7 +430,7 @@ class MessageGraph:
         content = state["content"]
         metadata = state.get("metadata")
 
-        response = await react_engine.run(user_id, content, metadata=metadata)
+        response = await self.router._handle_with_react(user_id, content, metadata=metadata)
         state["response"] = response
         return state
 

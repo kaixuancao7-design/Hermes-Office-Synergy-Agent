@@ -18,6 +18,9 @@ class BaseTool(ABC):
     description: str = ""
     schema: Type[ToolSchema] = None
     
+    def __init__(self, executor=None):
+        self.executor = executor
+
     @abstractmethod
     def execute(self, params: Dict[str, Any]) -> Any:
         """
@@ -62,3 +65,33 @@ class BaseTool(ABC):
             "description": self.description,
             "schema": self.schema.model_json_schema() if self.schema else {}
         }
+
+
+def invoke_tool(tool_class, params, executor=None):
+    """Validate and normalize the common synchronous tool contract."""
+    tool = tool_class(executor=executor)
+    schema = tool_schema(tool_class)
+    if schema is not None:
+        params = {**params, **schema.model_validate(params).model_dump()}
+    result = tool.execute(params)
+    if isinstance(result, dict):
+        if "success" not in result:
+            return {"success": True, "result": result}
+        if not result["success"] and "error" not in result:
+            result["error"] = result.get("message", "Tool execution failed")
+        return result
+    if isinstance(result, str) and result.lower().startswith(("error", "failed", "unknown tool", "错误", "失败", "参数校验失败")):
+        return {"success": False, "error": result}
+    return {"success": True, "result": result}
+
+
+def tool_schema(tool_class):
+    schema = getattr(tool_class, "schema", None)
+    if schema is not None:
+        return schema
+    from src.engine.langchain_tools import (DocumentSearchInput, MemorySearchInput, WebSearchInput,
+        CodeExecutionInput, FileOperationsInput, FeishuFileReadInput)
+    return {"DocumentSearchTool": DocumentSearchInput, "MemorySearchTool": MemorySearchInput,
+            "WebSearchTool": WebSearchInput, "CodeExecutionTool": CodeExecutionInput,
+            "SandboxedCodeExecutionTool": CodeExecutionInput, "FileOperationsTool": FileOperationsInput,
+            "SandboxedFileOperationsTool": FileOperationsInput, "FeishuFileReadTool": FeishuFileReadInput}.get(tool_class.__name__)

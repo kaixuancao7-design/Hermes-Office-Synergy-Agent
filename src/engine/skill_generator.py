@@ -1,7 +1,7 @@
 """技能自动生成器 — 从复杂执行轨迹自动生成可复用技能
 
 触发条件：ReAct 引擎完成一个任务且工具调用次数 >= TOOL_CALL_THRESHOLD
-生成流程：执行轨迹摘要 → LLM 结构化分析 → SkillDraft + SKILL.md
+生成流程：成功轨迹 → LLM 结构化分析 → 待审核 SkillDraft（不写正式技能文件）
 """
 
 import json
@@ -67,6 +67,7 @@ class SkillAutoGenerator:
             trace.step_count >= self.TOOL_CALL_THRESHOLD
             and len(trace.tool_sequence) >= self.TOOL_CALL_THRESHOLD
             and bool(trace.final_response.strip())
+            and all(call.success and call.result is not None for call in trace.tool_sequence)
         )
 
     # ========================================================================
@@ -82,6 +83,12 @@ class SkillAutoGenerator:
         Returns:
             生成的 SkillDraft ID，失败时返回 None
         """
+        if not self.should_trigger(trace):
+            return None
+        source_key = f"trace:{trace.user_id}:{trace.trace_id}"
+        existing = db.get_learning_source(source_key)
+        if existing:
+            return existing
         logger.info(f"[AUTO_SKILL] Analyzing trace {trace.trace_id[:8]}..."
                      f" | tool_calls={len(trace.tool_sequence)}"
                      f" | mode={trace.mode}")
@@ -111,42 +118,20 @@ class SkillAutoGenerator:
                 return None
 
             # 4. 检查置信度
-            confidence = skill_def.get("confidence", 0.0)
+            import math
+            confidence = float(skill_def.get("confidence", 0.0))
+            if not math.isfinite(confidence) or not 0 <= confidence <= 1:
+                return None
             if confidence < self.MIN_CONFIDENCE:
                 logger.info(f"[AUTO_SKILL] Confidence too low ({confidence:.2f}), skipping")
                 return None
 
             # 5. 创建 SkillDraft
             draft = self._create_draft(trace, skill_def, confidence)
-            db.save_skill_draft(draft.model_dump())
-
-            # 6. 写入 SKILL.md
-            try:
-                from src.skills.skill_md import skill_md_manager
-                from src.types import Skill
-                skill = Skill(
-                    id=draft.id,
-                    name=draft.skill_name,
-                    description=draft.description,
-                    type="learned",
-                    trigger_patterns=draft.trigger_patterns,
-                    steps=draft.steps,
-                    metadata={"source": "auto_generated", "trace_id": trace.trace_id},
-                    created_at=draft.created_at,
-                    updated_at=draft.created_at,
-                    created_by=trace.user_id,
-                )
-                skill_md_manager.write_skill_md(skill)
-                logger.info(f"[AUTO_SKILL] SKILL.md written for: {skill.name}")
-            except Exception as e:
-                logger.warning(f"[AUTO_SKILL] SKILL.md write failed: {e}")
-
-            logger.info(f"[AUTO_SKILL] Draft created: id={draft.id[:8]}..."
-                         f" | name={draft.skill_name}"
-                         f" | status={draft.status}"
-                         f" | confidence={confidence:.2f}")
-
-            return draft.id
+            from src.services.skill_verification import validate_definition
+            validate_definition(draft)
+            # Only drafts are persisted; reviewed publication owns filesystem export.
+            return db.save_learning_draft(source_key, draft)
 
         except Exception as e:
             logger.error(f"[AUTO_SKILL] Generation failed: {e}", exc_info=True)
@@ -197,15 +182,8 @@ class SkillAutoGenerator:
         """从 LLM 输出创建 SkillDraft"""
         from src.types import SkillStep
 
-        steps = [
-            SkillStep(
-                id=generate_id(),
-                action=s.get("action", "execute"),
-                type=s.get("type"),
-                parameters=s.get("parameters", {}),
-            )
-            for s in skill_def.get("steps", [])
-        ]
+        steps = [SkillStep.model_validate({**step, "id": step.get("id") or f"step-{index+1}"})
+                 for index, step in enumerate(skill_def.get("steps", []))]
 
         status = "pending_review" if confidence >= 0.6 else "draft"
 
@@ -222,6 +200,7 @@ class SkillAutoGenerator:
             user_id=trace.user_id,
             created_at=get_timestamp(),
             status=status,
+            metadata={"source": "auto_generated", "source_trace_id": trace.trace_id, "confidence": confidence},
         )
 
 

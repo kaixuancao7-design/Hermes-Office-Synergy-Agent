@@ -122,8 +122,8 @@ class SkillCurator:
             )
 
             # 活跃度（最近使用天数，越近越高）
-            last_used = s["last_used_at"] or 0
-            days_since_last_use = (now - last_used) / 86400 if last_used > 0 else 999
+            last_used = s["last_used_at"] or s.get("created_at", now)
+            days_since_last_use = max(0.0, (now - last_used) / 86400)
             recency = max(0.0, 1.0 - days_since_last_use / self.ARCHIVE_INACTIVE_DAYS)
 
             score = 0.4 * usage_freq + 0.3 * success_rate + 0.3 * recency

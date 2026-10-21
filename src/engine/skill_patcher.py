@@ -1,8 +1,8 @@
-"""技能自动修补器 — 检测用户纠正是否关联到已有 learned 技能并自动修补
+"""技能自动修补器 — 检测用户纠正是否关联到已有 learned 技能并提出修补草稿
 
 与 LearningCycle 的区别：
   - LearningCycle: 从纠正中创建新技能草稿
-  - SkillAutoPatcher: 检查纠正是否属于已有技能 → 直接修补该技能的步骤
+  - SkillAutoPatcher: 检查用户编辑权限 → 为已有技能生成待审核修补草稿
 """
 
 from typing import Optional, List
@@ -67,15 +67,17 @@ class SkillAutoPatcher:
     # 技能关联检测
     # ========================================================================
 
-    async def find_related_skill(self, query_context: str) -> Optional[Skill]:
+    async def find_related_skill(self, query_context: str, user_id: str = None) -> Optional[Skill]:
         """在 learned 技能中查找与纠正上下文相关的技能
 
         Tier 1: 使用 SkillSummary 进行轻量级初筛
         Tier 2: 确认匹配后按需加载完整 Skill
         """
+        if not user_id:
+            return None
         # Tier 1: 使用摘要进行轻量级匹配
         all_summaries = db.get_skills_summaries()
-        learned = [s for s in all_summaries if s.type == "learned"]
+        learned = [s for s in all_summaries if s.type == "learned" and self._can_edit(user_id, s.id)]
 
         if not learned:
             return None
@@ -128,7 +130,7 @@ class SkillAutoPatcher:
     # ========================================================================
 
     async def patch_skill(self, skill: Skill, original_output: str,
-                          corrected_output: str, context: str) -> Optional[Skill]:
+                          corrected_output: str, context: str, user_id: str = None) -> Optional[str]:
         """使用 LLM 分析纠正并修补技能步骤
 
         Args:
@@ -140,6 +142,8 @@ class SkillAutoPatcher:
         Returns:
             更新后的 Skill，无需修补时返回 None
         """
+        if not user_id or not self._can_edit(user_id, skill.id):
+            return None
         logger.info(f"[AUTO_PATCH] Analyzing correction for skill: {skill.name}")
 
         try:
@@ -169,7 +173,7 @@ class SkillAutoPatcher:
                 return None
 
             # 5. 应用修补
-            return self._apply_patch(skill, patch_result)
+            return self._apply_patch(skill, patch_result, user_id)
 
         except Exception as e:
             logger.error(f"[AUTO_PATCH] Patch failed: {e}", exc_info=True)
@@ -193,54 +197,46 @@ class SkillAutoPatcher:
             context=context[:500],
         )
 
-    def _apply_patch(self, skill: Skill, patch_result: dict) -> Optional[Skill]:
-        """应用 LLM 返回的修补结果到技能"""
-        # 更新步骤
-        updated_steps_raw = patch_result.get("updated_steps", [])
-        if not updated_steps_raw:
+    @staticmethod
+    def _can_edit(user_id, skill_id):
+        from src.services.permission_service import permission_service
+        skill = db.get_skill(skill_id)
+        return bool(skill and not skill.metadata.get("archived") and not skill.metadata.get("quarantined") and
+                    (skill.created_by == user_id or permission_service.check_skill_permission(user_id, skill_id, "edit").allowed))
+
+    def _apply_patch(self, skill, patch_result, user_id=None):
+        """Create a reviewable proposal; never mutate the live skill."""
+        import hashlib
+        import json
+        from src.types import SkillDraft
+        from src.services.skill_verification import validate_definition
+        if not user_id or not self._can_edit(user_id, skill.id):
             return None
-
-        new_steps = [
-            SkillStep(
-                id=generate_id(),
-                action=s.get("action", "execute"),
-                type=s.get("type"),
-                parameters=s.get("parameters", {}),
-            )
-            for s in updated_steps_raw
-        ]
-
-        # 更新触发模式
-        new_triggers = patch_result.get("new_trigger_patterns", [])
-        if new_triggers:
-            existing = set(t.lower() for t in skill.trigger_patterns)
-            for t in new_triggers:
-                if t.lower() not in existing:
-                    skill.trigger_patterns.append(t)
-                    existing.add(t.lower())
-
-        # 版本号递增
-        parts = skill.version.split(".")
-        if len(parts) == 3:
-            skill.version = f"{parts[0]}.{parts[1]}.{int(parts[2]) + 1}"
-
-        skill.steps = new_steps
-        skill.updated_at = get_timestamp()
-
-        # 持久化
-        db.save_skill(skill)
-
-        # 更新 SKILL.md
-        try:
-            from src.skills.skill_md import skill_md_manager
-            skill_md_manager.write_skill_md(skill)
-        except Exception as e:
-            logger.warning(f"[AUTO_PATCH] SKILL.md update failed: {e}")
-
-        logger.info(f"[AUTO_PATCH] Skill patched: {skill.name}"
-                     f" | v{skill.version} | steps={len(new_steps)}"
-                     f" | triggers={len(skill.trigger_patterns)}")
-        return skill
+        current = db.get_skill(skill.id)
+        if not current or current.version != skill.version:
+            return None
+        raw = patch_result.get("updated_steps")
+        if not isinstance(raw, list) or not raw:
+            return None
+        by_id = {step.id: step for step in skill.steps}
+        steps = []
+        for index, update in enumerate(raw):
+            original = by_id.get(update.get("id")) if update.get("id") else (skill.steps[index] if index < len(skill.steps) else None)
+            values = original.model_dump() if original else {"id": generate_id(), "parameters": {}}
+            values.update(update)
+            if original and update.get("action", original.action) == original.action:
+                values["parameters"] = {**original.parameters, **update.get("parameters", {})}
+            steps.append(SkillStep.model_validate(values))
+        triggers = list(dict.fromkeys(skill.trigger_patterns + patch_result.get("new_trigger_patterns", [])))
+        draft = SkillDraft(id=generate_id(), skill_name=skill.name, description=skill.description,
+            trigger_patterns=triggers, steps=steps, original_context=patch_result.get("reason", "Patch proposal"),
+            original_output="", corrected_output="", user_intent="skill_patch", user_id=user_id,
+            created_at=get_timestamp(), status="pending_review", metadata={"source": "auto_patch",
+                "target_skill_id": skill.id, "base_version": skill.version})
+        validate_definition(draft)
+        source = json.dumps({"user": user_id, "skill": skill.id, "version": skill.version,
+                             "steps": [step.model_dump() for step in steps], "triggers": triggers}, sort_keys=True, ensure_ascii=False)
+        return db.save_learning_draft("patch:" + hashlib.sha256(source.encode()).hexdigest(), draft)
 
 
 # 全局实例

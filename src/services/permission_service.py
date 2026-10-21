@@ -130,11 +130,10 @@ class PermissionService:
                               user_id: str, permission: str,
                               is_hazardous: bool = False) -> bool:
         """授予工具权限 — 危险工具需要管理员授权"""
-        if is_hazardous:
-            grantor_role = self.get_user_role(grantor_id)
-            if grantor_role != "admin":
-                logger.warning(f"非管理员用户 {grantor_id} 尝试授予危险工具权限")
-                return False
+        if self.get_user_role(grantor_id) != "admin":
+            return False
+        if permission not in {"execute", "configure"}:
+            return False
 
         perm_id = generate_id()
         db.grant_permission(perm_id, "tool", tool_id, user_id, permission, grantor_id)
@@ -154,13 +153,21 @@ class PermissionService:
         logger.info(f"已授予记忆权限: {grantor_id} → {user_id}, memory={memory_type}, permission={permission}")
         return True
 
+    def revoke_skill_permission(self, revoker_id: str, skill_id: str,
+                                user_id: str, permission: str) -> bool:
+        if not self.check_skill_permission(revoker_id, skill_id, "grant").allowed:
+            return False
+        db.revoke_permissions(user_id, "skill", skill_id, permission)
+        return True
+
     def revoke_all_permissions(self, revoker_id: str, user_id: str) -> bool:
         """撤销用户所有权限"""
         revoker_role = self.get_user_role(revoker_id)
         if revoker_role != "admin":
             logger.warning(f"非管理员用户 {revoker_id} 尝试撤销权限")
             return False
-        # 删除该用户的所有显式权限记录（角色权限保留）
+        db.revoke_permissions(user_id)
+        # 角色权限保留
         logger.info(f"管理员 {revoker_id} 撤销用户 {user_id} 的所有权限")
         return True
 

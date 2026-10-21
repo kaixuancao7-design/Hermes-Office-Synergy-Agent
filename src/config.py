@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     # 沙箱配置
     SANDBOX_ALLOWED_PATHS: Optional[str] = None
     SANDBOX_MAX_EXECUTION_TIME: int = 30
+    SANDBOX_CONTAINER_IMAGE: str = "python:3.12-slim"
     
     # 飞书配置
     FEISHU_APP_ID: Optional[str] = None
@@ -87,7 +88,9 @@ class Settings(BaseSettings):
 
     # 认证配置
     API_KEY_ENABLED: bool = False  # 设为 True 启用 API Key 认证
-    API_KEYS: str = ""  # 逗号分隔的合法 API Key 列表（为空且启用时允许所有请求）
+    API_KEYS: str = ""  # 逗号分隔的合法 API Key 列表（为空且无用户映射时拒绝请求）
+
+    API_KEY_USERS: str = "{}"  # JSON: API Key -> user ID
 
     # MCP Server 配置
     MCP_SERVER_ENABLED: bool = False   # 设为 True 启用 MCP HTTP 子服务

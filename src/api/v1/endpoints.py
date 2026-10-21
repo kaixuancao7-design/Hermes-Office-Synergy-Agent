@@ -1,4 +1,6 @@
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Depends, HTTPException
+from src.middleware.auth_middleware import authenticated_user, require_admin
+from src.data.database import db
 from typing import Dict, Any, Optional, List
 from src.types import Message, Skill, UserProfile, SkillDraft, VerificationResult, AuditQueryResult
 from src.gateway.message_router import message_router
@@ -24,9 +26,9 @@ logger = get_logger("api")
 
 
 @router.post("/message")
-async def send_message(message: Dict[str, Any]):
+async def send_message(message: Dict[str, Any], actor: str = Depends(authenticated_user)):
     request_id = message.get("message_id", generate_id())
-    user_id = message.get("user_id", "default_user")
+    user_id = actor
     content = message.get("content", "")
     
     logger.info(f"[API_MESSAGE] ========== API消息入口 ==========")
@@ -108,8 +110,8 @@ async def get_skills():
 
 
 @router.post("/skills")
-async def create_skill(skill_data: Dict[str, Any]):
-    user_id = skill_data.get("user_id", "default_user")
+async def create_skill(skill_data: Dict[str, Any], actor: str = Depends(authenticated_user)):
+    user_id = actor
     name = skill_data.get("name", "")
     description = skill_data.get("description", "")
     steps = skill_data.get("steps", [])
@@ -145,7 +147,7 @@ async def get_skill(skill_id: str):
 
 
 @router.post("/skills/{skill_id}/execute")
-async def execute_skill(skill_id: str, user_id: str = "default_user"):
+async def execute_skill(skill_id: str, user_id: str = Depends(authenticated_user), query: str = ""):
     skill = skill_manager.get_skill(skill_id)
     if not skill:
         raise NotFoundException(
@@ -156,15 +158,19 @@ async def execute_skill(skill_id: str, user_id: str = "default_user"):
     
     skill = skill_manager.apply_user_preferences(skill, user_id)
     
-    results = []
-    for step in skill.steps:
-        results.append(f"{step.action}: {step.parameters}")
-    
-    return {"results": results}
+    if not skill_manager.can_execute_skill(user_id, skill_id):
+        raise HTTPException(status_code=403, detail="没有执行技能的权限")
+    from src.engine.skill_executor import skill_executor
+    result = await skill_executor.execute_skill(skill, query, user_id)
+    return {"results": result.step_results, "response": result.response,
+            "steps_executed": result.steps_executed, "steps_failed": result.steps_failed}
+
 
 
 @router.get("/user/{user_id}")
-async def get_user_profile(user_id: str):
+async def get_user_profile(user_id: str, actor: str = Depends(authenticated_user)):
+    if actor != user_id:
+        require_admin(actor)
     profile = memory_manager.get_user_profile(user_id)
     if not profile:
         raise NotFoundException(
@@ -176,7 +182,9 @@ async def get_user_profile(user_id: str):
 
 
 @router.put("/user/{user_id}")
-async def update_user_profile(user_id: str, updates: Dict[str, Any]):
+async def update_user_profile(user_id: str, updates: Dict[str, Any], actor: str = Depends(authenticated_user)):
+    if actor != user_id:
+        require_admin(actor)
     if not updates:
         raise ValidationException(
             message="更新内容不能为空",
@@ -189,7 +197,8 @@ async def update_user_profile(user_id: str, updates: Dict[str, Any]):
 
 
 @router.post("/adapters/register")
-async def register_adapter(config: IMAdapterConfig):
+async def register_adapter(config: IMAdapterConfig, actor: str = Depends(authenticated_user)):
+    require_admin(actor)
     if not config.type:
         raise ValidationException(
             message="适配器类型不能为空",
@@ -202,7 +211,9 @@ async def register_adapter(config: IMAdapterConfig):
 
 
 @router.get("/memory/search")
-async def search_memory(user_id: str, query: str):
+async def search_memory(user_id: str, query: str, actor: str = Depends(authenticated_user)):
+    if actor != user_id:
+        require_admin(actor)
     if not query:
         raise ValidationException(
             message="搜索关键词不能为空",
@@ -215,8 +226,8 @@ async def search_memory(user_id: str, query: str):
 
 
 @router.post("/feedback")
-async def submit_feedback(feedback: Dict[str, Any]):
-    user_id = feedback.get("user_id", "default_user")
+async def submit_feedback(feedback: Dict[str, Any], actor: str = Depends(authenticated_user)):
+    user_id = actor
     original = feedback.get("original", "")
     corrected = feedback.get("corrected", "")
     context = feedback.get("context", "")
@@ -236,14 +247,18 @@ async def submit_feedback(feedback: Dict[str, Any]):
 # ==================== 技能验证相关接口 ====================
 
 @router.get("/skill-drafts")
-async def get_skill_drafts(status: Optional[str] = None, user_id: Optional[str] = None):
+async def get_skill_drafts(status: Optional[str] = None, user_id: Optional[str] = None, actor: str = Depends(authenticated_user)):
     """获取技能草稿列表"""
-    drafts = learning_cycle.get_pending_reviews() if status == "pending" else skill_verification_service.list_drafts(user_id=user_id, status=status)
+    if user_id is None and permission_service.get_user_role(actor) != "admin":
+        user_id = actor
+    if user_id is not None and actor != user_id:
+        require_admin(actor)
+    drafts = skill_verification_service.list_drafts(user_id=user_id, status="pending_review" if status == "pending" else status)
     return {"drafts": [draft.model_dump() for draft in drafts]}
 
 
 @router.get("/skill-drafts/{draft_id}")
-async def get_skill_draft(draft_id: str):
+async def get_skill_draft(draft_id: str, actor: str = Depends(authenticated_user)):
     """获取技能草稿详情"""
     draft = learning_cycle.get_skill_draft(draft_id)
     if not draft:
@@ -252,35 +267,44 @@ async def get_skill_draft(draft_id: str):
             detail=f"未找到ID为 {draft_id} 的技能草稿",
             context={"draft_id": draft_id}
         )
+    if draft.user_id != actor:
+        require_admin(actor)
     return {"draft": draft.model_dump()}
 
 
 @router.post("/skill-drafts/{draft_id}/review")
-async def review_skill_draft(draft_id: str, review_data: Dict[str, Any]):
+async def review_skill_draft(draft_id: str, review_data: Dict[str, Any], actor: str = Depends(authenticated_user)):
     """人工审核技能草稿"""
     approved = review_data.get("approved", False)
-    reviewer_id = review_data.get("reviewer_id", "admin")
+    if not isinstance(approved, bool):
+        raise ValidationException(message="approved 必须为布尔值")
+    reviewer_id = actor
     comments = review_data.get("comments", "")
     
-    result = learning_cycle.manual_review_skill(
-        draft_id=draft_id,
-        approved=approved,
-        reviewer_id=reviewer_id,
-        comments=comments
-    )
-    
+    require_admin(actor)
+    try:
+        result = learning_cycle.manual_review_skill(draft_id, approved, reviewer_id, comments)
+    except ValueError as exc:
+        raise ValidationException(message="草稿未通过发布校验", detail=str(exc))
+    if result is None:
+        raise NotFoundException(message="草稿不存在或不能发布")
+
     return {"result": result.model_dump()}
 
 
 @router.get("/learning/stats")
-async def get_learning_stats(user_id: Optional[str] = None):
+async def get_learning_stats(user_id: Optional[str] = None, actor: str = Depends(authenticated_user)):
     """获取学习统计信息"""
+    if user_id is None and permission_service.get_user_role(actor) != "admin":
+        user_id = actor
+    if user_id is not None and actor != user_id:
+        require_admin(actor)
     stats = learning_cycle.get_learning_stats(user_id=user_id)
     return {"stats": stats}
 
 
 @router.post("/learning/suggest-skill")
-async def suggest_skill(task_description: str, user_id: str = "default_user"):
+async def suggest_skill(task_description: str, user_id: str = Depends(authenticated_user)):
     """建议创建技能"""
     skill = learning_cycle.suggest_skill_creation(user_id, task_description)
     if skill:
@@ -311,7 +335,7 @@ async def get_skill_version(skill_id: str, version: str):
 
 
 @router.post("/skills/{skill_id}/rollback/{version}")
-async def rollback_skill(skill_id: str, version: str, user_id: str = "admin"):
+async def rollback_skill(skill_id: str, version: str, user_id: str = Depends(authenticated_user)):
     """回滚到指定版本"""
     try:
         skill = skill_manager.rollback_to_version(user_id, skill_id, version)
@@ -340,9 +364,9 @@ async def get_skill_change_logs(skill_id: str):
 # ==================== 技能权限控制接口 ====================
 
 @router.post("/skills/{skill_id}/permissions")
-async def grant_permission(skill_id: str, permission_data: Dict[str, Any]):
+async def grant_permission(skill_id: str, permission_data: Dict[str, Any], actor: str = Depends(authenticated_user)):
     """授予用户技能权限"""
-    grantor_id = permission_data.get("grantor_id", "admin")
+    grantor_id = actor
     user_id = permission_data.get("user_id")
     permission = permission_data.get("permission")
     
@@ -364,9 +388,9 @@ async def grant_permission(skill_id: str, permission_data: Dict[str, Any]):
 
 
 @router.delete("/skills/{skill_id}/permissions")
-async def revoke_permission(skill_id: str, permission_data: Dict[str, Any]):
+async def revoke_permission(skill_id: str, permission_data: Dict[str, Any], actor: str = Depends(authenticated_user)):
     """撤销用户技能权限"""
-    revoker_id = permission_data.get("revoker_id", "admin")
+    revoker_id = actor
     user_id = permission_data.get("user_id")
     permission = permission_data.get("permission")
     
@@ -388,16 +412,20 @@ async def revoke_permission(skill_id: str, permission_data: Dict[str, Any]):
 
 
 @router.get("/skills/{skill_id}/permissions")
-async def get_skill_permissions(skill_id: str):
+async def get_skill_permissions(skill_id: str, actor: str = Depends(authenticated_user)):
     """获取技能的所有权限"""
-    permissions = skill_manager.skill_permission_manager.get_skill_permissions(skill_id)
-    return {"permissions": [p.model_dump() for p in permissions]}
+    if not skill_manager.check_permission(actor, skill_id, "grant").allowed:
+        raise HTTPException(status_code=403, detail="没有查看技能授权的权限")
+    permissions = db.get_resource_permissions("skill", skill_id)
+    return {"permissions": permissions}
 
 
 @router.get("/users/{user_id}/permissions")
-async def get_user_permissions(user_id: str):
+async def get_user_permissions(user_id: str, actor: str = Depends(authenticated_user)):
+    if actor != user_id:
+        require_admin(actor)
     """获取用户的所有权限"""
-    permissions = skill_manager.skill_permission_manager.get_user_permissions(user_id)
+    permissions = permission_service.get_user_permissions(user_id)
     return {"permissions": permissions}
 
 
@@ -409,7 +437,7 @@ async def check_skill_permission(skill_id: str, user_id: str, permission: str):
 
 
 @router.put("/skills/{skill_id}")
-async def update_skill(skill_id: str, updates: Dict[str, Any], user_id: str = "admin"):
+async def update_skill(skill_id: str, updates: Dict[str, Any], user_id: str = Depends(authenticated_user)):
     """更新技能（需要编辑权限）"""
     try:
         skill = skill_manager.update_skill(user_id, skill_id, updates)
@@ -420,6 +448,8 @@ async def update_skill(skill_id: str, updates: Dict[str, Any], user_id: str = "a
                 context={"skill_id": skill_id}
             )
         return {"skill": skill.model_dump()}
+    except ValueError as e:
+        raise ValidationException(message="技能参数无效", detail=str(e))
     except PermissionError as e:
         raise ValidationException(
             message="权限不足",
@@ -429,7 +459,7 @@ async def update_skill(skill_id: str, updates: Dict[str, Any], user_id: str = "a
 
 
 @router.delete("/skills/{skill_id}")
-async def delete_skill(skill_id: str, user_id: str = "admin"):
+async def delete_skill(skill_id: str, user_id: str = Depends(authenticated_user)):
     """删除技能（需要删除权限）"""
     try:
         success = skill_manager.delete_skill(user_id, skill_id)
@@ -454,7 +484,7 @@ async def delete_skill(skill_id: str, user_id: str = "admin"):
 async def set_user_role(
     user_id: str,
     role: str,
-    admin_id: str = "admin",
+    admin_id: str = Depends(authenticated_user),
     department: Optional[str] = None
 ):
     """设置用户角色（需要管理员权限）"""
@@ -474,13 +504,13 @@ async def get_user_role(user_id: str):
     role = permission_service.get_user_role(user_id)
     if not role:
         return {"user_id": user_id, "role": "guest", "department": None}
-    return {"user_id": user_id, "role": role.role, "department": role.department}
+    return {"user_id": user_id, "role": role, "department": db.get_user_department(user_id)}
 
 
 @router.post("/permissions/skill")
-async def grant_skill_permission(permission_data: Dict[str, Any]):
+async def grant_skill_permission(permission_data: Dict[str, Any], actor: str = Depends(authenticated_user)):
     """授予技能权限"""
-    grantor_id = permission_data.get("grantor_id", "admin")
+    grantor_id = actor
     skill_id = permission_data.get("skill_id")
     user_id = permission_data.get("user_id")
     permission = permission_data.get("permission")
@@ -503,9 +533,9 @@ async def grant_skill_permission(permission_data: Dict[str, Any]):
 
 
 @router.post("/permissions/tool")
-async def grant_tool_permission(permission_data: Dict[str, Any]):
+async def grant_tool_permission(permission_data: Dict[str, Any], actor: str = Depends(authenticated_user)):
     """授予工具权限"""
-    grantor_id = permission_data.get("grantor_id", "admin")
+    grantor_id = actor
     tool_id = permission_data.get("tool_id")
     user_id = permission_data.get("user_id")
     permission = permission_data.get("permission")
@@ -529,9 +559,9 @@ async def grant_tool_permission(permission_data: Dict[str, Any]):
 
 
 @router.post("/permissions/memory")
-async def grant_memory_permission(permission_data: Dict[str, Any]):
+async def grant_memory_permission(permission_data: Dict[str, Any], actor: str = Depends(authenticated_user)):
     """授予记忆权限"""
-    grantor_id = permission_data.get("grantor_id", "admin")
+    grantor_id = actor
     memory_type = permission_data.get("memory_type")
     user_id = permission_data.get("user_id")
     permission = permission_data.get("permission")
@@ -554,9 +584,9 @@ async def grant_memory_permission(permission_data: Dict[str, Any]):
 
 
 @router.post("/permissions/department")
-async def grant_department_permission(permission_data: Dict[str, Any]):
+async def grant_department_permission(permission_data: Dict[str, Any], actor: str = Depends(authenticated_user)):
     """为部门授予权限"""
-    grantor_id = permission_data.get("grantor_id", "admin")
+    grantor_id = actor
     resource_type = permission_data.get("resource_type")
     resource_id = permission_data.get("resource_id")
     department = permission_data.get("department")
@@ -633,10 +663,12 @@ async def query_audit_logs(
     start_time: Optional[int] = None,
     end_time: Optional[int] = None,
     result: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 20
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=1000),
+    actor: str = Depends(authenticated_user)
 ):
     """查询审计日志"""
+    require_admin(actor)
     result = audit_log_service.query_logs(
         operator_id=operator_id,
         operation_type=operation_type,
@@ -657,8 +689,9 @@ async def query_audit_logs(
 
 
 @router.get("/audit/logs/{log_id}")
-async def get_audit_log(log_id: str):
+async def get_audit_log(log_id: str, actor: str = Depends(authenticated_user)):
     """获取审计日志详情"""
+    require_admin(actor)
     log = audit_log_service.get_log_by_id(log_id)
     if not log:
         raise NotFoundException(
@@ -670,29 +703,33 @@ async def get_audit_log(log_id: str):
 
 
 @router.get("/audit/logs/operator/{operator_id}")
-async def get_operator_logs(operator_id: str):
+async def get_operator_logs(operator_id: str, actor: str = Depends(authenticated_user)):
     """获取指定用户的所有操作日志"""
+    require_admin(actor)
     logs = audit_log_service.get_operator_logs(operator_id)
     return {"operator_id": operator_id, "logs": [log.model_dump() for log in logs]}
 
 
 @router.get("/audit/logs/type/{operation_type}")
-async def get_logs_by_type(operation_type: str):
+async def get_logs_by_type(operation_type: str, actor: str = Depends(authenticated_user)):
     """获取指定类型的操作日志"""
+    require_admin(actor)
     logs = audit_log_service.get_logs_by_type(operation_type)
     return {"operation_type": operation_type, "logs": [log.model_dump() for log in logs]}
 
 
 @router.post("/audit/verify")
-async def verify_log_integrity():
+async def verify_log_integrity(actor: str = Depends(authenticated_user)):
     """验证审计日志完整性"""
+    require_admin(actor)
     integrity = audit_log_service.verify_log_integrity()
     return {"integrity_ok": integrity}
 
 
 @router.post("/audit/export")
-async def export_audit_logs(file_path: str):
+async def export_audit_logs(file_path: str, actor: str = Depends(authenticated_user)):
     """导出审计日志到文件"""
+    require_admin(actor)
     success = audit_log_service.export_logs(file_path)
     if not success:
         raise ValidationException(

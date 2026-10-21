@@ -26,21 +26,23 @@ class QualityGate:
         result = QualityResult()
         
         try:
-            # 模拟质量检查
-            result.metrics["slides_count"] = 10
-            result.metrics["avg_content_length"] = 150
-            result.metrics["image_count"] = 3
-            result.metrics["template_coverage"] = 0.85
-            
+            from pptx import Presentation
+            presentation = Presentation(file_path)
+            count = len(presentation.slides)
+            text_lengths = [sum(len(shape.text) for shape in slide.shapes if shape.has_text_frame)
+                            for slide in presentation.slides]
+            result.metrics["slides_count"] = count
+            result.metrics["avg_content_length"] = sum(text_lengths) / count if count else 0
+            result.metrics["image_count"] = sum(shape.shape_type == 13 for slide in presentation.slides for shape in slide.shapes)
+            if not count:
+                result.passed = False
+                result.errors.append("Presentation contains no slides")
             # 检查条件
             if result.metrics["slides_count"] < 3:
                 result.warnings.append("幻灯片数量较少")
             
             if result.metrics["avg_content_length"] > 500:
                 result.warnings.append("部分幻灯片内容过多")
-            
-            if result.metrics["template_coverage"] < 0.7:
-                result.warnings.append("模板应用不完整")
             
             # 严格模式下警告视为错误
             if self.strict_mode and result.warnings:

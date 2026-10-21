@@ -38,6 +38,7 @@ class Database:
     def _init_tables(self):
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
+            cursor.execute("CREATE TABLE IF NOT EXISTS pending_message_responses (message_id TEXT PRIMARY KEY, response TEXT NOT NULL)")
             
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -217,6 +218,26 @@ class Database:
                 ON skill_usage(skill_id, used_at)
             """)
 
+            # Additive migration keeps legacy rows and column positions intact.
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(skills)")}
+            for name, definition in (("version", "TEXT NOT NULL DEFAULT '1.0.0'"), ("created_by", "TEXT")):
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE skills ADD COLUMN {name} {definition}")
+            if "metadata" not in {row[1] for row in conn.execute("PRAGMA table_info(skill_drafts)")}:
+                conn.execute("ALTER TABLE skill_drafts ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'")
+            conn.execute("CREATE TABLE IF NOT EXISTS learning_sources (source_key TEXT PRIMARY KEY, draft_id TEXT NOT NULL)")
+            conn.execute("CREATE TABLE IF NOT EXISTS skill_publications (draft_id TEXT PRIMARY KEY, skill_id TEXT NOT NULL)")
+            # Old generated files may already have been imported without review.
+            for skill_id, raw in conn.execute("SELECT id, metadata FROM skills WHERE type='learned'").fetchall():
+                metadata = _safe_deserialize(raw, {})
+                if metadata.get("source") == "auto_generated":
+                    draft_id = metadata.get("draft_id", skill_id)
+                    draft = conn.execute("SELECT status FROM skill_drafts WHERE id=?", (draft_id,)).fetchone()
+                    publication = conn.execute("SELECT skill_id FROM skill_publications WHERE draft_id=?", (draft_id,)).fetchone()
+                    if not draft or draft[0] != "approved" or not publication or publication[0] != skill_id:
+                        metadata["quarantined"] = True
+                        conn.execute("UPDATE skills SET metadata=? WHERE id=?", (json.dumps(metadata), skill_id))
+
             conn.commit()
     
     def save_user(self, user: UserProfile) -> None:
@@ -318,72 +339,36 @@ class Database:
                 ))
             return messages[::-1]
     
+    @staticmethod
+    def _store_skill(conn, skill):
+        conn.execute("""INSERT OR REPLACE INTO skills
+            (id, name, description, type, trigger_patterns, steps, metadata, created_at, updated_at, version, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""", (skill.id, skill.name, skill.description, skill.type,
+            json.dumps(skill.trigger_patterns, ensure_ascii=False),
+            json.dumps([step.model_dump() for step in skill.steps], ensure_ascii=False),
+            json.dumps(skill.metadata, ensure_ascii=False), skill.created_at, skill.updated_at, skill.version, skill.created_by))
+
     def save_skill(self, skill: Skill) -> None:
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR REPLACE INTO skills (
-                    id, name, description, type, trigger_patterns, steps, metadata,
-                    created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                skill.id,
-                skill.name,
-                skill.description,
-                skill.type,
-                json.dumps(skill.trigger_patterns, ensure_ascii=False),
-                json.dumps([s.model_dump() for s in skill.steps], ensure_ascii=False),
-                json.dumps(skill.metadata, ensure_ascii=False),
-                skill.created_at,
-                skill.updated_at
-            ))
-            conn.commit()
-    
+            self._store_skill(conn, skill)
+
+    @staticmethod
+    def _row_to_skill(row):
+        from src.types import SkillStep
+        return Skill(id=row[0], name=row[1], description=row[2] or "", type=row[3],
+            trigger_patterns=_safe_deserialize(row[4], []),
+            steps=[SkillStep(**step) for step in _safe_deserialize(row[5], [])],
+            metadata=_safe_deserialize(row[6], {}), created_at=row[7], updated_at=row[8],
+            version=row[9] or "1.0.0", created_by=row[10])
+
     def get_skill(self, skill_id: str) -> Optional[Skill]:
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM skills WHERE id = ?", (skill_id,))
-            row = cursor.fetchone()
-            
-            if row:
-                from src.types import SkillStep
-                steps_raw = _safe_deserialize(row[5], [])
-                steps = [SkillStep(**s) for s in steps_raw] if steps_raw else []
-                return Skill(
-                    id=row[0],
-                    name=row[1],
-                    description=row[2],
-                    type=row[3],
-                    trigger_patterns=_safe_deserialize(row[4], []),
-                    steps=steps,
-                    metadata=_safe_deserialize(row[6], {}),
-                    created_at=row[7],
-                    updated_at=row[8]
-                )
-            return None
-    
+            row = conn.execute("SELECT id,name,description,type,trigger_patterns,steps,metadata,created_at,updated_at,version,created_by FROM skills WHERE id=?", (skill_id,)).fetchone()
+            return self._row_to_skill(row) if row else None
+
     def get_all_skills(self) -> List[Skill]:
         with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT * FROM skills")
-
-            skills = []
-            for row in cursor.fetchall():
-                from src.types import SkillStep
-                steps_raw = _safe_deserialize(row[5], [])
-                steps = [SkillStep(**s) for s in steps_raw] if steps_raw else []
-                skills.append(Skill(
-                    id=row[0],
-                    name=row[1],
-                    description=row[2],
-                    type=row[3],
-                    trigger_patterns=_safe_deserialize(row[4], []),
-                    steps=steps,
-                    metadata=_safe_deserialize(row[6], {}),
-                    created_at=row[7],
-                    updated_at=row[8]
-                ))
-            return skills
+            return [self._row_to_skill(row) for row in conn.execute("SELECT id,name,description,type,trigger_patterns,steps,metadata,created_at,updated_at,version,created_by FROM skills")]
 
     def get_skills_summaries(self) -> List:
         """Tier 1: 加载所有技能的轻量级摘要 — 仅匹配字段，无完整步骤对象
@@ -408,11 +393,14 @@ class Database:
             cursor = conn.cursor()
             cursor.execute(
                 "SELECT id, name, description, type, trigger_patterns, "
-                "steps, created_at, updated_at FROM skills"
+                "steps, created_at, updated_at, version, metadata FROM skills"
             )
 
             summaries = []
             for row in cursor.fetchall():
+                metadata = _safe_deserialize(row[9], {})
+                if metadata.get("archived") or metadata.get("quarantined"):
+                    continue
                 # 从 steps JSON 中提取 instruction 文本，不反序列化完整 SkillStep
                 steps_raw = _safe_deserialize(row[5], [])
                 step_instructions = []
@@ -432,6 +420,7 @@ class Database:
                     step_instructions=step_instructions,
                     created_at=row[6] or 0,
                     updated_at=row[7] or 0,
+                    version=row[8] or "1.0.0",
                 ))
             return summaries
     
@@ -550,6 +539,17 @@ class Database:
                 logger.error(f"清理过期记忆失败: {str(e)}")
                 raise
     
+    def get_pending_message_response(self, message_id: str) -> Optional[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT response FROM pending_message_responses WHERE message_id = ?",
+                               (message_id,)).fetchone()
+            return row[0] if row else None
+
+    def save_pending_message_response(self, message_id: str, response: str) -> None:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("INSERT OR REPLACE INTO pending_message_responses VALUES (?, ?)",
+                         (message_id, response))
+
     def is_message_processed(self, message_id: str) -> bool:
         """检查消息是否已处理过"""
         with sqlite3.connect(self.db_path) as conn:
@@ -568,6 +568,7 @@ class Database:
                     message_id, user_id, processed_at, source
                 ) VALUES (?, ?, ?, ?)
             """, (message_id, user_id, get_timestamp(), source))
+            conn.execute("DELETE FROM pending_message_responses WHERE message_id = ?", (message_id,))
             conn.commit()
     
     def cleanup_old_messages(self, days_to_keep: int = 7) -> int:
@@ -653,6 +654,24 @@ class Database:
             """, (user_id, resource_type, resource_id, permission))
             return cursor.fetchone() is not None
 
+    def revoke_permissions(self, user_id: str, resource_type: str = None,
+                           resource_id: str = None, permission: str = None) -> None:
+        clauses = ["user_id = ?", "scope_type = 'user'"]
+        values = [user_id]
+        for column, value in (("resource_type", resource_type), ("resource_id", resource_id),
+                              ("permission", permission)):
+            if value is not None:
+                clauses.append(column + " = ?")
+                values.append(value)
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("DELETE FROM permissions WHERE " + " AND ".join(clauses), values)
+
+    def get_resource_permissions(self, resource_type, resource_id):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            return [dict(row) for row in conn.execute(
+                "SELECT * FROM permissions WHERE resource_type=? AND resource_id=?", (resource_type, resource_id))]
+
     def get_user_permissions(self, user_id: str) -> list:
         """获取用户所有权限"""
         with sqlite3.connect(self.db_path) as conn:
@@ -715,8 +734,8 @@ class Database:
                     id, skill_name, description, trigger_patterns, steps,
                     original_context, original_output, corrected_output,
                     user_intent, user_id, created_at, status,
-                    review_comments, reviewed_by, reviewed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    review_comments, reviewed_by, reviewed_at, metadata
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 draft["id"],
                 draft.get("skill_name", ""),
@@ -733,8 +752,82 @@ class Database:
                 draft.get("review_comments"),
                 draft.get("reviewed_by"),
                 draft.get("reviewed_at"),
+                json.dumps(draft.get("metadata", {}), ensure_ascii=False),
             ))
             conn.commit()
+
+    def get_learning_source(self, source_key):
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT draft_id FROM learning_sources WHERE source_key=?", (source_key,)).fetchone()
+            return row[0] if row else None
+
+    def save_learning_draft(self, source_key, draft):
+        """Claim a source and write its draft in one transaction; never replace a reviewed draft."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT draft_id FROM learning_sources WHERE source_key=?", (source_key,)).fetchone()
+            if row:
+                return row[0]
+            conn.execute("INSERT INTO learning_sources VALUES (?, ?)", (source_key, draft.id))
+            data = draft.model_dump()
+            fields = ["id", "skill_name", "description", "trigger_patterns", "steps", "original_context",
+                "original_output", "corrected_output", "user_intent", "user_id", "created_at", "status",
+                "review_comments", "reviewed_by", "reviewed_at", "metadata"]
+            values = [json.dumps(data[key], ensure_ascii=False) if key in {"trigger_patterns", "steps", "metadata"} else data[key] for key in fields]
+            conn.execute("INSERT INTO skill_drafts (" + ",".join(fields) + ") VALUES (" + ",".join("?" for _ in fields) + ")", values)
+            return draft.id
+
+    def publish_skill_draft(self, draft_id, reviewer_id, comments, skill, base_version=None):
+        """Atomically publish once, validating the reviewer and optimistic patch version."""
+        from src.types import SkillVersion, SkillChangeLog
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            role = conn.execute("SELECT role FROM user_roles WHERE user_id=?", (reviewer_id,)).fetchone()
+            if not role or role[0] != "admin":
+                raise PermissionError("Only administrators may publish learning drafts")
+            existing = conn.execute("SELECT skill_id FROM skill_publications WHERE draft_id=?", (draft_id,)).fetchone()
+            if existing:
+                return existing[0]
+            draft = conn.execute("SELECT status FROM skill_drafts WHERE id=?", (draft_id,)).fetchone()
+            if not draft or draft[0] not in {"draft", "pending_review", "approved"}:
+                raise ValueError("Draft is missing or rejected")
+            if base_version is not None:
+                current = conn.execute("SELECT version FROM skills WHERE id=?", (skill.id,)).fetchone()
+                if not current or current[0] != base_version:
+                    raise ValueError("Skill changed since the patch proposal; generate a new proposal")
+            elif conn.execute("SELECT 1 FROM skills WHERE id=?", (skill.id,)).fetchone():
+                raise ValueError("Publication would overwrite an existing skill")
+            conn.execute("CREATE TABLE IF NOT EXISTS skill_version_records (skill_id TEXT, version TEXT, data TEXT, PRIMARY KEY(skill_id, version))")
+            conn.execute("CREATE TABLE IF NOT EXISTS skill_change_records (id TEXT PRIMARY KEY, skill_id TEXT, data TEXT)")
+            previous = self.get_skill(skill.id) if base_version is not None else None
+            for snapshot in ([previous] if previous else []) + [skill]:
+                data = snapshot.model_dump()
+                data.update(id=generate_id(), skill_id=skill.id, created_by=reviewer_id, change_type="update" if previous else "create")
+                version = SkillVersion.model_validate(data)
+                conn.execute("INSERT OR IGNORE INTO skill_version_records VALUES (?, ?, ?)", (snapshot.id, snapshot.version, version.model_dump_json()))
+            self._store_skill(conn, skill)
+            conn.execute("UPDATE skill_drafts SET status='approved', reviewed_by=?, reviewed_at=?, review_comments=? WHERE id=?", (reviewer_id, get_timestamp(), comments, draft_id))
+            conn.execute("INSERT INTO skill_publications VALUES (?, ?)", (draft_id, skill.id))
+            change = SkillChangeLog(id=generate_id(), skill_id=skill.id, version=skill.version, changed_by=reviewer_id,
+                changed_at=get_timestamp(), change_type="update" if previous else "create", change_description=f"Approved learning draft {draft_id}")
+            conn.execute("INSERT INTO skill_change_records VALUES (?, ?, ?)", (change.id, skill.id, change.model_dump_json()))
+            return skill.id
+
+    def reject_skill_draft(self, draft_id, reviewer_id, comments):
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            role = conn.execute("SELECT role FROM user_roles WHERE user_id=?", (reviewer_id,)).fetchone()
+            if not role or role[0] != "admin":
+                raise PermissionError("Only administrators may reject learning drafts")
+            if conn.execute("SELECT 1 FROM skill_publications WHERE draft_id=?", (draft_id,)).fetchone():
+                raise ValueError("Published drafts cannot be rejected retroactively")
+            conn.execute("UPDATE skill_drafts SET status='rejected', reviewed_by=?, reviewed_at=?, review_comments=? WHERE id=?",
+                         (reviewer_id, get_timestamp(), comments, draft_id))
+
+    def get_published_skill_id(self, draft_id):
+        with sqlite3.connect(self.db_path) as conn:
+            row = conn.execute("SELECT skill_id FROM skill_publications WHERE draft_id=?", (draft_id,)).fetchone()
+            return row[0] if row else None
 
     def get_skill_draft(self, draft_id: str) -> Optional[dict]:
         """获取单个技能草稿"""
@@ -830,6 +923,7 @@ class Database:
             "review_comments": row[12],
             "reviewed_by": row[13],
             "reviewed_at": row[14],
+            "metadata": _safe_deserialize(row[15], {}),
         }
 
     # ==================== 执行轨迹方法 ====================
@@ -939,7 +1033,7 @@ class Database:
                 SELECT s.id, s.name, s.type,
                        COUNT(u.id) as total_uses,
                        COALESCE(SUM(u.success), 0) as success_count,
-                       COALESCE(MAX(u.used_at), 0) as last_used
+                       COALESCE(MAX(u.used_at), 0) as last_used, s.created_at, s.metadata
                 FROM skills s
                 LEFT JOIN skill_usage u ON s.id = u.skill_id
                 WHERE s.type = 'learned'
@@ -949,9 +1043,9 @@ class Database:
             return [
                 {
                     "skill_id": r[0], "skill_name": r[1], "type": r[2],
-                    "total_uses": r[3], "success_count": r[4], "last_used_at": r[5],
+                    "total_uses": r[3], "success_count": r[4], "last_used_at": r[5], "created_at": r[6],
                 }
-                for r in cursor.fetchall()
+                for r in cursor.fetchall() if not any(_safe_deserialize(r[7], {}).get(flag) for flag in ("archived", "quarantined"))
             ]
 
 

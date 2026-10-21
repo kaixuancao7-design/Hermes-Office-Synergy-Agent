@@ -1,5 +1,7 @@
 """PPT原子工具集 - 提供PPT生成相关的原子操作"""
 
+import json
+from dataclasses import asdict
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
 from src.tools.base import BaseTool
@@ -32,10 +34,10 @@ class TemplateMatchTool(BaseTool):
                 "success": True,
                 "templates": [
                     {
-                        "id": match.get("id", ""),
-                        "name": match.get("name", ""),
-                        "score": match.get("score", 0),
-                        "style": match.get("style", "")
+                        "id": match.template_id,
+                        "name": match.name,
+                        "score": match.score,
+                        "style": match.metadata.get("style", "")
                     } for match in matches
                 ]
             }
@@ -60,20 +62,15 @@ class SpecLockTool(BaseTool):
             template_id = params.get("template_id")
             style_config = params.get("style_config", {})
 
-            from src.services.spec_lock_manager import spec_lock_manager
-            spec_lock = spec_lock_manager.lock_spec(
-                template_id=template_id,
-                user_preferences=style_config
-            )
+            from src.engine.spec_lock import spec_lock_manager
+            from src.services.template_matcher import template_matcher
+            template = template_matcher.get_template_by_id(template_id)
+            if template is None:
+                raise ValueError("Unknown template")
+            lock = spec_lock_manager.create_lock(params["user_id"], template_id, template)
+            lock.update(style_config)
+            return {"success": True, "spec_lock": asdict(lock)}
 
-            return {
-                "success": True,
-                "spec_lock": {
-                    "template_id": template_id,
-                    "design_spec": spec_lock.get("design_spec", {}),
-                    "locked_at": spec_lock.get("locked_at")
-                }
-            }
         except Exception as e:
             logger.error(f"规格锁定失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -97,19 +94,9 @@ class GenerateOutlineTool(BaseTool):
             content = params.get("content", "")
             style_config = params.get("style_config")
 
-            from src.services.strategist_planner import StrategistPlanner
-            planner = StrategistPlanner()
-            outline = planner.generate_outline(
-                title=title,
-                content=content,
-                style_config=style_config
-            )
+            outline = _model_list(f"Generate a PPT outline as a JSON array of objects with title and content. Title: {title}\nSource: {content}")
+            return {"success": True, "outline": outline, "format": "structured"}
 
-            return {
-                "success": True,
-                "outline": outline,
-                "format": "structured"
-            }
         except Exception as e:
             logger.error(f"大纲生成失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -133,19 +120,10 @@ class GenerateContentTool(BaseTool):
             template_id = params.get("template_id", "")
             style_config = params.get("style_config")
 
-            from src.services.strategist_planner import StrategistPlanner
-            planner = StrategistPlanner()
-            slides = planner.generate_slides(
-                outline=outline,
-                template_id=template_id,
-                style_config=style_config
-            )
+            slides = _model_list("Generate slide objects as a JSON array. Each object must have type (title, content or bullet), title, and content. "
+                                 + json.dumps(outline, ensure_ascii=False))
+            return {"success": True, "slides": slides, "count": len(slides)}
 
-            return {
-                "success": True,
-                "slides": slides,
-                "count": len(slides)
-            }
         except Exception as e:
             logger.error(f"内容生成失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -169,8 +147,8 @@ class GeneratePPTTool(BaseTool):
             slides = params.get("slides", [])
             output_path = params.get("output_path")
             # 导入PPT生成器
-            from src.tools.ppt_generator import GeneratePPT
-            generator = GeneratePPT()
+            from src.tools.ppt_generator import PPTGeneratorBase
+            generator = PPTGeneratorBase()
             result_path = generator.generate_ppt(
                 title=title,
                 slides=slides,
@@ -201,17 +179,16 @@ class QualityCheckTool(BaseTool):
         try:
             file_path = params.get("file_path")
 
-            from src.services.quality_gate import QualityGate
+            from src.engine.quality_gate import QualityGate
+            from src.tools.runtime import within
+            if not within(file_path, ["output"]):
+                raise PermissionError("PPT quality check path must be inside output")
             quality_gate = QualityGate(strict_mode=False)
             result = quality_gate.gate(file_path)
+            return {"success": result.passed, "passed": result.passed,
+                    "report": quality_gate.format_report(result), "issues": result.errors + result.warnings,
+                    "metrics": result.metrics, "error": "; ".join(result.errors) if not result.passed else ""}
 
-            return {
-                "success": True,
-                "passed": result.get("passed", False),
-                "score": result.get("score", 0),
-                "report": result.get("report", ""),
-                "issues": result.get("issues", [])
-            }
         except Exception as e:
             logger.error(f"质量检查失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -231,20 +208,20 @@ class FeishuSendFileTool(BaseTool):
 
     def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            from src.gateway.im_adapter import get_im_adapter
+            from src.plugins import get_im_adapter
+            from src.tools.runtime import run_sync, within
+            import inspect
+            file_path = params["file_path"]
+            if not within(file_path, ["output"]):
+                raise PermissionError("Only generated output files may be sent")
+            adapter = get_im_adapter()
+            if adapter is None:
+                raise RuntimeError("IM adapter is unavailable")
+            result = adapter.send_file(params["user_id"], file_path)
+            if inspect.isawaitable(result):
+                result = run_sync(result)
+            return result if isinstance(result, dict) else {"success": bool(result)}
 
-            file_path = params.get("file_path")
-            user_id = params.get("user_id")
-            message = params.get("message", "")
-
-            im_adapter = get_im_adapter()
-            result = im_adapter.send_file(user_id, file_path, message)
-
-            return {
-                "success": result.get("success", False),
-                "message_id": result.get("message_id"),
-                "sent_at": result.get("sent_at")
-            }
         except Exception as e:
             logger.error(f"飞书发送失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -264,16 +241,14 @@ class ContextStoreTool(BaseTool):
 
     def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            from src.data.vector_store import get_memory_store
+            from src.plugins import get_memory_store
+            key = params["key"]
+            store = get_memory_store()
+            if store is None:
+                raise RuntimeError("Memory store is unavailable")
+            success = store.store(f"{params['user_id']}:{key}", params["value"])
+            return {"success": bool(success), "key": key}
 
-            key = params.get("key")
-            value = params.get("value")
-            user_id = params.get("user_id")
-
-            memory_store = get_memory_store()
-            memory_store.store(key, value, user_id)
-
-            return {"success": True, "key": key}
         except Exception as e:
             logger.error(f"上下文存储失败: {str(e)}")
             return {"success": False, "error": str(e)}
@@ -291,3 +266,14 @@ def get_all_ppt_tools() -> List[type]:
         FeishuSendFileTool,
         ContextStoreTool
     ]
+
+def _model_list(prompt):
+    from src.plugins.model_routers import call_model
+    from src.tools.runtime import run_sync
+    response = run_sync(call_model(prompt)).strip()
+    if response.startswith("```"):
+        response = response.split("\n", 1)[1].rsplit("```", 1)[0]
+    value = json.loads(response)
+    if not isinstance(value, list) or not value or any(not isinstance(x, dict) for x in value):
+        raise ValueError("Model must return a nonempty JSON array of objects")
+    return value
